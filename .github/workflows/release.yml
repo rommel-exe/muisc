@@ -24,6 +24,10 @@ jobs:
           key: mac-electron-${{ hashFiles('**/package-lock.json') }}
           restore-keys: mac-electron-
       - run: npm ci
+      - name: Create GitHub Release
+        run: |
+          RELEASE_TAG="v$(node -p "require('./package.json').version")"
+          gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "" --draft || echo "Release may already exist"
       - name: Build & Publish (macOS)
         run: npm run build && npx electron-builder --mac --publish always
         env:
@@ -45,6 +49,11 @@ jobs:
           key: win-electron-${{ hashFiles('**/package-lock.json') }}
           restore-keys: win-electron-
       - run: npm ci
+      - name: Create GitHub Release
+        shell: bash
+        run: |
+          RELEASE_TAG="v$(node -p "require('./package.json').version")"
+          gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "" --draft || echo "Release may already exist"
       - name: Build & Publish (Windows)
         run: npm run build && npx electron-builder --win --publish always
         env:
