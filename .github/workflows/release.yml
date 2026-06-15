@@ -27,11 +27,17 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Ensure release is published (not draft)
+        shell: bash
         run: |
-          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "" --latest 2>/dev/null && echo "Created new release" || {
-            echo "Release already exists, ensuring it's published..."
-            gh release edit "${{ github.ref_name }}" --draft=false 2>/dev/null && echo "Published!" || echo "Note: release may not exist yet (electron-builder will create it)"
-          }
+          if gh release view "${{ github.ref_name }}" --json isDraft --jq .isDraft 2>/dev/null; then
+            echo "Release exists as draft, publishing..."
+            gh release edit "${{ github.ref_name }}" --draft=false
+          elif gh release view "${{ github.ref_name }}" 2>/dev/null; then
+            echo "Release already exists and is published"
+          else
+            echo "Creating new release..."
+            gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "" --latest
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npx electron-builder --mac --publish always
@@ -58,11 +64,17 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run build
       - name: Ensure release is published (not draft)
+        shell: bash
         run: |
-          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "" --latest 2>/dev/null && echo "Created new release" || {
-            echo "Release already exists, ensuring it's published..."
-            gh release edit "${{ github.ref_name }}" --draft=false 2>/dev/null && echo "Published!" || echo "Note: release may not exist yet (electron-builder will create it)"
-          }
+          if gh release view "${{ github.ref_name }}" --json isDraft --jq .isDraft 2>/dev/null; then
+            echo "Release exists as draft, publishing..."
+            gh release edit "${{ github.ref_name }}" --draft=false
+          elif gh release view "${{ github.ref_name }}" 2>/dev/null; then
+            echo "Release already exists and is published"
+          else
+            echo "Creating new release..."
+            gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --notes "" --latest
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npx electron-builder --win --publish always
