@@ -20,8 +20,9 @@ out/
 .env.local
 .env.*.local
 
-# IDE
-.vscode/
+# IDE (track launch config, ignore the rest)
+.vscode/*
+!.vscode/launch.json
 .idea/
 *.swp
 *.swo
