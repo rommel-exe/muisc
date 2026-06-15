@@ -44,6 +44,12 @@ Don't skip phases. Each builds on the previous:
 4. **UI** — glassmorphism, frameless window, custom controls
 5. **Polish** — MediaSession, Spotify import, tray, packaging
 
+## Git Workflow
+
+- **Commit after every meaningful change.** Don't batch unrelated edits into one commit.
+- Use clear, short commit messages: what changed, not what you were thinking.
+- Push after committing so the remote stays current.
+
 ## Gotchas
 
 - YouTube stream URLs expire — proxy must re-fetch if stale
