@@ -17,7 +17,9 @@ Greenfield Electron desktop music player. Free YouTube streaming via yt-dlp + In
 - electron-builder + electron-updater
 - React (recommended frontend, not yet decided)
 
-## Project Structure (target)
+## Project Structure (target → update as you build)
+
+This section reflects the **actual** codebase structure. When you add, move, rename, or delete files/folders, update this section immediately. Future agents depend on it being accurate.
 
 ```
 src/
