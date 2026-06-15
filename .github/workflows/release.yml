@@ -8,7 +8,6 @@ permissions:
   contents: write
 
 jobs:
-  # macOS publishes first — creates the GitHub release + uploads macOS artifacts
   publish-mac:
     runs-on: macos-latest
     timeout-minutes: 30
@@ -27,18 +26,10 @@ jobs:
           restore-keys: mac-electron-
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - name: Create GitHub Release
-        run: |
-          TAG="v$(node -p "require('./package.json').version")"
-          echo "Creating release with tag: $TAG"
-          gh release create "$TAG" --title "$TAG" --notes "" --draft || echo "Note: release may already exist"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npx electron-builder --mac --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Windows depends on macOS — release already exists, just uploads
   publish-windows:
     needs: publish-mac
     runs-on: windows-latest
