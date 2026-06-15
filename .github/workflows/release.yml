@@ -28,10 +28,12 @@ jobs:
         run: |
           RELEASE_TAG="v$(node -p "require('./package.json').version")"
           gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "" --draft || echo "Release may already exist"
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Build & Publish (macOS)
         run: npm run build && npx electron-builder --mac --publish always
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
 
   release-windows:
     runs-on: windows-latest
@@ -54,7 +56,9 @@ jobs:
         run: |
           RELEASE_TAG="v$(node -p "require('./package.json').version")"
           gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes "" --draft || echo "Release may already exist"
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Build & Publish (Windows)
         run: npm run build && npx electron-builder --win --publish always
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
