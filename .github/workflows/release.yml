@@ -27,6 +27,13 @@ jobs:
           restore-keys: mac-electron-
       - run: npm ci --ignore-scripts
       - run: npm run build
+      - name: Create GitHub Release
+        run: |
+          TAG="v$(node -p "require('./package.json').version")"
+          echo "Creating release with tag: $TAG"
+          gh release create "$TAG" --title "$TAG" --notes "" --draft || echo "Note: release may already exist"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npx electron-builder --mac --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
