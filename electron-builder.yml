@@ -34,4 +34,3 @@ publish:
   provider: github
   owner: rommel-exe
   repo: muisc
-  releaseType: draft
