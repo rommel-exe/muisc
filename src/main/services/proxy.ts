@@ -145,14 +145,17 @@ export function createProxy(options: ProxyOptions = {}) {
       const parsedUrl = new URL(targetUrl)
       const transport = parsedUrl.protocol === 'https:' ? https : http
 
+      const proxyHeaders: Record<string, string> = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+      }
+      // Only forward Range header if client actually sent one
+      if (clientReq.headers.range) {
+        proxyHeaders['Range'] = clientReq.headers.range
+      }
+
       const proxyReq = transport.get(
         targetUrl,
-        {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-            Range: clientReq.headers.range ?? '',
-          },
-        },
+        { headers: proxyHeaders },
         (proxyRes) => {
           // Follow redirects
           if (proxyRes.statusCode && [301, 302, 303, 307].includes(proxyRes.statusCode)) {
