@@ -1,265 +1,173 @@
 import { useAudioPlayer } from './hooks/useAudioPlayer'
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
+
+interface QueueTrack {
+  id: string
+  label: string
+}
+
+const QUEUE: QueueTrack[] = [
+  { id: 'dQw4w9WgXcQ', label: 'Rick Astley — Never Gonna Give You Up' },
+  { id: 'kJQP7kiw5Fk', label: 'Luis Fonsi — Despacito' },
+  { id: 'JGwWNGJdvx8', label: 'Ed Sheeran — Shape of You' },
+  { id: 'fJ9rUzIMcZQ', label: 'Queen — Bohemian Rhapsody' },
+]
 
 function App() {
   const [playerState, playerControls] = useAudioPlayer()
-  const [videoId, setVideoId] = useState('dQw4w9WgXcQ') // Rick Astley - Never Gonna Give You Up
   const [resolving, setResolving] = useState(false)
-  const [trackInfo, setTrackInfo] = useState<{ title: string; artist: string } | null>(null)
+  const [currentIdx, setCurrentIdx] = useState(-1)
   const [logs, setLogs] = useState<string[]>([])
+  const [trackTitle, setTrackTitle] = useState('')
 
-  const addLog = (msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-50))
-  }
+  const addLog = useCallback((msg: string) => {
+    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-20))
+  }, [])
 
-  const handlePlay = async () => {
+  const playTrack = useCallback(async (idx: number) => {
+    const track = QUEUE[idx]
+    if (!track) return
+    setCurrentIdx(idx)
     setResolving(true)
-    addLog(`Resolving: ${videoId}`)
+    addLog(`Resolving ${track.id}...`)
+
     try {
-      const resolved = await window.api.resolveTrack(videoId)
+      const start = Date.now()
+      const resolved = await window.api.resolveTrack(track.id)
+      addLog(`Resolved in ${Date.now() - start}ms — ${resolved.title}`)
+      setTrackTitle(resolved.title)
       playerControls.load(resolved.audioUrl)
-      setTrackInfo({ title: resolved.title, artist: 'YouTube' })
-      addLog(`Resolved: ${resolved.title} (${resolved.duration}s)`)
       await playerControls.play()
-      addLog('Playback started')
+
+      const upcoming = QUEUE.slice(idx + 1).map((t) => t.id)
+      if (upcoming.length > 0) {
+        window.api.prefetchQueue(upcoming).catch(() => {})
+        addLog(`Prefetching next ${upcoming.length} track(s)`)
+      }
     } catch (err: any) {
-      console.error('Playback failed:', err)
       addLog(`ERROR: ${err.message}`)
     } finally {
       setResolving(false)
     }
-  }
+  }, [playerControls, addLog])
 
-  const handleSimulateExpiration = async () => {
-    addLog(`Corrupting cache for: ${videoId}`)
-    try {
-      const corrupted = await window.api.testCorruptCache(videoId)
-      if (corrupted) {
-        addLog('Cache corrupted. Next play will trigger 403 recovery.')
-        // Auto-play to test recovery
-        await handlePlay()
-      } else {
-        addLog('No cache entry found. Play first, then try again.')
-      }
-    } catch (err: any) {
-      addLog(`ERROR corrupting cache: ${err.message}`)
-    }
-  }
+  const goNext = useCallback(() => {
+    const next = currentIdx + 1
+    if (next < QUEUE.length) playTrack(next)
+  }, [currentIdx, playTrack])
 
-  const handleAggressiveSeek = async () => {
-    if (!playerState.duration) {
-      addLog('No track loaded. Play first.')
-      return
-    }
-    addLog('Aggressive seek test: jumping to 25%, 75%, 50%, 10%, 0%')
-    const positions = [
-      playerState.duration * 0.25,
-      playerState.duration * 0.75,
-      playerState.duration * 0.5,
-      playerState.duration * 0.1,
-      0,
-    ]
-    for (const pos of positions) {
-      playerControls.seek(pos)
-      addLog(`Seeked to ${formatTime(pos)}`)
-      await new Promise((r) => setTimeout(r, 200))
-    }
-    addLog('Aggressive seek test complete')
-  }
+  const goPrev = useCallback(() => {
+    const prev = currentIdx - 1
+    if (prev >= 0) playTrack(prev)
+  }, [currentIdx, playTrack])
 
-  const handleRapidSkip = async () => {
-    addLog('Rapid skip test: 10 rapid plays on different IDs')
-    const testIds = [
-      'dQw4w9WgXcQ', // Rick Astley
-      'kXYiU_JCYtU', // Numb - Linkin Park
-      'kJQP7kiw5Fk', // Despacito
-      'RgKAFK5djSk', // See You Again
-      'OPf0YbXqDm0', // Uptown Funk
-      'fJ9rUzIMcZQ', // Bohemian Rhapsody
-      'JGwWNGJdvx8', // Shape of You
-      'hTWKbfoikeg', // Sorry
-      '09R8_2nJtjg', // Sugar
-      'RgKAFK5djSk', // See You Again (repeat)
-    ]
-
-    for (let i = 0; i < testIds.length; i++) {
-      setVideoId(testIds[i])
-      addLog(`Skip ${i + 1}/10: ${testIds[i]}`)
-      try {
-        await window.api.resolveTrack(testIds[i])
-      } catch {
-        // Ignore errors - we're testing abort behavior
-      }
-      await new Promise((r) => setTimeout(r, 100))
-    }
-    const pending = await window.api.testPendingCount()
-    addLog(`Rapid skip complete. Pending resolves: ${pending}`)
-  }
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = Math.floor(seconds % 60)
-    return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
+  const formatTime = (s: number) =>
+    `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 
   return (
-    <div style={{ fontFamily: 'system-ui, sans-serif', padding: '2rem', color: '#fff', background: '#1a1a2e', minHeight: '100vh' }}>
-      <h1>Muisc</h1>
-      <p>A free desktop music streaming player</p>
+    <div style={{ background: '#111', color: '#ddd', fontFamily: 'monospace', padding: 16, minHeight: '100vh' }}>
+      <h1 style={{ margin: '0 0 12px', fontSize: 16 }}>muisc test</h1>
 
-      {/* Video ID Input */}
-      <div style={{ marginTop: '2rem', padding: '1rem', background: '#16213e', borderRadius: '8px' }}>
-        <h2>Debug Dashboard</h2>
-
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ display: 'block', marginBottom: '0.5rem', color: '#a0a0a0' }}>
-            YouTube Video ID:
-          </label>
-          <input
-            type="text"
-            value={videoId}
-            onChange={(e) => setVideoId(e.target.value)}
+      {/* Queue */}
+      <div style={{ marginBottom: 12 }}>
+        {QUEUE.map((track, i) => (
+          <div
+            key={track.id}
             style={{
-              padding: '0.5rem',
-              width: '300px',
-              background: '#0f3460',
-              border: '1px solid #533483',
-              color: '#fff',
-              borderRadius: '4px',
-            }}
-          />
-        </div>
-
-        {/* Test Buttons */}
-        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-          <button
-            onClick={handlePlay}
-            disabled={resolving || playerState.loading}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: playerState.isPlaying ? '#e94560' : '#533483',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 8px',
+              background: i === currentIdx ? '#222' : 'transparent',
+              borderBottom: '1px solid #222',
             }}
           >
-            {resolving ? 'Resolving...' : playerState.loading ? 'Loading...' : playerState.isPlaying ? 'Pause' : 'Play'}
-          </button>
-
-          <button
-            onClick={handleSimulateExpiration}
-            disabled={resolving}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: '#e94560',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-            }}
-          >
-            Simulate Expiration
-          </button>
-
-          <button
-            onClick={handleAggressiveSeek}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: '#f39c12',
-              color: '#000',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-            }}
-          >
-            Aggressive Seek
-          </button>
-
-          <button
-            onClick={handleRapidSkip}
-            style={{
-              padding: '0.75rem 1.5rem',
-              background: '#27ae60',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '0.9rem',
-            }}
-          >
-            Rapid Skip Test
-          </button>
-        </div>
-
-        {playerState.error && (
-          <p style={{ color: '#e94560', marginTop: '0.5rem' }}>Error: {playerState.error}</p>
-        )}
-
-        {trackInfo && (
-          <div style={{ marginBottom: '1rem' }}>
-            <p style={{ margin: 0 }}>
-              <strong>{trackInfo.title}</strong> — {trackInfo.artist}
-            </p>
-          </div>
-        )}
-
-        {playerState.duration > 0 && (
-          <div style={{ marginBottom: '1rem' }}>
-            <input
-              type="range"
-              min={0}
-              max={playerState.duration}
-              value={playerState.currentTime}
-              onChange={(e) => playerControls.seek(Number(e.target.value))}
-              style={{ width: '300px' }}
-            />
-            <span style={{ marginLeft: '0.5rem' }}>
-              {formatTime(playerState.currentTime)} / {formatTime(playerState.duration)}
+            <span style={{ width: 20, color: '#666' }}>{i + 1}</span>
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {track.label}
             </span>
+            <span style={{ fontSize: 11, color: '#555' }}>{track.id}</span>
+            <button
+              onClick={() => playTrack(i)}
+              disabled={resolving}
+              style={{
+                padding: '2px 8px',
+                background: i === currentIdx ? '#2a2' : '#333',
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              {resolving && i === currentIdx ? '...' : i === currentIdx && playerState.isPlaying ? '▶' : '▶'}
+            </button>
           </div>
-        )}
+        ))}
+      </div>
 
-        <div style={{ marginBottom: '1rem' }}>
-          <label style={{ color: '#a0a0a0' }}>Volume: </label>
+      {/* Now Playing Controls */}
+      <div style={{ padding: '8px 0', borderTop: '1px solid #333', marginBottom: 8 }}>
+        <div style={{ fontSize: 12, marginBottom: 6, color: '#888' }}>
+          {trackTitle || 'No track loaded'}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={goPrev} disabled={currentIdx <= 0} style={btnStyle}>{'◀'}</button>
+          <button
+            onClick={() => playerState.isPlaying ? playerControls.pause() : playerControls.play()}
+            disabled={!trackTitle}
+            style={btnStyle}
+          >
+            {playerState.isPlaying ? '⏸' : '▶'}
+          </button>
+          <button onClick={goNext} disabled={currentIdx < 0 || currentIdx >= QUEUE.length - 1} style={btnStyle}>{'▶'}</button>
+
+          <input
+            type="range"
+            min={0}
+            max={playerState.duration || 1}
+            value={playerState.currentTime}
+            onChange={(e) => playerControls.seek(Number(e.target.value))}
+            style={{ flex: 1, margin: '0 4px' }}
+          />
+          <span style={{ fontSize: 11, color: '#888', minWidth: 80, textAlign: 'right' }}>
+            {formatTime(playerState.currentTime)} / {formatTime(playerState.duration)}
+          </span>
+
+          <label style={{ fontSize: 11, color: '#666' }}>vol</label>
           <input
             type="range"
             min={0}
             max={1}
-            step={0.01}
+            step={0.05}
             value={playerState.volume}
             onChange={(e) => playerControls.setVolume(Number(e.target.value))}
-            style={{ width: '150px' }}
+            style={{ width: 60 }}
           />
         </div>
+      </div>
 
-        {/* Log Output */}
-        <div style={{ marginTop: '1rem' }}>
-          <h3 style={{ color: '#a0a0a0', fontSize: '0.9rem' }}>Console Log</h3>
-          <div style={{
-            background: '#0a0a1a',
-            border: '1px solid #333',
-            borderRadius: '4px',
-            padding: '0.5rem',
-            maxHeight: '200px',
-            overflow: 'auto',
-            fontFamily: 'monospace',
-            fontSize: '0.8rem',
-          }}>
-            {logs.length === 0 && <p style={{ color: '#666' }}>No logs yet...</p>}
-            {logs.map((log, i) => (
-              <div key={i} style={{ color: log.includes('ERROR') ? '#e94560' : '#a0a0a0' }}>
-                {log}
-              </div>
-            ))}
+      {playerState.error && <div style={{ color: '#c33', fontSize: 12 }}>{playerState.error}</div>}
+
+      {/* Console */}
+      <div style={{ marginTop: 12, borderTop: '1px solid #333', paddingTop: 8 }}>
+        {logs.length === 0 && <span style={{ color: '#444', fontSize: 11 }}>no events</span>}
+        {logs.map((log, i) => (
+          <div key={i} style={{ fontSize: 11, color: log.includes('ERROR') ? '#c33' : '#777', lineHeight: 1.5 }}>
+            {log}
           </div>
-        </div>
+        ))}
       </div>
     </div>
   )
+}
+
+const btnStyle: React.CSSProperties = {
+  padding: '4px 10px',
+  background: '#333',
+  color: '#fff',
+  border: 'none',
+  cursor: 'pointer',
+  fontSize: 14,
 }
 
 export default App
