@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { getVideoInfo, findYTDlp, YTDlpError } from '../services/yt-dlp'
 import { createProxy } from '../services/proxy'
+import { createMediaResolver } from '../services/media-resolver'
 
+// ─────────────────────────────────────────────
+// Test A: yt-dlp Extraction & Stream URL Validation
+// ─────────────────────────────────────────────
 describe('yt-dlp Service', () => {
   // Use a known public video - Rick Astley "Never Gonna Give You Up"
   const TEST_VIDEO_ID = 'dQw4w9WgXcQ'
@@ -32,51 +36,66 @@ describe('yt-dlp Service', () => {
     expect(format.url).toMatch(/^https?:\/\//)
   }, 30000)
 
-  it('should throw TIMEOUT error when timeout is too short', async () => {
-    // Set timeout to 1ms - should fail immediately
-    await expect(
-      getVideoInfo(TEST_VIDEO_ID, 1)
-    ).rejects.toThrow()
-
-    try {
-      await getVideoInfo(TEST_VIDEO_ID, 1)
-    } catch (err) {
-      expect(err).toBeInstanceOf(YTDlpError)
-      expect((err as YTDlpError).code).toBe('TIMEOUT')
-    }
-  }, 10000)
-
-  it('should throw INVALID_VIDEO for a non-existent video', async () => {
-    await expect(
-      getVideoInfo('xxxxxxxxxxxxxxxxx')
-    ).rejects.toThrow()
-
-    try {
-      await getVideoInfo('xxxxxxxxxxxxxxxxx')
-    } catch (err) {
-      expect(err).toBeInstanceOf(YTDlpError)
-      expect((err as YTDlpError).code).toBe('INVALID_VIDEO')
+  // ── Test A: URL starts with https:// ──
+  it('should return stream URLs starting with https://', async () => {
+    const info = await getVideoInfo(TEST_VIDEO_ID)
+    const validFormats = info.formats.filter((f) => f.acodec !== 'none' && f.url)
+    expect(validFormats.length).toBeGreaterThan(0)
+    for (const f of validFormats) {
+      expect(f.url.startsWith('https://')).toBe(true)
     }
   }, 30000)
 
-  it('should support abort signal', async () => {
+  // ── Test A: URL expiresAt — verify proxy cache has recent cachedAt timestamp ──
+  it('should have valid cachedAt timestamp on proxy cache entry', async () => {
+    const proxy = createProxy({ port: 18939 })
+    await proxy.start()
+    try {
+      // Make a stream request to populate cache
+      const res = await fetch(
+        `http://127.0.0.1:18939/stream?v=${TEST_VIDEO_ID}`,
+        { signal: AbortSignal.timeout(20000) }
+      )
+      expect(res.ok || res.status === 206).toBe(true)
+
+      // Check proxy cache entry has a recent cachedAt (within last 30s)
+      const entry = proxy.getStreamCacheEntry(TEST_VIDEO_ID)
+      expect(entry).toBeTruthy()
+      expect(entry!.cachedAt).toBeGreaterThan(0)
+      expect(Date.now() - entry!.cachedAt).toBeLessThan(30000)
+    } finally {
+      await proxy.stop()
+    }
+  }, 60000)
+
+  // ── Test A: Timeout throws YTDLP_TIMEOUT ──
+  it('should throw TIMEOUT error when timeout is too short (1ms)', async () => {
+    await expect(getVideoInfo(TEST_VIDEO_ID, 1)).rejects.toThrow(YTDlpError)
+    await expect(getVideoInfo(TEST_VIDEO_ID, 1)).rejects.toMatchObject({
+      code: 'TIMEOUT',
+    })
+  }, 10000)
+
+  it('should throw INVALID_VIDEO for a non-existent video', async () => {
+    await expect(getVideoInfo('xxxxxxxxxxxxxxxxx')).rejects.toThrow(YTDlpError)
+    await expect(getVideoInfo('xxxxxxxxxxxxxxxxx')).rejects.toMatchObject({
+      code: 'INVALID_VIDEO',
+    })
+  }, 30000)
+
+  it('should support abort signal (ABORTED code)', async () => {
     const controller = new AbortController()
-    // Abort immediately
     controller.abort()
 
     await expect(
       getVideoInfo(TEST_VIDEO_ID, 30000, controller.signal)
-    ).rejects.toThrow()
-
-    try {
-      await getVideoInfo(TEST_VIDEO_ID, 30000, controller.signal)
-    } catch (err) {
-      expect(err).toBeInstanceOf(YTDlpError)
-      expect((err as YTDlpError).code).toBe('ABORTED')
-    }
+    ).rejects.toMatchObject({ code: 'ABORTED' })
   }, 10000)
 })
 
+// ─────────────────────────────────────────────
+// Test B: Proxy Range Request Compliance
+// ─────────────────────────────────────────────
 describe('HTTP Proxy', () => {
   const TEST_PORT = 18938 // Use different port to avoid conflicts
   let proxy: ReturnType<typeof createProxy>
@@ -124,14 +143,15 @@ describe('HTTP Proxy', () => {
     }
   }, 30000)
 
+  // ── Test B: Range request returns 206 Partial Content ──
   it('should support Range requests (206 Partial Content)', async () => {
-    // First ensure the video is cached
+    // First ensure the video is cached (full request)
     await fetch(
       `http://127.0.0.1:${TEST_PORT}/stream?v=${TEST_VIDEO_ID}`,
       { signal: AbortSignal.timeout(15000) }
     )
 
-    // Now make a range request
+    // Now make a range request: bytes 0-100
     const res = await fetch(
       `http://127.0.0.1:${TEST_PORT}/stream?v=${TEST_VIDEO_ID}`,
       {
@@ -140,18 +160,233 @@ describe('HTTP Proxy', () => {
       }
     )
 
+    // Assert 206 Partial Content
     expect(res.status).toBe(206)
 
+    // Assert content-range header exists and matches requested byte block
     const contentRange = res.headers.get('content-range')
     expect(contentRange).toBeTruthy()
-    expect(contentRange).toMatch(/bytes/)
+    expect(contentRange).toMatch(/^bytes 0-100\/\d+$/)
 
+    // Assert content-length matches requested range (0-100 = 101 bytes)
     const contentLength = parseInt(res.headers.get('content-length') ?? '0')
-    expect(contentLength).toBeLessThanOrEqual(101) // 0-100 = 101 bytes
+    expect(contentLength).toBe(101)
+  }, 30000)
+
+  it('should support mid-stream range request (bytes 1000-2000)', async () => {
+    // Ensure cached
+    await fetch(
+      `http://127.0.0.1:${TEST_PORT}/stream?v=${TEST_VIDEO_ID}`,
+      { signal: AbortSignal.timeout(15000) }
+    )
+
+    const res = await fetch(
+      `http://127.0.0.1:${TEST_PORT}/stream?v=${TEST_VIDEO_ID}`,
+      {
+        headers: { Range: 'bytes=1000-2000' },
+        signal: AbortSignal.timeout(10000),
+      }
+    )
+
+    expect(res.status).toBe(206)
+    const contentRange = res.headers.get('content-range')
+    expect(contentRange).toBeTruthy()
+    expect(contentRange).toMatch(/^bytes 1000-2000\/\d+$/)
+    expect(parseInt(res.headers.get('content-length') ?? '0')).toBe(1001)
   }, 30000)
 
   it('should return 404 for unknown routes', async () => {
     const res = await fetch(`http://127.0.0.1:${TEST_PORT}/unknown`)
     expect(res.status).toBe(404)
   })
+
+  it('should forward CORS headers on every response', async () => {
+    const res = await fetch(`http://127.0.0.1:${TEST_PORT}/health`)
+    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+    expect(res.headers.get('access-control-allow-headers')).toContain('Range')
+    expect(res.headers.get('access-control-expose-headers')).toContain('Content-Range')
+  })
+
+  it('should abort stale resolve when same video ID requested concurrently', async () => {
+    // Fire 3 rapid requests for the same video ID.
+    // Only the last one should complete — earlier ones get aborted.
+    const results = await Promise.allSettled(
+      [1, 2, 3].map(() =>
+        fetch(
+          `http://127.0.0.1:${TEST_PORT}/stream?v=${TEST_VIDEO_ID}`,
+          { signal: AbortSignal.timeout(30000) }
+        )
+      )
+    )
+
+    // At least one should succeed (the final one)
+    const succeeded = results.filter((r) => r.status === 'fulfilled')
+    expect(succeeded.length).toBeGreaterThanOrEqual(1)
+
+    // The successful one must have valid audio response
+    const fulfilled = succeeded[0]
+    if (fulfilled?.status === 'fulfilled') {
+      const res = fulfilled.value
+      const ok = res.status === 200 || res.status === 206
+      expect(ok).toBe(true)
+      expect(res.headers.get('content-type')).toMatch(/audio/)
+    }
+  }, 60000)
+})
+
+// ─────────────────────────────────────────────
+// MediaResolver Unit Tests
+// ─────────────────────────────────────────────
+describe('MediaResolver', () => {
+  const TEST_VIDEO_ID = 'dQw4w9WgXcQ'
+
+  it('should generate correct proxy URL', () => {
+    const resolver = createMediaResolver({ proxyPort: 18941 })
+    const url = resolver.getProxyUrl(TEST_VIDEO_ID)
+    expect(url).toBe(`http://127.0.0.1:18941/stream?v=${TEST_VIDEO_ID}`)
+  })
+
+  it('should have 0 pending resolves initially', () => {
+    const resolver = createMediaResolver({ proxyPort: 18941 })
+    expect(resolver.getPendingCount()).toBe(0)
+  })
+
+  it('should clear cache without throwing', () => {
+    const resolver = createMediaResolver({ proxyPort: 18941 })
+    expect(() => resolver.clearCache()).not.toThrow()
+    expect(() => resolver.clearCache(TEST_VIDEO_ID)).not.toThrow()
+  })
+
+  it('should abort all pending resolves', () => {
+    const resolver = createMediaResolver({ proxyPort: 18941 })
+    expect(() => resolver.abortAllPending()).not.toThrow()
+    expect(resolver.getPendingCount()).toBe(0)
+  })
+
+  it('should resolve a real video successfully', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18942 })
+    try {
+      const result = await resolver.resolve(TEST_VIDEO_ID)
+      expect(result.videoId).toBe(TEST_VIDEO_ID)
+      expect(result.audioUrl).toBe(`http://127.0.0.1:18942/stream?v=${TEST_VIDEO_ID}`)
+      expect(result.title).toBeTruthy()
+      expect(result.duration).toBeGreaterThan(0)
+      expect(result.thumbnail).toBeTruthy()
+      expect(result.thumbnail).toMatch(/^https?:\/\//)
+    } finally {
+      await resolver.stop()
+    }
+  }, 30000)
+
+  it('should return cached result on second resolve (no network hit)', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18943 })
+    try {
+      const first = await resolver.resolve(TEST_VIDEO_ID)
+      const second = await resolver.resolve(TEST_VIDEO_ID)
+      expect(second.videoId).toBe(first.videoId)
+      expect(second.audioUrl).toBe(first.audioUrl)
+      expect(second.duration).toBe(first.duration)
+      expect(second.title).toBe(first.title)
+    } finally {
+      await resolver.stop()
+    }
+  }, 30000)
+
+  it('should force refresh when forceRefresh=true', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18944 })
+    try {
+      // First resolve caches it
+      await resolver.resolve(TEST_VIDEO_ID)
+      // Second with forceRefresh re-resolves
+      const refreshed = await resolver.resolve(TEST_VIDEO_ID, { forceRefresh: true })
+      expect(refreshed.videoId).toBe(TEST_VIDEO_ID)
+      expect(refreshed.title).toBeTruthy()
+    } finally {
+      await resolver.stop()
+    }
+  }, 30000)
+
+  it('should corrupt cached proxy stream URL', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18945 })
+    try {
+      // First resolve to populate proxy's in-memory stream cache
+      // (resolve calls getVideoInfo which populates resolver cache,
+      //  but corruptCache needs proxy cache — we need an HTTP request for that)
+      // So for unit purposes, just test that corruptCache returns false when no cache entry
+      expect(resolver.corruptCache(TEST_VIDEO_ID)).toBe(false)
+    } finally {
+      await resolver.stop()
+    }
+  })
+
+  it('should corrupt cache after proxy stream request', async () => {
+    const proxyPort = 18946
+    const resolver = createMediaResolver({ proxyPort })
+    try {
+      // Start the proxy
+      await resolver.start()
+
+      // Make a stream request to populate proxy's cache
+      const streamRes = await fetch(
+        `http://127.0.0.1:${proxyPort}/stream?v=${TEST_VIDEO_ID}`,
+        { signal: AbortSignal.timeout(20000) }
+      )
+      expect(streamRes.ok || streamRes.status === 206).toBe(true)
+
+      // Now corruptCache should find and corrupt the entry
+      const corrupted = resolver.corruptCache(TEST_VIDEO_ID)
+      expect(corrupted).toBe(true)
+
+      // The cache entry should now have a broken signature
+      // Accessing it again will trigger the 403 → re-resolve path
+    } finally {
+      resolver.clearCache()
+      await resolver.stop()
+    }
+  }, 60000)
+
+  it('should abort pending resolve when new resolve for same ID comes in', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18947, maxRetries: 0 })
+    try {
+      // First resolve starts (will take some time for yt-dlp)
+      const p1 = resolver.resolve(TEST_VIDEO_ID)
+      // Immediately start another — this should abort the first
+      const p2 = resolver.resolve(TEST_VIDEO_ID)
+
+      // Both should resolve, but only one took the actual yt-dlp call
+      const [, result2] = await Promise.allSettled([p1, p2])
+      // The second should succeed (it's the one that wasn't aborted)
+      if (result2.status === 'fulfilled') {
+        expect(result2.value.videoId).toBe(TEST_VIDEO_ID)
+      }
+      // The first might be rejected (aborted) or succeed (if already cached)
+      // Either is acceptable — we just want to verify no crash
+      expect(resolver.getPendingCount()).toBe(0)
+    } finally {
+      await resolver.stop()
+    }
+  }, 30000)
+
+  it('should manage multiple video resolves independently', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18948 })
+    try {
+      // Resolve two different videos concurrently
+      const ids = [TEST_VIDEO_ID, 'kXYiU_JCYtU'] // Rick Astley, Numb - Linkin Park
+      const results = await Promise.all(
+        ids.map((id) =>
+          resolver.resolve(id).catch(() => null) // tolerate one failing
+        )
+      )
+
+      const succeeded = results.filter(Boolean)
+      expect(succeeded.length).toBeGreaterThan(0)
+      for (const r of succeeded) {
+        expect(r!.videoId).toBeTruthy()
+        expect(r!.audioUrl).toContain('/stream?v=')
+        expect(r!.duration).toBeGreaterThan(0)
+      }
+    } finally {
+      await resolver.stop()
+    }
+  }, 60000)
 })

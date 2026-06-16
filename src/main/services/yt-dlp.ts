@@ -3,9 +3,22 @@
 import { execFile, exec } from 'child_process'
 import { promisify } from 'util'
 import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
 
 const execFileAsync = promisify(execFile)
 const execAsync = promisify(exec)
+
+// Environment with Deno on PATH for yt-dlp JS runtime support
+function getYtDlpEnv(): NodeJS.ProcessEnv {
+  const denoDir = path.join(os.homedir(), '.deno', 'bin')
+  const currentPath = process.env.PATH || ''
+  // Only extend PATH if Deno isn't already on it
+  if (!currentPath.includes(denoDir)) {
+    return { ...process.env, PATH: `${denoDir}:${currentPath}` }
+  }
+  return process.env
+}
 
 // Find yt-dlp on PATH. Try common locations if not found.
 const YT_DLP_PATHS = [
@@ -137,7 +150,7 @@ export async function getVideoInfo(
         '-j',
         videoId,
       ],
-      { timeout: timeoutMs, maxBuffer: 1024 * 1024, signal }
+      { timeout: timeoutMs, maxBuffer: 1024 * 1024, signal, killSignal: 'SIGKILL', env: getYtDlpEnv() }
     )
 
     const info = JSON.parse(stdout) as YTDlpInfo
@@ -153,7 +166,8 @@ export async function getVideoInfo(
     }
 
     // Timeout: process was killed by execFile timeout (not by abort signal)
-    if (err.killed && err.signal === 'SIGTERM' && !signal?.aborted) {
+    // killSignal changed to SIGKILL, so check for any kill signal
+    if (err.killed && err.signal && !signal?.aborted) {
       throw new YTDlpError(
         `yt-dlp timed out after ${timeoutMs}ms for video ${videoId}`,
         'TIMEOUT',

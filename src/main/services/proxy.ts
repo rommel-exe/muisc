@@ -18,6 +18,8 @@ export interface StreamCache {
 export interface ProxyOptions {
   port?: number
   cacheTtlMs?: number  // default: 5 hours (YouTube URLs last ~6h)
+  /** Callback for CDN 403/410 recovery — clears MediaResolver cache and re-resolves stream URL */
+  onReResolve?: (videoId: string) => Promise<string>
 }
 
 export class ProxyError extends Error {
@@ -36,11 +38,17 @@ export class ProxyError extends Error {
  * Returns the server instance and helper methods.
  */
 export function createProxy(options: ProxyOptions = {}) {
-  const port = options.port ?? PROXY_PORT
-  const cacheTtlMs = options.cacheTtlMs ?? 5 * 60 * 60 * 1000
+  const {
+    port = PROXY_PORT,
+    cacheTtlMs = 5 * 60 * 60 * 1000,
+    onReResolve,
+  } = options
 
   // In-memory cache: videoId → StreamCache
   const streamCache = new Map<string, StreamCache>()
+
+  // Track in-flight yt-dlp resolves so we can abort stale ones
+  const pendingResolves = new Map<string, AbortController>()
 
   const server = http.createServer(async (req, res) => {
     // CORS headers on every response
@@ -96,6 +104,8 @@ export function createProxy(options: ProxyOptions = {}) {
   /**
    * Get or resolve a stream URL for a video ID.
    * Re-resolves if cache is expired.
+   * Aborts any previous in-flight resolve for the same video ID
+   * to prevent yt-dlp process pile-up on rapid skips.
    */
   async function resolveStreamUrl(videoId: string): Promise<string> {
     const cached = streamCache.get(videoId)
@@ -105,23 +115,49 @@ export function createProxy(options: ProxyOptions = {}) {
       return cached.streamUrl
     }
 
-    // Re-resolve via yt-dlp
-    const info = await getVideoInfo(videoId)
-    const bestFormat = info.formats
-      .filter((f) => f.acodec !== 'none' && f.url)
-      .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-
-    if (!bestFormat?.url) {
-      throw new ProxyError('No audio format found', 'STREAM_NOT_FOUND')
+    // Abort any previous pending resolve for this video ID
+    const existing = pendingResolves.get(videoId)
+    if (existing) {
+      existing.abort()
+      console.log(`[Proxy] Aborted stale resolve for ${videoId}`)
     }
 
-    streamCache.set(videoId, {
-      streamUrl: bestFormat.url,
-      cachedAt: now,
-      contentType: `audio/${bestFormat.ext}`,
-    })
+    const controller = new AbortController()
+    pendingResolves.set(videoId, controller)
 
-    return bestFormat.url
+    try {
+      // Re-resolve via yt-dlp with retry (handles transient GPU-crash kills)
+      let lastError: Error | undefined
+      for (let attempt = 0; attempt <= 1; attempt++) {
+        try {
+          const info = await getVideoInfo(videoId, 15000, controller.signal)
+          const bestFormat = info.formats
+            .filter((f) => f.acodec !== 'none' && f.url)
+            .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+
+          if (!bestFormat?.url) {
+            throw new ProxyError('No audio format found', 'STREAM_NOT_FOUND')
+          }
+
+          streamCache.set(videoId, {
+            streamUrl: bestFormat.url,
+            cachedAt: Date.now(),
+            contentType: `audio/${bestFormat.ext}`,
+          })
+
+          return bestFormat.url
+        } catch (err: any) {
+          if (controller.signal.aborted) throw err
+          lastError = err
+          if (attempt < 1) {
+            await new Promise((r) => setTimeout(r, 1000))
+          }
+        }
+      }
+      throw lastError ?? new Error('Stream resolve failed')
+    } finally {
+      pendingResolves.delete(videoId)
+    }
   }
 
   /**
@@ -166,15 +202,19 @@ export function createProxy(options: ProxyOptions = {}) {
             }
           }
 
-          // Handle 403 — stale URL, re-resolve
-          if (proxyRes.statusCode === 403) {
-            console.log(`[Proxy] CDN returned 403 for ${videoId}, re-resolving...`)
+          // Handle 403/410 — stale URL, re-resolve
+          if (proxyRes.statusCode === 403 || proxyRes.statusCode === 410) {
+            console.log(`[Proxy] CDN returned ${proxyRes.statusCode} for ${videoId}, re-resolving...`)
             streamCache.delete(videoId)
-            resolveStreamUrl(videoId)
+            const resolveFn = onReResolve ?? resolveStreamUrl
+            resolveFn(videoId)
               .then((newUrl) => makeRequest(newUrl, redirectCount + 1))
-              .catch(() => {
-                clientRes.writeHead(502)
-                clientRes.end(JSON.stringify({ error: 'Re-resolve failed' }))
+              .catch((err) => {
+                console.error(`[Proxy] Re-resolve failed for ${videoId}:`, err.message)
+                if (!clientRes.headersSent) {
+                  clientRes.writeHead(502)
+                  clientRes.end(JSON.stringify({ error: 'Re-resolve failed' }))
+                }
               })
             return
           }

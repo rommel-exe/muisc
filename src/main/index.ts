@@ -4,6 +4,9 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createMediaResolver } from './services/media-resolver'
 import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 
+// Disable hardware acceleration to prevent GPU process crash on macOS
+app.disableHardwareAcceleration()
+
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
 
@@ -60,6 +63,7 @@ app.whenReady().then(async () => {
   })
 
   createWindow()
+  console.log('[App] Window created, app running')
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

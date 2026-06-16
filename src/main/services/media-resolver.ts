@@ -32,7 +32,61 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     cacheTtlMs = 5 * 60 * 60 * 1000,
   } = config
 
-  const proxy = createProxy({ port: proxyPort, cacheTtlMs })
+  /**
+   * Re-resolve callback for proxy's CDN 403/410 recovery.
+   * Clears MediaResolver's cache and returns a fresh CDN stream URL.
+   */
+  const reResolveStream = async (videoId: string): Promise<string> => {
+    // Clear resolve cache so next resolve-track gets fresh metadata
+    resolveCache.delete(videoId)
+
+    // Abort any pending resolve for this video ID
+    const existing = pendingResolves.get(videoId)
+    if (existing) {
+      existing.abort()
+      console.log(`[MediaResolver] Aborted pending resolve for ${videoId} during 403/410 recovery`)
+    }
+
+    const controller = new AbortController()
+    pendingResolves.set(videoId, controller)
+
+    try {
+      // Retry once on transient failures (GPU process crash, etc.)
+      let lastError: Error | undefined
+      for (let attempt = 0; attempt <= 1; attempt++) {
+        try {
+          const info = await getVideoInfo(videoId, 15000, controller.signal)
+          const bestFormat = info.formats
+            .filter((f) => f.acodec !== 'none' && f.url)
+            .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+
+          if (!bestFormat?.url) {
+            throw new Error('No audio format found during 403/410 recovery')
+          }
+
+          // Update proxy's stream cache with new CDN URL
+          proxy.setStreamCacheEntry(videoId, {
+            streamUrl: bestFormat.url,
+            cachedAt: Date.now(),
+            contentType: `audio/${bestFormat.ext}`,
+          })
+
+          return bestFormat.url
+        } catch (err: any) {
+          if (controller.signal.aborted) throw err
+          lastError = err
+          if (attempt < 1) {
+            await new Promise((r) => setTimeout(r, 1000))
+          }
+        }
+      }
+      throw lastError ?? new Error('Stream re-resolve failed')
+    } finally {
+      pendingResolves.delete(videoId)
+    }
+  }
+
+  const proxy = createProxy({ port: proxyPort, cacheTtlMs, onReResolve: reResolveStream })
 
   // LRU cache: videoId → ResolvedStream (minus audioUrl, which is derived from proxy)
   const resolveCache = new Map<string, { info: ResolvedStream; cachedAt: number }>()
@@ -115,7 +169,7 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
           // Only retry on retryable errors
           const isRetryable =
             err instanceof YTDlpError &&
-            (err.code === 'TIMEOUT')
+            (err.code === 'TIMEOUT' || err.code === 'PARSE_ERROR')
 
           if (!isRetryable || attempt >= maxRetries) {
             throw err

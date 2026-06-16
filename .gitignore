@@ -54,3 +54,5 @@ wireframes.html
 
 # Electron builder
 release/
+*.part
+*.part-Fragmented
