@@ -75,7 +75,7 @@ export function createProxy(options: ProxyOptions = {}) {
 
       try {
         const streamUrl = await resolveStreamUrl(videoId)
-        proxyStream(streamUrl, req, res)
+        proxyStream(streamUrl, videoId, req, res)
       } catch (err: any) {
         console.error(`[Proxy] Failed to stream ${videoId}:`, err.message)
         if (err instanceof YTDlpError && err.code === 'INVALID_VIDEO') {
@@ -127,8 +127,14 @@ export function createProxy(options: ProxyOptions = {}) {
   /**
    * Proxy an HTTPS stream from YouTube CDN to the client.
    * Follows redirects (YouTube CDN uses 302/303 redirects).
+   * Handles 403 by clearing cache, re-resolving, and retrying.
    */
-  function proxyStream(streamUrl: string, clientReq: http.IncomingMessage, clientRes: http.ServerResponse) {
+  function proxyStream(
+    streamUrl: string,
+    videoId: string,
+    clientReq: http.IncomingMessage,
+    clientRes: http.ServerResponse
+  ) {
     const makeRequest = (targetUrl: string, redirectCount = 0) => {
       if (redirectCount > 5) {
         clientRes.writeHead(502, { 'Content-Type': 'application/json' })
@@ -155,6 +161,19 @@ export function createProxy(options: ProxyOptions = {}) {
               makeRequest(location, redirectCount + 1)
               return
             }
+          }
+
+          // Handle 403 — stale URL, re-resolve
+          if (proxyRes.statusCode === 403) {
+            console.log(`[Proxy] CDN returned 403 for ${videoId}, re-resolving...`)
+            streamCache.delete(videoId)
+            resolveStreamUrl(videoId)
+              .then((newUrl) => makeRequest(newUrl, redirectCount + 1))
+              .catch(() => {
+                clientRes.writeHead(502)
+                clientRes.end(JSON.stringify({ error: 'Re-resolve failed' }))
+              })
+            return
           }
 
           // Forward response headers
@@ -228,5 +247,27 @@ export function createProxy(options: ProxyOptions = {}) {
     }
   }
 
-  return { server, start, stop, clearCache, streamCache }
+  /**
+   * Get a stream cache entry by video ID.
+   */
+  function getStreamCacheEntry(videoId: string): StreamCache | undefined {
+    return streamCache.get(videoId)
+  }
+
+  /**
+   * Set a stream cache entry for a video ID.
+   */
+  function setStreamCacheEntry(videoId: string, entry: StreamCache): void {
+    streamCache.set(videoId, entry)
+  }
+
+  return {
+    server,
+    start,
+    stop,
+    clearCache,
+    getStreamCacheEntry,
+    setStreamCacheEntry,
+    streamCache,
+  }
 }

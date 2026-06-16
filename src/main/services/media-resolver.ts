@@ -37,6 +37,9 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
   // LRU cache: videoId → ResolvedStream (minus audioUrl, which is derived from proxy)
   const resolveCache = new Map<string, { info: ResolvedStream; cachedAt: number }>()
 
+  // Track pending resolves so we can abort duplicates
+  const pendingResolves = new Map<string, AbortController>()
+
   /**
    * Get a proxy URL for a video ID.
    * This is the URL the renderer should load into HTMLAudioElement.
@@ -50,9 +53,10 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    *
    * Flow:
    * 1. Check resolve cache (skip if forceRefresh)
-   * 2. Call yt-dlp to get video metadata
-   * 3. Cache the metadata
-   * 4. Return ResolvedStream with the proxy URL
+   * 2. Abort any previous pending resolve for this video ID
+   * 3. Call yt-dlp to get video metadata (with abort signal)
+   * 4. Cache the metadata
+   * 5. Return ResolvedStream with the proxy URL
    *
    * The proxy handles the actual CDN streaming — this just provides the metadata and URL.
    */
@@ -70,44 +74,63 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       }
     }
 
-    // Resolve via yt-dlp with retry
-    let lastError: Error | undefined
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      try {
-        const info = await getVideoInfo(videoId)
-
-        const resolved: ResolvedStream = {
-          videoId: info.id,
-          audioUrl: getProxyUrl(videoId),
-          duration: info.duration,
-          title: info.title,
-          thumbnail: info.thumbnail,
-        }
-
-        // Cache the result
-        resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
-        evictIfNeeded()
-
-        return resolved
-      } catch (err: any) {
-        lastError = err
-
-        // Only retry on retryable errors
-        const isRetryable =
-          err instanceof YTDlpError &&
-          (err.code === 'TIMEOUT')
-
-        if (!isRetryable || attempt >= maxRetries) {
-          throw err
-        }
-
-        // Wait 1s before retry
-        await new Promise((r) => setTimeout(r, 1000))
-      }
+    // Abort any previous pending resolve for this video ID
+    const existing = pendingResolves.get(videoId)
+    if (existing) {
+      existing.abort()
+      console.log(`[MediaResolver] Aborted pending resolve for ${videoId}`)
     }
 
-    // Should never reach here, but TypeScript needs it
-    throw lastError ?? new Error('Unknown resolve error')
+    const controller = new AbortController()
+    pendingResolves.set(videoId, controller)
+
+    // Resolve via yt-dlp with retry
+    let lastError: Error | undefined
+    try {
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const info = await getVideoInfo(videoId, 15000, controller.signal)
+
+          const resolved: ResolvedStream = {
+            videoId: info.id,
+            audioUrl: getProxyUrl(videoId),
+            duration: info.duration,
+            title: info.title,
+            thumbnail: info.thumbnail,
+          }
+
+          // Cache the result
+          resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
+          evictIfNeeded()
+
+          return resolved
+        } catch (err: any) {
+          // Don't retry if aborted
+          if (controller.signal.aborted) {
+            throw err
+          }
+
+          lastError = err
+
+          // Only retry on retryable errors
+          const isRetryable =
+            err instanceof YTDlpError &&
+            (err.code === 'TIMEOUT')
+
+          if (!isRetryable || attempt >= maxRetries) {
+            throw err
+          }
+
+          // Wait 1s before retry
+          await new Promise((r) => setTimeout(r, 1000))
+        }
+      }
+
+      // Should never reach here, but TypeScript needs it
+      throw lastError ?? new Error('Unknown resolve error')
+    } finally {
+      pendingResolves.delete(videoId)
+    }
   }
 
   /**
@@ -156,6 +179,46 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     console.log('[MediaResolver] Stopped')
   }
 
+  /**
+   * Corrupt the cached stream URL for a video to trigger a 403 error.
+   * Useful for testing 403 recovery in the proxy.
+   * Clears the resolve cache so next resolve ignores cached metadata.
+   * Returns true if a proxy cache entry was found and corrupted.
+   */
+  function corruptCache(videoId: string): boolean {
+    // Clear resolve cache so next resolve ignores cached metadata
+    resolveCache.delete(videoId)
+
+    // Corrupt proxy cache entry to trigger 403
+    const cached = proxy.getStreamCacheEntry(videoId)
+    if (!cached) return false
+
+    proxy.setStreamCacheEntry(videoId, {
+      ...cached,
+      streamUrl: cached.streamUrl.replace(/sig=[^&]+/, 'sig=BROKEN_SIGNATURE'),
+    })
+    console.log(`[MediaResolver] Corrupted cache for ${videoId}`)
+    return true
+  }
+
+  /**
+   * Get the number of pending (in-flight) resolve operations.
+   */
+  function getPendingCount(): number {
+    return pendingResolves.size
+  }
+
+  /**
+   * Abort all pending resolve operations.
+   */
+  function abortAllPending(): void {
+    for (const [videoId, controller] of pendingResolves) {
+      controller.abort()
+      console.log(`[MediaResolver] Aborted pending resolve for ${videoId}`)
+    }
+    pendingResolves.clear()
+  }
+
   return {
     resolve,
     clearCache,
@@ -163,6 +226,12 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     stop,
     /** Expose for testing */
     getProxyUrl,
+    /** Corrupt cached stream URL for testing 403 recovery */
+    corruptCache,
+    /** Number of in-flight resolve operations */
+    getPendingCount,
+    /** Abort all pending resolve operations */
+    abortAllPending,
   }
 }
 
