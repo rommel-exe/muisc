@@ -96,13 +96,16 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - name: Create GitHub release (if not exists)
+      - name: Publish Linux (gh release create + upload)
         run: |
           RELEASE_TAG="v$(node -p "require('./package.json').version")"
+          # Create release (idempotent) — gh CLI works, electron-builder's publisher doesn't
           gh release create "$RELEASE_TAG" --title "Muisc $RELEASE_TAG" --generate-notes 2>/dev/null || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - run: npx electron-builder --publish always
+          # Package (no publish — broken for this repo)
+          npx electron-builder --publish never
+          # Upload assets via gh CLI
+          gh release upload "$RELEASE_TAG" dist/*.AppImage 2>/dev/null || true
+          gh release upload "$RELEASE_TAG" dist/latest-linux.yml 2>/dev/null || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -120,7 +123,13 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - run: npx electron-builder --publish always
+      - name: Publish macOS (package + upload)
+        run: |
+          RELEASE_TAG="v$(node -p "require('./package.json').version")"
+          npx electron-builder --publish never
+          gh release upload "$RELEASE_TAG" dist/*.dmg dist/*.dmg.blockmap 2>/dev/null || true
+          gh release upload "$RELEASE_TAG" dist/*.zip dist/*.zip.blockmap 2>/dev/null || true
+          gh release upload "$RELEASE_TAG" dist/latest-mac.yml 2>/dev/null || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -138,6 +147,12 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
-      - run: npx electron-builder --publish always
+      - name: Publish Windows (package + upload)
+        shell: bash
+        run: |
+          RELEASE_TAG="v$(node -p "require('./package.json').version")"
+          npx electron-builder --publish never
+          gh release upload "$RELEASE_TAG" dist/*.exe dist/*.exe.blockmap 2>/dev/null || true
+          gh release upload "$RELEASE_TAG" dist/latest.yml 2>/dev/null || true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
