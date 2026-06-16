@@ -1,6 +1,11 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { createMediaResolver } from './services/media-resolver'
+import { registerHandlers, unregisterHandlers } from './ipc/handlers'
+
+// Create the media resolver — owns the proxy and cache
+const mediaResolver = createMediaResolver()
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -38,9 +43,15 @@ function createWindow(): void {
 // This method will be called when Electron has finished
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   // Set app user model id for windows
   electronApp.setAutoLaunch(false)
+
+  // Start the media resolver (starts the proxy server)
+  await mediaResolver.start()
+
+  // Register IPC handlers
+  registerHandlers(mediaResolver)
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -55,6 +66,12 @@ app.whenReady().then(() => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Graceful shutdown: stop proxy and cleanup
+app.on('will-quit', async () => {
+  unregisterHandlers()
+  await mediaResolver.stop()
 })
 
 // Quit when all windows are closed, except on macOS.

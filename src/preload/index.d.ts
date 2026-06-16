@@ -1,8 +1,21 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
+interface ResolvedStream {
+  videoId: string
+  audioUrl: string
+  duration: number
+  title: string
+  thumbnail: string
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
-    api: unknown
+    api: {
+      resolveTrack: (
+        videoId: string,
+        opts?: { forceRefresh?: boolean }
+      ) => Promise<ResolvedStream>
+    }
   }
 }

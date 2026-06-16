@@ -1,8 +1,15 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
 // Custom APIs for renderer
-const api = {}
+const api = {
+  /**
+   * Resolve a video ID to a playable audio source.
+   * Returns ResolvedStream with proxy URL.
+   */
+  resolveTrack: (videoId: string, opts?: { forceRefresh?: boolean }) =>
+    ipcRenderer.invoke('resolve-track', videoId, opts),
+}
 
 // Use `contextBridge` APIs to expose Electron APIs to
 // renderer only if context isolation is enabled, otherwise
