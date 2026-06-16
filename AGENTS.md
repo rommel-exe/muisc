@@ -102,4 +102,4 @@ Don't skip phases. Each builds on the previous:
 - Frameless window needs `titleBarStyle: 'hidden'` + custom drag regions
 - Innertube is unofficial — can break without notice
 - macOS needs `zip` target alongside `dmg` for auto-update (`latest-mac.yml` generation)
-- electron-vite@^5 targets Vite 6 — don't upgrade Vite separately without checking compatibility
+- electron-vite@^3 bundles Vite 6 internally — don't upgrade Vite or electron-vite independently without checking compatibility
