@@ -48,5 +48,9 @@ yarn-error.log*
 interview.md
 .ignore
 
+# Wireframe mockups (design exploration, not app code)
+src/renderer/src/wireframes/
+wireframes.html
+
 # Electron builder
 release/
