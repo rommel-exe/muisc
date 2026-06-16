@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import type { MediaResolver } from '../services/media-resolver'
 import type { ResolveOptions } from '../services/media-resolver'
+import { IPC_CHANNELS } from '../../shared/constants'
 
 /**
  * Register all IPC handlers for the media resolver pipeline.
@@ -43,6 +44,22 @@ export function registerHandlers(resolver: MediaResolver): void {
     return true
   })
 
+  /**
+   * Prefetch upcoming queue tracks into the LRU cache.
+   * Called by the renderer when the queue changes or playback advances.
+   * Fire-and-forget — errors are handled internally by the preloader.
+   */
+  ipcMain.handle(IPC_CHANNELS.PREFETCH_QUEUE, async (_event, upcomingVideoIds: string[]) => {
+    if (!Array.isArray(upcomingVideoIds)) {
+      throw new Error('Invalid upcomingVideoIds: expected an array of strings')
+    }
+    // Don't await — prefetch is best-effort background work
+    resolver.prefetchQueue(upcomingVideoIds).catch(() => {
+      // Errors are logged internally in executeBackgroundPreload
+    })
+    return true
+  })
+
   console.log('[IPC] Handlers registered')
 }
 
@@ -54,5 +71,6 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('test-corrupt-cache')
   ipcMain.removeAllListeners('test-pending-count')
   ipcMain.removeAllListeners('test-abort-all')
+  ipcMain.removeAllListeners(IPC_CHANNELS.PREFETCH_QUEUE)
   console.log('[IPC] Handlers unregistered')
 }

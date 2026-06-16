@@ -17,6 +17,9 @@ declare global {
         opts?: { forceRefresh?: boolean }
       ) => Promise<ResolvedStream>
 
+      /** Prefetch upcoming queue tracks into the LRU cache */
+      prefetchQueue: (upcomingVideoIds: string[]) => Promise<boolean>
+
       // Debug/test methods
       testCorruptCache: (videoId: string) => Promise<boolean>
       testPendingCount: () => Promise<number>

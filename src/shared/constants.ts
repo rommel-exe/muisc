@@ -37,7 +37,10 @@ export const IPC_CHANNELS = {
 
   // Updater
   CHECK_FOR_UPDATES: 'check-for-updates',
-  UPDATE_DOWNLOADED: 'update-downloaded'
+  UPDATE_DOWNLOADED: 'update-downloaded',
+
+  // Preloader
+  PREFETCH_QUEUE: 'prefetch-queue'
 } as const
 
 // Default playback config

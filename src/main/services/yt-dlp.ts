@@ -52,6 +52,31 @@ export interface YTDlpInfo {
     url: string
     abr?: number // audio bitrate
   }>
+  // Rich metadata (available from -j JSON output — no extra flags needed)
+  chapters?: Array<{
+    title: string
+    start_time: number
+    end_time: number
+  }>
+  uploader?: string
+  channel?: string
+  artist?: string
+  track?: string
+  album?: string
+  thumbnails?: Array<{
+    url: string
+    height?: number
+    width?: number
+  }>
+}
+
+export interface ExtractionOptions {
+  /** Extraction tier hint (default: 'foreground') */
+  mode?: 'foreground' | 'background'
+  /** Process timeout in ms (default: 15000) */
+  timeoutMs?: number
+  /** Abort signal for cancellation */
+  signal?: AbortSignal
 }
 
 export class YTDlpError extends Error {
@@ -132,12 +157,18 @@ function isVideoUnavailable(stderr: string): boolean {
 /**
  * Extract video metadata and stream info from a YouTube video ID.
  * Uses yt-dlp -j for JSON output.
+ *
+ * @param videoId - YouTube video ID
+ * @param options - Extraction mode, timeout, and abort signal
+ *   Foreground mode uses android+web player client for fastest extraction.
+ *   Background mode uses the same flags (all metadata is already in -j output).
+ *   The mode is primarily a scheduling/tracking hint for the caller.
  */
 export async function getVideoInfo(
   videoId: string,
-  timeoutMs: number = 15000,
-  signal?: AbortSignal
+  options?: ExtractionOptions
 ): Promise<YTDlpInfo> {
+  const { mode: _mode, timeoutMs = 15000, signal } = options ?? {}
   const binary = await findYTDlp()
 
   try {
@@ -148,6 +179,9 @@ export async function getVideoInfo(
         'bestaudio[ext=m4a]/bestaudio/best',
         '--no-playlist',
         '-j',
+        '--extractor-args',
+        'youtube:player_client=android,web',
+        '--no-warnings',
         videoId,
       ],
       { timeout: timeoutMs, maxBuffer: 1024 * 1024, signal, killSignal: 'SIGKILL', env: getYtDlpEnv() }

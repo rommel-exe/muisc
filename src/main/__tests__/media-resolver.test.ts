@@ -70,8 +70,8 @@ describe('yt-dlp Service', () => {
 
   // ── Test A: Timeout throws YTDLP_TIMEOUT ──
   it('should throw TIMEOUT error when timeout is too short (1ms)', async () => {
-    await expect(getVideoInfo(TEST_VIDEO_ID, 1)).rejects.toThrow(YTDlpError)
-    await expect(getVideoInfo(TEST_VIDEO_ID, 1)).rejects.toMatchObject({
+    await expect(getVideoInfo(TEST_VIDEO_ID, { timeoutMs: 1 })).rejects.toThrow(YTDlpError)
+    await expect(getVideoInfo(TEST_VIDEO_ID, { timeoutMs: 1 })).rejects.toMatchObject({
       code: 'TIMEOUT',
     })
   }, 10000)
@@ -88,7 +88,7 @@ describe('yt-dlp Service', () => {
     controller.abort()
 
     await expect(
-      getVideoInfo(TEST_VIDEO_ID, 30000, controller.signal)
+      getVideoInfo(TEST_VIDEO_ID, { timeoutMs: 30000, signal: controller.signal })
     ).rejects.toMatchObject({ code: 'ABORTED' })
   }, 10000)
 })
@@ -133,7 +133,8 @@ describe('HTTP Proxy', () => {
 
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toBeTruthy()
-    expect(res.headers.get('content-type')).toMatch(/audio/)
+    // YouTube serves audio tracks in MP4 containers labeled video/mp4
+    expect(res.headers.get('content-type')).toMatch(/^(audio|video)\//)
     expect(res.headers.get('access-control-allow-origin')).toBe('*')
 
     // Should have some content
@@ -223,13 +224,14 @@ describe('HTTP Proxy', () => {
     const succeeded = results.filter((r) => r.status === 'fulfilled')
     expect(succeeded.length).toBeGreaterThanOrEqual(1)
 
-    // The successful one must have valid audio response
+    // The successful one must have valid response
     const fulfilled = succeeded[0]
     if (fulfilled?.status === 'fulfilled') {
       const res = fulfilled.value
       const ok = res.status === 200 || res.status === 206
       expect(ok).toBe(true)
-      expect(res.headers.get('content-type')).toMatch(/audio/)
+      // YouTube serves audio tracks in MP4 containers labeled video/mp4
+      expect(res.headers.get('content-type')).toMatch(/^(audio|video)\//)
     }
   }, 60000)
 })

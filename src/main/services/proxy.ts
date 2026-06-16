@@ -130,7 +130,7 @@ export function createProxy(options: ProxyOptions = {}) {
       let lastError: Error | undefined
       for (let attempt = 0; attempt <= 1; attempt++) {
         try {
-          const info = await getVideoInfo(videoId, 15000, controller.signal)
+          const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: controller.signal })
           const bestFormat = info.formats
             .filter((f) => f.acodec !== 'none' && f.url)
             .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]

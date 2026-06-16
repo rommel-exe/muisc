@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import { IPC_CHANNELS } from '../shared/constants'
 
 // Custom APIs for renderer
 const api = {
@@ -9,6 +10,13 @@ const api = {
    */
   resolveTrack: (videoId: string, opts?: { forceRefresh?: boolean }) =>
     ipcRenderer.invoke('resolve-track', videoId, opts),
+
+  /**
+   * Prefetch upcoming queue tracks into the LRU cache.
+   * Keeps the next N tracks warm by resolving them in background mode.
+   */
+  prefetchQueue: (upcomingVideoIds: string[]): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.PREFETCH_QUEUE, upcomingVideoIds),
 
   /**
    * Debug: Corrupt cached stream URL to test 403 recovery.
