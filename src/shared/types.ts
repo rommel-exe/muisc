@@ -47,3 +47,11 @@ export interface SearchResult {
   thumbnail: string
   videoId: string
 }
+
+export interface ResolvedStream {
+  videoId: string
+  audioUrl: string // localhost proxy URL, ephemeral
+  duration: number
+  title: string
+  thumbnail: string
+}
