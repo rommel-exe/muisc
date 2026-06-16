@@ -14,6 +14,9 @@ export function registerHandlers(resolver: MediaResolver): void {
   ipcMain.handle(
     'resolve-track',
     async (_event, videoId: string, opts?: ResolveOptions) => {
+      if (!videoId || typeof videoId !== 'string') {
+        throw new Error('Invalid videoId: expected a non-empty string')
+      }
       return resolver.resolve(videoId, opts)
     }
   )
