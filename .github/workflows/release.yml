@@ -96,6 +96,11 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
+      - name: Create GitHub release (if not exists)
+        run: |
+          gh release create "${{ github.ref_name }}" --title "Muisc ${{ github.ref_name }}" --generate-notes 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npx electron-builder --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
