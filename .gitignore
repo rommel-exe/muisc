@@ -20,9 +20,8 @@ out/
 .env.local
 .env.*.local
 
-# IDE (track launch config, ignore the rest)
-.vscode/*
-!.vscode/launch.json
+# IDE
+.vscode/
 .idea/
 *.swp
 *.swo
@@ -37,13 +36,17 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Deepwork progress files
-.slim/deepwork/
+# Deepwork / dev progress
+.slim/
 
 # SQLite (keep schema, ignore data files)
 *.db
 *.db-journal
 *.db-wal
+
+# Dev docs & agent config (not app code)
+interview.md
+.ignore
 
 # Electron builder
 release/

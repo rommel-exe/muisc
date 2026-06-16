@@ -1,3 +1,0 @@
-# OpenCode: don't ignore deepwork progress files (even though git ignores them)
-!.slim/deepwork/
-!.slim/deepwork/**
