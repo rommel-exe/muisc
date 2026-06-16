@@ -16,6 +16,11 @@ declare global {
         videoId: string,
         opts?: { forceRefresh?: boolean }
       ) => Promise<ResolvedStream>
+
+      // Debug/test methods
+      testCorruptCache: (videoId: string) => Promise<boolean>
+      testPendingCount: () => Promise<number>
+      testAbortAll: () => Promise<boolean>
     }
   }
 }

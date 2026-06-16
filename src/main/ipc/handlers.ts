@@ -21,6 +21,28 @@ export function registerHandlers(resolver: MediaResolver): void {
     }
   )
 
+  /**
+   * Debug: Corrupt the cached stream URL for a video to test 403 recovery.
+   */
+  ipcMain.handle('test-corrupt-cache', async (_event, videoId: string) => {
+    return resolver.corruptCache(videoId)
+  })
+
+  /**
+   * Debug: Get the number of pending (in-flight) resolve operations.
+   */
+  ipcMain.handle('test-pending-count', async () => {
+    return resolver.getPendingCount()
+  })
+
+  /**
+   * Debug: Abort all pending resolve operations.
+   */
+  ipcMain.handle('test-abort-all', async () => {
+    resolver.abortAllPending()
+    return true
+  })
+
   console.log('[IPC] Handlers registered')
 }
 
@@ -29,5 +51,8 @@ export function registerHandlers(resolver: MediaResolver): void {
  */
 export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('resolve-track')
+  ipcMain.removeAllListeners('test-corrupt-cache')
+  ipcMain.removeAllListeners('test-pending-count')
+  ipcMain.removeAllListeners('test-abort-all')
   console.log('[IPC] Handlers unregistered')
 }

@@ -9,6 +9,24 @@ const api = {
    */
   resolveTrack: (videoId: string, opts?: { forceRefresh?: boolean }) =>
     ipcRenderer.invoke('resolve-track', videoId, opts),
+
+  /**
+   * Debug: Corrupt cached stream URL to test 403 recovery.
+   */
+  testCorruptCache: (videoId: string): Promise<boolean> =>
+    ipcRenderer.invoke('test-corrupt-cache', videoId),
+
+  /**
+   * Debug: Get number of pending resolve operations.
+   */
+  testPendingCount: (): Promise<number> =>
+    ipcRenderer.invoke('test-pending-count'),
+
+  /**
+   * Debug: Abort all pending resolve operations.
+   */
+  testAbortAll: (): Promise<boolean> =>
+    ipcRenderer.invoke('test-abort-all'),
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to
