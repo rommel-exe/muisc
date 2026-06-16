@@ -30,7 +30,7 @@ export interface YTDlpInfo {
 export class YTDlpError extends Error {
   constructor(
     message: string,
-    public code: 'NOT_FOUND' | 'TIMEOUT' | 'INVALID_VIDEO' | 'PARSE_ERROR',
+    public code: 'NOT_FOUND' | 'TIMEOUT' | 'INVALID_VIDEO' | 'PARSE_ERROR' | 'ABORTED',
     public cause?: Error
   ) {
     super(message)
@@ -68,7 +68,8 @@ export async function findYTDlp(): Promise<string> {
  */
 export async function getVideoInfo(
   videoId: string,
-  timeoutMs: number = 15000
+  timeoutMs: number = 15000,
+  signal?: AbortSignal
 ): Promise<YTDlpInfo> {
   const binary = await findYTDlp()
 
@@ -82,16 +83,16 @@ export async function getVideoInfo(
         '-j',
         videoId,
       ],
-      { timeout: timeoutMs, maxBuffer: 1024 * 1024 }
+      { timeout: timeoutMs, maxBuffer: 1024 * 1024, signal }
     )
 
     const info = JSON.parse(stdout) as YTDlpInfo
     return info
   } catch (err: any) {
-    if (err.killed || err.signal === 'SIGTERM') {
+    if (err.name === 'AbortError' || err.killed || err.signal === 'SIGTERM') {
       throw new YTDlpError(
-        `yt-dlp timed out after ${timeoutMs}ms for video ${videoId}`,
-        'TIMEOUT',
+        `yt-dlp aborted for video ${videoId}`,
+        'ABORTED',
         err
       )
     }
