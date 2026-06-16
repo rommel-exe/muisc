@@ -19,6 +19,11 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   hardenedRuntime: true
 
+linux:
+  target:
+    - AppImage
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
 win:
   target:
     - nsis

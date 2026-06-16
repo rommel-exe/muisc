@@ -45,14 +45,13 @@ build/
 ├── entitlements.mac.plist ← macOS notarization entitlements
 
 .github/workflows/
-├── ci.yml          ← Build checks on PR/push (macOS + Windows matrix)
-└── release.yml     ← Build + publish on v* tag push
+└── release.yml     ← Merged CI+Release: type-check, build (PR/push), publish (v* tag)
 ```
 
 ## Key Config Files
 
 - `electron.vite.config.ts` — Vite config for main/preload/renderer
-- `electron-builder.yml` — Packaging config (DMG + NSIS + GitHub Releases)
+- `electron-builder.yml` — Packaging config (DMG + AppImage + NSIS + GitHub Releases)
 - `tsconfig.json` — Root project references
 - `tsconfig.node.json` — Main + preload TypeScript config
 - `tsconfig.web.json` — Renderer TypeScript config
@@ -88,9 +87,12 @@ Don't skip phases. Each builds on the previous:
 
 ## CI/CD
 
-- **CI workflow** (`.github/workflows/ci.yml`): Runs on PR/push to main. Matrix build on macOS + Windows. Type-check + build.
-- **Release workflow** (`.github/workflows/release.yml`): Triggered by `v*` tag push. Builds on both platforms, publishes to GitHub Releases as draft.
-- **Auto-update**: electron-updater checks GitHub Releases on app launch. Needs `GH_TOKEN` PAT secret for release access.
+- **Build & Release workflow** (`.github/workflows/release.yml`): Merged CI + release in one file.
+  - **Type-check** on ubuntu (all triggers)
+  - **Build** on push to main: matrix (macOS + Linux + Windows), packages with `--publish never`
+  - **Publish** on `v*` tag push: sequential — Linux creates the release, then macOS + Windows upload assets to it
+- **Auto-update**: electron-updater checks GitHub Releases on app launch. Uses `secrets.GITHUB_TOKEN` with `contents: write`.
+- electron-builder derives the GitHub release tag from `package.json` version field (prefixed with `v`)
 
 ## Gotchas
 
