@@ -6,6 +6,8 @@ import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 
 // Disable hardware acceleration to prevent GPU process crash on macOS
 app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('disable-software-rasterizer')
 
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
