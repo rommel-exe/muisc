@@ -168,24 +168,48 @@ export async function getVideoInfo(
   videoId: string,
   options?: ExtractionOptions
 ): Promise<YTDlpInfo> {
-  const { mode: _mode, timeoutMs = 15000, signal } = options ?? {}
+  const { mode = 'foreground', signal } = options ?? {}
+  // Background extraction needs more time (full client, richer data)
+  const timeoutMs = options?.timeoutMs ?? (mode === 'foreground' ? 15000 : 30000)
   const binary = await findYTDlp()
 
   try {
-    const { stdout } = await execFileAsync(
-      binary,
-      [
-        '-f',
-        'bestaudio[ext=m4a]/bestaudio/best',
-        '--no-playlist',
-        '-j',
-        '--extractor-args',
-        'youtube:player_client=android,web',
-        '--no-warnings',
-        videoId,
-      ],
-      { timeout: timeoutMs, maxBuffer: 1024 * 1024, signal, killSignal: 'SIGKILL', env: getYtDlpEnv() }
-    )
+    // Base flags required for any stream resolution
+    const args: string[] = [
+      '--no-playlist',
+      '-j',
+      '--skip-download',
+      '--no-check-certificates',
+      '--no-warnings',
+    ]
+
+    if (mode === 'foreground') {
+      // 🏎️ Foreground: mobile client — fastest path to the stream URL
+      // Avoids heavy webpage parsing, chapters/metadata are still in -j JSON
+      args.push(
+        '--extractor-args', 'youtube:player_client=android,web',
+        '--no-add-chapters',
+        '--no-embed-metadata',
+      )
+    } else {
+      // 🎛️  Background: default web client (richer data extraction)
+      // All metadata (chapters, thumbnails, uploader, etc.) is in -j JSON
+      // Note: --write-thumbnail / --embed-metadata are file-only flags
+      // and don't apply to JSON-only (-j) extraction.
+    }
+
+    args.push(videoId)
+
+    // Background payload includes richer metadata (larger JSON)
+    const maxBuffer = mode === 'foreground' ? 1024 * 1024 : 10 * 1024 * 1024
+
+    const { stdout } = await execFileAsync(binary, args, {
+      timeout: timeoutMs,
+      maxBuffer,
+      signal,
+      killSignal: 'SIGKILL',
+      env: getYtDlpEnv(),
+    })
 
     const info = JSON.parse(stdout) as YTDlpInfo
     return info
