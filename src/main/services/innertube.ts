@@ -58,6 +58,52 @@ export interface InnertubeResult {
   contentType: string
 }
 
+// ── Search ──
+
+/**
+ * Search YouTube Music for tracks matching a query.
+ * Returns normalized search results with title, artist, duration, thumbnail, and videoId.
+ * Uses yt.music.search() which is optimized for music results.
+ */
+export async function searchInnertube(
+  query: string,
+  signal?: AbortSignal
+): Promise<import('../../shared/types').SearchResult[]> {
+  if (!query.trim()) return []
+
+  try {
+    const yt = await getInstance()
+    if (signal?.aborted) return []
+
+    const search = await yt.music.search(query)
+    if (signal?.aborted) return []
+
+    const songsShelf = search.songs
+    if (!songsShelf) return []
+
+    const results: import('../../shared/types').SearchResult[] = []
+
+    for (const item of songsShelf.contents) {
+      // Skip non-song items
+      if (!item.id || item.item_type !== 'song') continue
+
+      results.push({
+        title: item.title ?? 'Unknown',
+        artist: item.artists?.[0]?.name ?? 'Unknown',
+        duration: item.duration?.seconds ?? 0,
+        thumbnail: item.thumbnails?.[0]?.url ?? '',
+        videoId: item.id,
+      })
+    }
+
+    return results
+  } catch (err: any) {
+    if (err.name === 'AbortError' || signal?.aborted) return []
+    console.warn('[Innertube] Search failed:', err.message)
+    return []
+  }
+}
+
 // ── Resolver ──
 
 /**

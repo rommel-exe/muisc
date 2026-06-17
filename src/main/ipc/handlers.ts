@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import type { MediaResolver } from '../services/media-resolver'
 import type { ResolveOptions } from '../services/media-resolver'
+import { searchInnertube } from '../services/innertube'
 import { IPC_CHANNELS } from '../../shared/constants'
 
 /**
@@ -8,6 +9,20 @@ import { IPC_CHANNELS } from '../../shared/constants'
  * Call this once during app startup, after the resolver is created.
  */
 export function registerHandlers(resolver: MediaResolver): void {
+  /**
+   * Search YouTube Music via Innertube API.
+   * Returns SearchResult[] with title, artist, duration, thumbnail, videoId.
+   */
+  ipcMain.handle(
+    IPC_CHANNELS.MUSIC_SEARCH,
+    async (_event, query: string) => {
+      if (!query || typeof query !== 'string') {
+        throw new Error('Invalid query: expected a non-empty string')
+      }
+      return searchInnertube(query)
+    }
+  )
+
   /**
    * Resolve a video ID to a playable stream.
    * Returns ResolvedStream with proxy URL.
@@ -67,6 +82,7 @@ export function registerHandlers(resolver: MediaResolver): void {
  * Unregister all IPC handlers. Call on app quit.
  */
 export function unregisterHandlers(): void {
+  ipcMain.removeAllListeners(IPC_CHANNELS.MUSIC_SEARCH)
   ipcMain.removeAllListeners('resolve-track')
   ipcMain.removeAllListeners('test-corrupt-cache')
   ipcMain.removeAllListeners('test-pending-count')
