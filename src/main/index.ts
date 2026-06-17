@@ -8,6 +8,7 @@ import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('disable-software-rasterizer')
+app.commandLine.appendSwitch('disable-gpu-process-crash-limit')
 
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
