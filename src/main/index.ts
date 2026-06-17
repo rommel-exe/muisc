@@ -88,7 +88,8 @@ app.on('child-process-gone', (_event, details) => {
 })
 
 // Graceful shutdown: stop proxy and cleanup
-app.on('will-quit', async () => {
+app.on('will-quit', async (event) => {
+  console.warn('[App] will-quit triggered')
   unregisterHandlers()
   await mediaResolver.stop()
 })
