@@ -10,6 +10,7 @@ app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
 app.commandLine.appendSwitch('no-sandbox')
 app.commandLine.appendSwitch('disable-gpu-sandbox')
+app.commandLine.appendSwitch('utility-disable-sandbox')
 // Don't crash the whole app when a child process dies
 app.commandLine.appendSwitch('disable-breakpad')
 
@@ -87,9 +88,16 @@ app.on('child-process-gone', (_event, details) => {
   console.warn(`[App] Child process gone: type=${details.type} reason=${details.reason} exit_code=${details.exitCode}`)
 })
 
-// Graceful shutdown: stop proxy and cleanup
-app.on('will-quit', async (event) => {
-  console.warn('[App] will-quit triggered')
+// Prevent cascade-quit when a child process dies — the app should survive
+// a crashed Utility/GPU process and recreate it.
+app.on('before-quit', (event) => {
+  console.warn('[App] before-quit — preventing cascade (child process crash)')
+  event.preventDefault()
+})
+
+// Graceful shutdown only on explicit user quit
+app.on('will-quit', async () => {
+  console.warn('[App] will-quit — cleaning up')
   unregisterHandlers()
   await mediaResolver.stop()
 })
