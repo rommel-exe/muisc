@@ -22,6 +22,7 @@ interface QueuedRequest {
   resolve: (url: string) => void
   reject: (err: Error) => void
   timer: NodeJS.Timeout
+  startTime: number
 }
 
 export class YtdlpDaemon {
@@ -141,7 +142,7 @@ export class YtdlpDaemon {
         ))
       }, timeoutMs)
 
-      this.queue.push({ videoId, resolve, reject, timer })
+      this.queue.push({ videoId, resolve, reject, timer, startTime: 0 })
       this.processNext()
     })
   }
@@ -175,6 +176,7 @@ export class YtdlpDaemon {
 
     this.busy = true
     this.currentRequest = this.queue.shift()!
+    this.currentRequest.startTime = Date.now()
     this.child.stdin.write(this.currentRequest.videoId + '\n')
   }
 
@@ -184,15 +186,18 @@ export class YtdlpDaemon {
     this.busy = false
 
     if (req) {
+      const elapsed = Date.now() - req.startTime
       clearTimeout(req.timer)
       if (line === '') {
         this.stats.failed++
+        console.log(`[yt-dlp-daemon] ${req.videoId}: FAILED ${elapsed}ms`)
         req.reject(new YTDlpError(
           `Daemon returned empty URL for ${req.videoId}`,
           'RESOLVE_FAILED'
         ))
       } else {
         this.stats.processed++
+        console.log(`[yt-dlp-daemon] ${req.videoId}: ${elapsed}ms`)
         req.resolve(line)
       }
     }
