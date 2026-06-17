@@ -147,10 +147,22 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     // to deduplicate rapid foreground resolves for the same video ID.
     // Background preloads manage their own controllers externally.
     if (!externalSignal) {
+      // Abort previous foreground resolve for the same video ID (rapid re-spam)
       const existing = pendingResolves.get(videoId)
       if (existing) {
         existing.abort()
         console.log(`[MediaResolver] Aborted pending resolve for ${videoId}`)
+      }
+
+      // Abort any in-flight background preload for the same video ID so the
+      // foreground resolve doesn't race a background yt-dlp subprocess.
+      // Without this, rapid skip-spam can leave both running concurrently,
+      // wasting resources and potentially corrupting the proxy stream cache.
+      const bgController = backgroundControllers.get(videoId)
+      if (bgController) {
+        bgController.abort()
+        console.log(`[MediaResolver] Aborted background preload for ${videoId} (foreground resolve)`)
+        // executeBackgroundPreload's finally{} will clean up the Map entry
       }
     }
 
@@ -168,6 +180,19 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: activeSignal, mode })
+
+          // Pre-populate proxy stream cache so the audio element's request
+          // hits the cache instead of spawning a second yt-dlp subprocess
+          const bestFormat = info.formats
+            .filter((f) => f.acodec !== 'none' && f.url)
+            .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+          if (bestFormat?.url) {
+            proxy.setStreamCacheEntry(videoId, {
+              streamUrl: bestFormat.url,
+              cachedAt: Date.now(),
+              contentType: `audio/${bestFormat.ext}`,
+            })
+          }
 
           const resolved: ResolvedStream = {
             videoId: info.id,

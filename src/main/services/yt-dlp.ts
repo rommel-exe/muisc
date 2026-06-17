@@ -1,31 +1,32 @@
 // src/main/services/yt-dlp.ts
 
-import { execFile, exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 
 const execFileAsync = promisify(execFile)
-const execAsync = promisify(exec)
 
-// Environment with Deno on PATH for yt-dlp JS runtime support
-function getYtDlpEnv(): NodeJS.ProcessEnv {
+// Build yt-dlp subprocess env once — Deno on PATH for JS runtime support
+const ytDlpEnv: NodeJS.ProcessEnv = (() => {
   const denoDir = path.join(os.homedir(), '.deno', 'bin')
   const currentPath = process.env.PATH || ''
-  // Only extend PATH if Deno isn't already on it
   if (!currentPath.includes(denoDir)) {
     return { ...process.env, PATH: `${denoDir}:${currentPath}` }
   }
   return process.env
-}
+})()
 
 // Find yt-dlp on PATH. Try common locations if not found.
+// Ordered by likelihood — absolute paths first to avoid shell/which overhead
 const YT_DLP_PATHS = [
-  'yt-dlp',
+  '/Library/Frameworks/Python.framework/Versions/3.12/bin/yt-dlp',
+  '/Library/Frameworks/Python.framework/Versions/3.11/bin/yt-dlp',
   '/opt/homebrew/bin/yt-dlp',
   '/usr/local/bin/yt-dlp',
-  '/Library/Frameworks/Python.framework/Versions/3.12/bin/yt-dlp',
+  '/usr/bin/yt-dlp',
+  'yt-dlp', // bare name — relies on PATH (slow, checked last)
 ]
 
 // Patterns that indicate a video is unavailable
@@ -93,56 +94,39 @@ export class YTDlpError extends Error {
 let ytDlpPath: string | null = null
 
 /**
- * Check if a file exists and is executable.
- */
-function isExecutable(filePath: string): boolean {
-  try {
-    fs.accessSync(filePath, fs.constants.X_OK)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Detect yt-dlp binary location. Caches result after first successful find.
- * Tries common paths, then falls back to `which yt-dlp`.
+ * Detect yt-dlp binary location. Caches result on first successful find.
+ *
+ * Absolute paths checked with fs.existsSync (zero subprocess spawns).
+ * Bare 'yt-dlp' is the last resort (requires shell, slower in Electron).
  */
 export async function findYTDlp(): Promise<string> {
   if (ytDlpPath) return ytDlpPath
 
-  // Try explicit paths first (skip 'yt-dlp' which relies on PATH)
+  // Absolute paths — just check the file exists, no subprocess spawn
   for (const candidate of YT_DLP_PATHS) {
+    if (candidate === 'yt-dlp') break // bare name, handle below
     try {
-      // For explicit paths, check if file exists and is executable first
-      if (candidate !== 'yt-dlp' && !isExecutable(candidate)) {
-        continue
-      }
-      await execFileAsync(candidate, ['--version'], { timeout: 5000 })
+      fs.accessSync(candidate, fs.constants.X_OK)
       ytDlpPath = candidate
       return candidate
-    } catch {
-      continue
-    }
+    } catch { continue }
   }
 
-  // Fallback: use `which yt-dlp` to find it on PATH
+  // Last resort: bare 'yt-dlp' via execFile with extended PATH
   try {
-    const { stdout } = await execAsync('which yt-dlp', { timeout: 5000 })
-    const foundPath = stdout.trim()
-    if (foundPath && isExecutable(foundPath)) {
-      await execFileAsync(foundPath, ['--version'], { timeout: 5000 })
-      ytDlpPath = foundPath
-      return foundPath
-    }
+    const pathEnv = `${process.env.PATH || ''}:/Library/Frameworks/Python.framework/Versions/3.12/bin:/opt/homebrew/bin:/usr/local/bin`
+    await execFileAsync('yt-dlp', ['--version'], {
+      timeout: 5000,
+      env: { ...process.env, PATH: pathEnv },
+    })
+    ytDlpPath = 'yt-dlp'
+    return 'yt-dlp'
   } catch {
-    // Fall through to error
+    throw new YTDlpError(
+      'yt-dlp not found. Install it: pip install yt-dlp',
+      'NOT_FOUND'
+    )
   }
-
-  throw new YTDlpError(
-    'yt-dlp not found. Install it: pip install yt-dlp',
-    'NOT_FOUND'
-  )
 }
 
 /**
@@ -184,10 +168,11 @@ export async function getVideoInfo(
     ]
 
     if (mode === 'foreground') {
-      // 🏎️ Foreground: mobile client — fastest path to the stream URL
-      // Avoids heavy webpage parsing, chapters/metadata are still in -j JSON
+      // 🏎️ Foreground: iOS client = least throttled, pre-deciphered streams
+      // iOS uses lean binary API structures with consistent format support.
+      // Avoid tv/ios combo —tv client restricts available formats on some videos.
       args.push(
-        '--extractor-args', 'youtube:player_client=android,web',
+        '--extractor-args', 'youtube:player_client=ios',
         '--no-add-chapters',
         '--no-embed-metadata',
       )
@@ -208,7 +193,7 @@ export async function getVideoInfo(
       maxBuffer,
       signal,
       killSignal: 'SIGKILL',
-      env: getYtDlpEnv(),
+      env: ytDlpEnv,
     })
 
     const info = JSON.parse(stdout) as YTDlpInfo

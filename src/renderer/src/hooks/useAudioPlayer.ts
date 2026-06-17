@@ -112,6 +112,9 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     try {
       await audio.play()
     } catch (err: any) {
+      // Ignore AbortError — happens when load() is called before play() resolves
+      // (e.g. user skips to next track while current one is still starting)
+      if (err.name === 'AbortError') return
       setState((prev) => ({ ...prev, error: err.message }))
     }
   }, [])

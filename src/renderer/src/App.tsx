@@ -1,5 +1,5 @@
 import { useAudioPlayer } from './hooks/useAudioPlayer'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 
 interface QueueTrack {
   id: string
@@ -11,6 +11,12 @@ const QUEUE: QueueTrack[] = [
   { id: 'kJQP7kiw5Fk', label: 'Luis Fonsi — Despacito' },
   { id: 'JGwWNGJdvx8', label: 'Ed Sheeran — Shape of You' },
   { id: 'fJ9rUzIMcZQ', label: 'Queen — Bohemian Rhapsody' },
+  { id: 'kXYiU_JCYtU', label: 'Linkin Park — Numb' },
+  { id: 'RgKAFK5djSk', label: 'Wiz Khalifa — See You Again' },
+  { id: 'OPf0YbXqDm0', label: 'Mark Ronson — Uptown Funk' },
+  { id: 'hTWKbfoikeg', label: 'Justin Bieber — Sorry' },
+  { id: '09R8_2nJtjg', label: 'Maroon 5 — Sugar' },
+  { id: 'HP-MbfHFUqs', label: 'The Chainsmokers — Closer' },
 ]
 
 function App() {
@@ -19,6 +25,11 @@ function App() {
   const [currentIdx, setCurrentIdx] = useState(-1)
   const [logs, setLogs] = useState<string[]>([])
   const [trackTitle, setTrackTitle] = useState('')
+  const [prefetchedUpTo, setPrefetchedUpTo] = useState(-1)
+
+  // Refs to handle rapid skip spam — only the latest request takes effect
+  const latestReq = useRef(-1)
+  const inflightCount = useRef(0)
 
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-20))
@@ -27,6 +38,9 @@ function App() {
   const playTrack = useCallback(async (idx: number) => {
     const track = QUEUE[idx]
     if (!track) return
+
+    latestReq.current = idx
+    inflightCount.current++
     setCurrentIdx(idx)
     setResolving(true)
     addLog(`Resolving ${track.id}...`)
@@ -34,22 +48,33 @@ function App() {
     try {
       const start = Date.now()
       const resolved = await window.api.resolveTrack(track.id)
+      if (latestReq.current !== idx) return // superseded by newer skip
+
       addLog(`Resolved in ${Date.now() - start}ms — ${resolved.title}`)
       setTrackTitle(resolved.title)
       playerControls.load(resolved.audioUrl)
       await playerControls.play()
+      if (latestReq.current !== idx) return // superseded during play()
 
-      const upcoming = QUEUE.slice(idx + 1).map((t) => t.id)
-      if (upcoming.length > 0) {
-        window.api.prefetchQueue(upcoming).catch(() => {})
-        addLog(`Prefetching next ${upcoming.length} track(s)`)
+      // Prefetch remaining queue once per forward pass
+      if (idx >= prefetchedUpTo) {
+        const upcoming = QUEUE.slice(idx + 1).map((t) => t.id)
+        if (upcoming.length > 0) {
+          window.api.prefetchQueue(upcoming).catch(() => {})
+          setPrefetchedUpTo(idx + upcoming.length)
+        }
       }
     } catch (err: any) {
-      addLog(`ERROR: ${err.message}`)
+      if (latestReq.current === idx) {
+        addLog(`ERROR: ${err.message}`)
+      }
     } finally {
-      setResolving(false)
+      inflightCount.current--
+      if (inflightCount.current === 0) {
+        setResolving(false)
+      }
     }
-  }, [playerControls, addLog])
+  }, [playerControls, addLog, prefetchedUpTo])
 
   const goNext = useCallback(() => {
     const next = currentIdx + 1
@@ -99,7 +124,7 @@ function App() {
                 fontSize: 12,
               }}
             >
-              {resolving && i === currentIdx ? '...' : i === currentIdx && playerState.isPlaying ? '▶' : '▶'}
+              {resolving && i === currentIdx ? '...' : '▶'}
             </button>
           </div>
         ))}
