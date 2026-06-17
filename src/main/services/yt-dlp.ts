@@ -146,7 +146,7 @@ export async function warmYtdlp(): Promise<void> {
       const execFileAsync = promisify(execFile)
       await execFileAsync(binary, ['--version'], { timeout: 5000, env: ytDlpEnv })
       console.log('[yt-dlp] Pre-warmed')
-    } catch { /* pre-warm is a best-effort optimization */ }
+    } catch (err) { console.warn('[yt-dlp] Pre-warm failed:', err) }
   })()
   return warmPromise
 }
