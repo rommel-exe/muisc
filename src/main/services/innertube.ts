@@ -14,6 +14,20 @@ import type Format from 'youtubei.js/dist/src/parser/classes/misc/Format.js'
 let instance: Innertube | null = null
 let instancePromise: Promise<Innertube> | null = null
 
+/**
+ * Pre-warm the InnerTube singleton at app startup so the first
+ * cold resolve doesn't wait for session initialization.
+ * Safe to call multiple times; idempotent after first success.
+ */
+export async function warmInnerTube(): Promise<void> {
+  try {
+    await getInstance()
+    console.log('[Innertube] Session warmed')
+  } catch (err) {
+    console.warn('[Innertube] Warm failed, will retry on first resolve:', err)
+  }
+}
+
 async function getInstance(): Promise<Innertube> {
   if (instance) return instance
   if (instancePromise) return instancePromise

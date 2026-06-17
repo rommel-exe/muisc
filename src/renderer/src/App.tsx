@@ -43,18 +43,30 @@ function App() {
     inflightCount.current++
     setCurrentIdx(idx)
     setResolving(true)
-    addLog(`Resolving ${track.id}...`)
+
+    const t0 = Date.now()
+    addLog(`⏳ Resolving ${track.id}...`)
 
     try {
-      const start = Date.now()
+      // ── Segment 1: IPC resolve-track ──
       const resolved = await window.api.resolveTrack(track.id)
-      if (latestReq.current !== idx) return // superseded by newer skip
+      const t1 = Date.now()
+      if (latestReq.current !== idx) return
 
-      addLog(`Resolved in ${Date.now() - start}ms — ${resolved.title}`)
+      addLog(`resolve: ${t1 - t0}ms  — ${resolved.title}`)
       setTrackTitle(resolved.title)
+
+      // ── Segment 2: audio load ──
       playerControls.load(resolved.audioUrl)
+      const t2 = Date.now()
+      addLog(`load:    ${t2 - t1}ms`)
+
+      // ── Segment 3: audio play (resolves when playback starts) ──
       await playerControls.play()
-      if (latestReq.current !== idx) return // superseded during play()
+      const t3 = Date.now()
+      if (latestReq.current !== idx) return
+
+      addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
 
       // Prefetch remaining queue once per forward pass
       if (idx >= prefetchedUpTo) {

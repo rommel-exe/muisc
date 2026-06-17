@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createMediaResolver } from './services/media-resolver'
 import { registerHandlers, unregisterHandlers } from './ipc/handlers'
+import { warmInnerTube } from './services/innertube'
 
 // Prevent GPU process crash cascade on macOS.
 // disableHardwareAcceleration() tells Chromium not to use the GPU.
@@ -58,6 +59,10 @@ app.whenReady().then(async () => {
 
   // Register IPC handlers
   registerHandlers(mediaResolver)
+
+  // Pre-warm InnerTube session so the first cold resolve doesn't wait for init.
+  // Fire-and-forget — failure is caught and retried on first resolve.
+  warmInnerTube().catch(() => {})
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

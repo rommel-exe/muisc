@@ -31,8 +31,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   // Create audio element on mount
   useEffect(() => {
     const audio = new Audio()
-    audio.crossOrigin = 'anonymous'
-    audio.preload = 'metadata'
+    audio.preload = 'auto'
     audioRef.current = audio
 
     const onTimeUpdate = () => {
