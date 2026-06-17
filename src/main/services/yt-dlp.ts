@@ -168,11 +168,11 @@ export async function getVideoInfo(
     ]
 
     if (mode === 'foreground') {
-      // 🏎️ Foreground: iOS client = least throttled, pre-deciphered streams
-      // iOS uses lean binary API structures with consistent format support.
-      // Avoid tv/ios combo —tv client restricts available formats on some videos.
+      // 🏎️ Foreground: android+web client — reliable format availability.
+      // InnerTube is the fast path now; yt-dlp is the safety net, so
+      // reliability is more important than marginal client speed here.
       args.push(
-        '--extractor-args', 'youtube:player_client=ios',
+        '--extractor-args', 'youtube:player_client=android,web',
         '--no-add-chapters',
         '--no-embed-metadata',
       )
