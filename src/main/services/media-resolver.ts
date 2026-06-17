@@ -224,6 +224,7 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     let resolved: ResolvedStream | null = null
 
     if (!externalSignal) {
+      const tRace = Date.now()
       const innertubePromise = resolveViaInnerTube(videoId, activeSignal)
 
       // Safe-race: if InnerTube returns a valid result first, abort yt-dlp and use it.
@@ -231,20 +232,37 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       // The "never settle" catch means InnerTube rejection doesn't reject the race.
       const neverSettle = new Promise<{ source: 'innertube'; value: InnertubeResult }>(() => {})
       const wrappedFast = innertubePromise.then(
-        (r) => (r ? { source: 'innertube' as const, value: r } : null),
-        () => neverSettle, // reject → InnerTube didn't win
+        (r) => {
+          const elapsed = Date.now() - tRace
+          console.log(`[MediaResolver] InnerTube returned in ${elapsed}ms result=${!!r}`)
+          return r ? { source: 'innertube' as const, value: r } : null
+        },
+        () => {
+          const elapsed = Date.now() - tRace
+          console.log(`[MediaResolver] InnerTube rejected in ${elapsed}ms`)
+          return neverSettle
+        },
       )
       const wrappedSafe = ytDlpPromise.then(
-        () => null as { source: 'innertube'; value: InnertubeResult } | null, // yt-dlp resolved first → don't use InnerTube
-        () => null, // yt-dlp errored → don't use InnerTube either
+        () => {
+          const elapsed = Date.now() - tRace
+          console.log(`[MediaResolver] yt-dlp resolved first in ${elapsed}ms`)
+          return null as { source: 'innertube'; value: InnertubeResult } | null
+        },
+        () => {
+          const elapsed = Date.now() - tRace
+          console.log(`[MediaResolver] yt-dlp errored in ${elapsed}ms`)
+          return null
+        },
       )
 
       const winner = await Promise.race([wrappedFast, wrappedSafe])
+      console.log(`[MediaResolver] Race won in ${Date.now() - tRace}ms by ${winner?.source || 'yt-dlp (fallthrough)'}`)
 
       if (winner?.source === 'innertube') {
         // 🏎️ InnerTube won! Kill yt-dlp and use the fast result.
         controller.abort()
-        console.log(`[MediaResolver] InnerTube won race for ${videoId}`)
+        console.log(`[MediaResolver] InnerTube won race for ${videoId} — using it`)
 
         proxy.setStreamCacheEntry(videoId, {
           streamUrl: winner.value.streamingUrl,
@@ -267,7 +285,9 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
 
     // ── yt-dlp result handler (already running for foreground, or just started for background preloads) ──
     try {
+      const tYtdlp = Date.now()
       const info = await ytDlpPromise
+      console.log(`[MediaResolver] yt-dlp finished in ${Date.now() - tYtdlp}ms`)
 
       // Pre-populate proxy stream cache
       const bestFormat = info.formats
