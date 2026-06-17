@@ -1,8 +1,5 @@
 import { createProxy } from './proxy'
 import { getVideoInfo, YTDlpError } from './yt-dlp'
-import type { YTDlpInfo } from './yt-dlp'
-import { resolveViaInnerTube } from './innertube'
-import type { InnertubeResult } from './innertube'
 import type { ResolvedStream } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
 
@@ -126,14 +123,15 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * Flow:
    * 1. Check resolve cache (skip if forceRefresh) — 0ms on hit
    * 2. Abort any previous/stale resolve for this video ID (rapid-skip guard)
-   * 3. Parallel race: InnerTube (pure JS, ~500ms) vs yt-dlp (Python, ~2-3s)
-   *    — InnerTube winner: abort yt-dlp, return fast URL immediately
-   *    — yt-dlp winner: already in-flight, return when done (no sequential penalty)
-   *    — InnerTube failure: yt-dlp has been running in parallel — zero time lost
-   * 4. Cache the metadata in LRU
-   * 5. Return ResolvedStream with the proxy URL
+   * 3. Resolve via yt-dlp subprocess with retry
+   * 4. Pre-populate proxy stream cache for immediate audio playback
+   * 5. Cache metadata in LRU
+   * 6. Return ResolvedStream with the proxy URL
    *
-   * The proxy handles the actual CDN streaming — this just provides the metadata and URL.
+   * Note: InnerTube (youtubei.js) was evaluated as a fast-path resolver
+   * but youtubei.js@17.0.1 cannot produce streaming URLs for audio formats
+   * (no direct URL, no cipher data). yt-dlp is the sole resolver.
+   * Background preloading hides the latency for all but the first cold resolve.
    */
   async function resolve(
     videoId: string,
@@ -199,13 +197,29 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       return resolved
     }
 
-    // ── yt-dlp retry promise ──
-    // Extracted so we can race it against InnerTube.
-    const ytDlpPromise = (async (): Promise<YTDlpInfo> => {
+    // ── yt-dlp resolve with retry ──
+    try {
       let lastError: Error | undefined
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-          return await getVideoInfo(videoId, { timeoutMs: 15000, signal: activeSignal, mode })
+          const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: activeSignal, mode })
+
+          // Pre-populate proxy stream cache with the best audio format
+          const bestFormat = info.formats
+            .filter((f) => f.acodec !== 'none' && f.url)
+            .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+
+          if (bestFormat?.url) {
+            proxy.setStreamCacheEntry(videoId, {
+              streamUrl: bestFormat.url,
+              cachedAt: Date.now(),
+              contentType: `audio/${bestFormat.ext}`,
+            })
+          }
+
+          const resolved = cacheAndReturn(info.id, info.title, info.duration, info.thumbnail)
+          pendingResolves.delete(videoId)
+          return resolved
         } catch (err: any) {
           if (activeSignal.aborted) throw err
           lastError = err
@@ -217,96 +231,9 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
         }
       }
       throw lastError ?? new Error('Unknown resolve error')
-    })()
-
-    // ── Parallel race: InnerTube (fast, pure JS) vs yt-dlp (safe, Python) ──
-    // Only foreground resolves race; background preloads use yt-dlp directly.
-    let resolved: ResolvedStream | null = null
-
-    if (!externalSignal) {
-      const tRace = Date.now()
-      const innertubePromise = resolveViaInnerTube(videoId, activeSignal)
-
-      // Safe-race: if InnerTube returns a valid result first, abort yt-dlp and use it.
-      // If InnerTube fails or yt-dlp wins first, fall through to yt-dlp below.
-      // The "never settle" catch means InnerTube rejection doesn't reject the race.
-      const neverSettle = new Promise<{ source: 'innertube'; value: InnertubeResult }>(() => {})
-      const wrappedFast = innertubePromise.then(
-        (r) => {
-          const elapsed = Date.now() - tRace
-          console.log(`[MediaResolver] InnerTube returned in ${elapsed}ms result=${!!r}`)
-          return r ? { source: 'innertube' as const, value: r } : null
-        },
-        () => {
-          const elapsed = Date.now() - tRace
-          console.log(`[MediaResolver] InnerTube rejected in ${elapsed}ms`)
-          return neverSettle
-        },
-      )
-      const wrappedSafe = ytDlpPromise.then(
-        () => {
-          const elapsed = Date.now() - tRace
-          console.log(`[MediaResolver] yt-dlp resolved first in ${elapsed}ms`)
-          return null as { source: 'innertube'; value: InnertubeResult } | null
-        },
-        () => {
-          const elapsed = Date.now() - tRace
-          console.log(`[MediaResolver] yt-dlp errored in ${elapsed}ms`)
-          return null
-        },
-      )
-
-      const winner = await Promise.race([wrappedFast, wrappedSafe])
-      console.log(`[MediaResolver] Race won in ${Date.now() - tRace}ms by ${winner?.source || 'yt-dlp (fallthrough)'}`)
-
-      if (winner?.source === 'innertube') {
-        // 🏎️ InnerTube won! Kill yt-dlp and use the fast result.
-        controller.abort()
-        console.log(`[MediaResolver] InnerTube won race for ${videoId} — using it`)
-
-        proxy.setStreamCacheEntry(videoId, {
-          streamUrl: winner.value.streamingUrl,
-          cachedAt: Date.now(),
-          contentType: winner.value.contentType,
-        })
-
-        resolved = cacheAndReturn(
-          winner.value.videoId,
-          winner.value.title,
-          winner.value.duration,
-          winner.value.thumbnail,
-        )
-        pendingResolves.delete(videoId)
-        return resolved
-      }
-      // If we get here: InnerTube returned null, failed, or yt-dlp was faster.
-      // yt-dlp is already running — fall through to the handler below.
-    }
-
-    // ── yt-dlp result handler (already running for foreground, or just started for background preloads) ──
-    try {
-      const tYtdlp = Date.now()
-      const info = await ytDlpPromise
-      console.log(`[MediaResolver] yt-dlp finished in ${Date.now() - tYtdlp}ms`)
-
-      // Pre-populate proxy stream cache
-      const bestFormat = info.formats
-        .filter((f) => f.acodec !== 'none' && f.url)
-        .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-      if (bestFormat?.url) {
-        proxy.setStreamCacheEntry(videoId, {
-          streamUrl: bestFormat.url,
-          cachedAt: Date.now(),
-          contentType: `audio/${bestFormat.ext}`,
-        })
-      }
-
-      resolved = cacheAndReturn(info.id, info.title, info.duration, info.thumbnail)
     } finally {
       pendingResolves.delete(videoId)
     }
-
-    return resolved
   }
 
   /**

@@ -130,6 +130,28 @@ export async function findYTDlp(): Promise<string> {
 }
 
 /**
+ * Pre-warm yt-dlp by running a quick version check.
+ * This caches Python bytecode and plugin modules so the first
+ * cold resolve doesn't pay Python startup overhead.
+ */
+let warmPromise: Promise<void> | null = null
+
+export async function warmYtdlp(): Promise<void> {
+  if (warmPromise) return warmPromise
+  warmPromise = (async () => {
+    try {
+      const binary = await findYTDlp()
+      const { execFile } = await import('child_process')
+      const { promisify } = await import('util')
+      const execFileAsync = promisify(execFile)
+      await execFileAsync(binary, ['--version'], { timeout: 5000, env: ytDlpEnv })
+      console.log('[yt-dlp] Pre-warmed')
+    } catch { /* pre-warm is a best-effort optimization */ }
+  })()
+  return warmPromise
+}
+
+/**
  * Check if an error message indicates the video is unavailable.
  */
 function isVideoUnavailable(stderr: string): boolean {

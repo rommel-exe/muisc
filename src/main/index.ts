@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createMediaResolver } from './services/media-resolver'
 import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 import { warmInnerTube } from './services/innertube'
+import { warmYtdlp } from './services/yt-dlp'
 
 // Prevent GPU/utility process crash cascade on macOS.
 app.disableHardwareAcceleration()
@@ -63,9 +64,10 @@ app.whenReady().then(async () => {
   // Register IPC handlers
   registerHandlers(mediaResolver)
 
-  // Pre-warm InnerTube session so the first cold resolve doesn't wait for init.
-  // Fire-and-forget — failure is caught and retried on first resolve.
+  // Pre-warm InnerTube session and yt-dlp at startup so the first cold
+  // resolve doesn't pay init overhead. Fire-and-forget.
   warmInnerTube().catch(() => {})
+  warmYtdlp().catch(() => {})
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
