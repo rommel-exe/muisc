@@ -1,15 +1,17 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
-import type { SearchResult, ResolvedStream } from '../shared/types'
+interface ResolvedStream {
+  videoId: string
+  audioUrl: string
+  duration: number
+  title: string
+  thumbnail: string
+}
 
 declare global {
   interface Window {
     electron: ElectronAPI
     api: {
-      /** Search YouTube Music via Innertube API */
-      searchMusic: (query: string) => Promise<SearchResult[]>
-
-      /** Resolve a video ID to a playable stream URL */
       resolveTrack: (
         videoId: string,
         opts?: { forceRefresh?: boolean }

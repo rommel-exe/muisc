@@ -5,13 +5,6 @@ import { IPC_CHANNELS } from '../shared/constants'
 // Custom APIs for renderer
 const api = {
   /**
-   * Search YouTube Music via Innertube API.
-   * Returns SearchResult[] with title, artist, duration, thumbnail, videoId.
-   */
-  searchMusic: (query: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.MUSIC_SEARCH, query),
-
-  /**
    * Resolve a video ID to a playable audio source.
    * Returns ResolvedStream with proxy URL.
    */

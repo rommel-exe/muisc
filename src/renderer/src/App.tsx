@@ -1,80 +1,60 @@
 import { useAudioPlayer } from './hooks/useAudioPlayer'
 import { useState, useCallback, useRef } from 'react'
-import type { SearchResult } from '../../shared/types'
+
+interface QueueTrack {
+  id: string
+  label: string
+}
+
+const QUEUE: QueueTrack[] = [
+  { id: 'dQw4w9WgXcQ', label: 'Rick Astley — Never Gonna Give You Up' },
+  { id: 'kJQP7kiw5Fk', label: 'Luis Fonsi — Despacito' },
+  { id: 'JGwWNGJdvx8', label: 'Ed Sheeran — Shape of You' },
+  { id: 'fJ9rUzIMcZQ', label: 'Queen — Bohemian Rhapsody' },
+  { id: 'kXYiU_JCYtU', label: 'Linkin Park — Numb' },
+  { id: 'RgKAFK5djSk', label: 'Wiz Khalifa — See You Again' },
+  { id: 'OPf0YbXqDm0', label: 'Mark Ronson — Uptown Funk' },
+  { id: 'hTWKbfoikeg', label: 'Justin Bieber — Sorry' },
+  { id: '09R8_2nJtjg', label: 'Maroon 5 — Sugar' },
+  { id: 'HP-MbfHFUqs', label: 'The Chainsmokers — Closer' },
+]
 
 function App() {
   const [playerState, playerControls] = useAudioPlayer()
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([])
-  const [searching, setSearching] = useState(false)
   const [resolving, setResolving] = useState(false)
-  const [currentTrack, setCurrentTrack] = useState<SearchResult | null>(null)
+  const [currentIdx, setCurrentIdx] = useState(-1)
   const [logs, setLogs] = useState<string[]>([])
+  const [trackTitle, setTrackTitle] = useState('')
+  const [prefetchedUpTo, setPrefetchedUpTo] = useState(-1)
 
   // Refs to handle rapid skip spam — only the latest request takes effect
   const latestReq = useRef(-1)
   const inflightCount = useRef(0)
-  const searchReqId = useRef(0)
 
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-20))
   }, [])
 
-  // ── Search ──
+  const playTrack = useCallback(async (idx: number) => {
+    const track = QUEUE[idx]
+    if (!track) return
 
-  const doSearch = useCallback(async (query: string) => {
-    if (!query.trim()) {
-      setSearchResults([])
-      return
-    }
-
-    const reqId = ++searchReqId.current
-    setSearchQuery(query)
-    setSearching(true)
-    addLog(`🔍 Searching: "${query}"`)
-
-    try {
-      const results = await window.api.searchMusic(query)
-      // Only take latest search results
-      if (reqId !== searchReqId.current) return
-      setSearchResults(results)
-      addLog(`Found ${results.length} results`)
-    } catch (err: any) {
-      if (reqId === searchReqId.current) {
-        addLog(`Search ERROR: ${err.message}`)
-      }
-    } finally {
-      if (reqId === searchReqId.current) {
-        setSearching(false)
-      }
-    }
-  }, [addLog])
-
-  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      doSearch((e.target as HTMLInputElement).value)
-    }
-  }, [doSearch])
-
-  // ── Playback ──
-
-  const playTrack = useCallback(async (result: SearchResult) => {
-    latestReq.current++
-    const reqIdx = latestReq.current
+    latestReq.current = idx
     inflightCount.current++
+    setCurrentIdx(idx)
     setResolving(true)
-    setCurrentTrack(result)
 
     const t0 = Date.now()
-    addLog(`⏳ Resolving ${result.videoId}...`)
+    addLog(`⏳ Resolving ${track.id}...`)
 
     try {
       // ── Segment 1: IPC resolve-track ──
-      const resolved = await window.api.resolveTrack(result.videoId)
+      const resolved = await window.api.resolveTrack(track.id)
       const t1 = Date.now()
-      if (latestReq.current !== reqIdx) return
+      if (latestReq.current !== idx) return
 
       addLog(`resolve: ${t1 - t0}ms  — ${resolved.title}`)
+      setTrackTitle(resolved.title)
 
       // ── Segment 2: audio load ──
       playerControls.load(resolved.audioUrl)
@@ -84,11 +64,20 @@ function App() {
       // ── Segment 3: audio play (resolves when playback starts) ──
       await playerControls.play()
       const t3 = Date.now()
-      if (latestReq.current !== reqIdx) return
+      if (latestReq.current !== idx) return
 
       addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+
+      // Prefetch remaining queue once per forward pass
+      if (idx >= prefetchedUpTo) {
+        const upcoming = QUEUE.slice(idx + 1).map((t) => t.id)
+        if (upcoming.length > 0) {
+          window.api.prefetchQueue(upcoming).catch(() => {})
+          setPrefetchedUpTo(idx + upcoming.length)
+        }
+      }
     } catch (err: any) {
-      if (latestReq.current === reqIdx) {
+      if (latestReq.current === idx) {
         addLog(`ERROR: ${err.message}`)
       }
     } finally {
@@ -97,98 +86,57 @@ function App() {
         setResolving(false)
       }
     }
-  }, [playerControls, addLog])
+  }, [playerControls, addLog, prefetchedUpTo])
+
+  const goNext = useCallback(() => {
+    const next = currentIdx + 1
+    if (next < QUEUE.length) playTrack(next)
+  }, [currentIdx, playTrack])
+
+  const goPrev = useCallback(() => {
+    const prev = currentIdx - 1
+    if (prev >= 0) playTrack(prev)
+  }, [currentIdx, playTrack])
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
-
-  const formatDuration = (s: number): string => {
-    const min = Math.floor(s / 60)
-    const sec = Math.floor(s % 60)
-    return `${min}:${sec.toString().padStart(2, '0')}`
-  }
 
   return (
     <div style={{ background: '#111', color: '#ddd', fontFamily: 'monospace', padding: 16, minHeight: '100vh' }}>
       <h1 style={{ margin: '0 0 12px', fontSize: 16 }}>muisc test</h1>
 
-      {/* Search Bar */}
+      {/* Queue */}
       <div style={{ marginBottom: 12 }}>
-        <input
-          type="text"
-          placeholder="Search YouTube Music..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          onKeyDown={handleSearchKeyDown}
-          style={{
-            width: '100%',
-            padding: '8px 10px',
-            background: '#222',
-            color: '#ddd',
-            border: '1px solid #444',
-            borderRadius: 4,
-            fontSize: 14,
-            fontFamily: 'monospace',
-            outline: 'none',
-            boxSizing: 'border-box',
-          }}
-        />
-        <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
-          {searching ? 'Searching...' : `Type query and press Enter`}
-        </div>
-      </div>
-
-      {/* Search Results */}
-      <div style={{ marginBottom: 12, maxHeight: 300, overflowY: 'auto' }}>
-        {searchResults.length === 0 && !searching && (
-          <div style={{ color: '#444', fontSize: 11, padding: '8px 0' }}>
-            {searchQuery ? 'No results found' : 'Search for a song to get started'}
-          </div>
-        )}
-        {searchResults.map((result) => (
+        {QUEUE.map((track, i) => (
           <div
-            key={result.videoId}
+            key={track.id}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
               padding: '6px 8px',
-              background: currentTrack?.videoId === result.videoId ? '#222' : 'transparent',
+              background: i === currentIdx ? '#222' : 'transparent',
               borderBottom: '1px solid #222',
-              cursor: 'pointer',
             }}
-            onClick={() => playTrack(result)}
           >
-            {result.thumbnail && (
-              <img
-                src={result.thumbnail}
-                alt=""
-                style={{ width: 32, height: 32, borderRadius: 2, objectFit: 'cover', flexShrink: 0 }}
-              />
-            )}
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 13 }}>
-                {result.title}
-              </div>
-              <div style={{ fontSize: 11, color: '#888' }}>{result.artist}</div>
-            </div>
-            <span style={{ fontSize: 11, color: '#555', flexShrink: 0 }}>
-              {formatDuration(result.duration)}
+            <span style={{ width: 20, color: '#666' }}>{i + 1}</span>
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {track.label}
             </span>
+            <span style={{ fontSize: 11, color: '#555' }}>{track.id}</span>
             <button
-              onClick={(e) => { e.stopPropagation(); playTrack(result) }}
+              onClick={() => playTrack(i)}
               disabled={resolving}
               style={{
                 padding: '2px 8px',
-                background: currentTrack?.videoId === result.videoId ? '#2a2' : '#333',
+                background: i === currentIdx ? '#2a2' : '#333',
                 color: '#fff',
                 border: 'none',
                 cursor: 'pointer',
                 fontSize: 12,
-                flexShrink: 0,
               }}
             >
-              {resolving && currentTrack?.videoId === result.videoId ? '...' : '▶'}
+              {resolving && i === currentIdx ? '...' : '▶'}
             </button>
           </div>
         ))}
@@ -197,23 +145,18 @@ function App() {
       {/* Now Playing Controls */}
       <div style={{ padding: '8px 0', borderTop: '1px solid #333', marginBottom: 8 }}>
         <div style={{ fontSize: 12, marginBottom: 6, color: '#888' }}>
-          {currentTrack ? `${currentTrack.title} — ${currentTrack.artist}` : 'No track loaded'}
+          {trackTitle || 'No track loaded'}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={goPrev} disabled={currentIdx <= 0} style={btnStyle}>{'◀'}</button>
           <button
-            onClick={playerControls.pause}
-            disabled={!playerState.isPlaying}
+            onClick={() => playerState.isPlaying ? playerControls.pause() : playerControls.play()}
+            disabled={!trackTitle}
             style={btnStyle}
           >
-            ⏸
+            {playerState.isPlaying ? '⏸' : '▶'}
           </button>
-          <button
-            onClick={() => playerControls.play()}
-            disabled={!currentTrack || playerState.isPlaying}
-            style={btnStyle}
-          >
-            ▶
-          </button>
+          <button onClick={goNext} disabled={currentIdx < 0 || currentIdx >= QUEUE.length - 1} style={btnStyle}>{'▶'}</button>
 
           <input
             type="range"
