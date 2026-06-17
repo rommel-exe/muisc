@@ -5,11 +5,13 @@ import { createMediaResolver } from './services/media-resolver'
 import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 import { warmInnerTube } from './services/innertube'
 
-// Prevent GPU process crash cascade on macOS.
-// disableHardwareAcceleration() tells Chromium not to use the GPU.
-// in-process-gpu runs the compositor in the main (Browser) process.
+// Prevent GPU/utility process crash cascade on macOS.
 app.disableHardwareAcceleration()
-app.commandLine.appendSwitch('in-process-gpu')
+app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('no-sandbox')
+app.commandLine.appendSwitch('disable-gpu-sandbox')
+// Don't crash the whole app when a child process dies
+app.commandLine.appendSwitch('disable-breakpad')
 
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
