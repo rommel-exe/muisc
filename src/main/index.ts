@@ -4,9 +4,11 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createMediaResolver } from './services/media-resolver'
 import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 
-// Disable hardware acceleration to prevent GPU process crash on macOS
+// Prevent GPU process crash cascade on macOS.
+// disableHardwareAcceleration() tells Chromium not to use the GPU.
+// in-process-gpu runs the compositor in the main (Browser) process.
 app.disableHardwareAcceleration()
-app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('in-process-gpu')
 
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
