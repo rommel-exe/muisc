@@ -45,5 +45,5 @@ export const IPC_CHANNELS = {
 
 // Default playback config
 export const DEFAULT_VOLUME = 0.8
-export const PROXY_PORT = 18937
+export const PROXY_PORT = 18938
 export const DB_FILENAME = 'muisc.db'
