@@ -77,7 +77,9 @@ app.whenReady().then(async () => {
 
   // Pre-warm yt-dlp daemon and InnerTube session so the first cold
   // resolve doesn't pay init overhead. Fire-and-forget.
-  warmDaemon().catch(() => {})
+  warmDaemon()
+    .then(() => mediaResolver.prewarmCdn('9bZkp7q19f0'))
+    .catch(() => {})
   warmInnerTube().catch(() => {})
   warmYtdlp().catch(() => {})
 

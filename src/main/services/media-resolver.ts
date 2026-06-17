@@ -1,6 +1,4 @@
 import { createProxy } from './proxy'
-import { getDaemon } from './yt-dlp-daemon'
-import { getVideoInfo } from './yt-dlp'
 import type { ResolvedStream } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
 
@@ -91,63 +89,30 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       }
     }
 
-    // ── Resolve the stream URL ──
-    // Two parallel paths:
-    //   1. 🏎️ Fast: daemon.getStreamUrl() (~250ms) → direct CDN URL.
-    //      Chromium's QUIC support gives faster, more consistent CDN connections.
-    //   2. 🐢 Background: getVideoInfo subprocess populates resolve cache with
-    //      metadata + proxy stream cache (for fallback/re-resolve).
-    //
-    // If the daemon fails, falls back to the proxy URL.
+    // Trigger background yt-dlp resolve — proxy caches the CDN URL when done.
+    // Fire-and-forget: the promise resolves the daemon URL (~250ms in Python)
+    // and updates resolveCache with real metadata when infoPromise settles.
+    proxy.triggerBackgroundResolve(videoId).then((info) => {
+      const resolved: ResolvedStream = {
+        videoId: info.id,
+        audioUrl: getProxyUrl(videoId),
+        duration: info.duration,
+        title: info.title,
+        thumbnail: info.thumbnail || '',
+      }
+      resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
+      evictIfNeeded()
+    }).catch(() => {
+      // Errors logged in proxy.triggerBackgroundResolve
+    })
 
-    // 🏎️ Fast: daemon-extracted CDN URL (warm connection pool, ~250ms)
-    const daemonUrl = getDaemon().getStreamUrl(videoId, 5000)
-      .then((url) => {
-        if (url) {
-          proxy.setStreamCacheEntry(videoId, {
-            streamUrl: url,
-            cachedAt: Date.now(),
-            contentType: 'audio/mp4',
-          })
-        }
-        return url
-      })
-      .catch(() => '' as string)
-
-    // 🐢 Slow: full metadata via subprocess (title, duration, thumbnail)
-    getVideoInfo(videoId, { mode: 'background', timeoutMs: 30000 })
-      .then((info) => {
-        const bestFormat = info.formats
-          .filter((f) => f.acodec !== 'none' && f.url)
-          .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-        if (bestFormat?.url) {
-          proxy.setStreamCacheEntry(videoId, {
-            streamUrl: bestFormat.url,
-            cachedAt: Date.now(),
-            contentType: `audio/${bestFormat.ext}`,
-          })
-        }
-        const resolved: ResolvedStream = {
-          videoId: info.id,
-          audioUrl: bestFormat?.url || getProxyUrl(videoId),
-          duration: info.duration,
-          title: info.title,
-          thumbnail: info.thumbnail || '',
-        }
-        resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
-        evictIfNeeded()
-      })
-      .catch(() => {
-        // Errors logged in getVideoInfo
-      })
-
-    // Await just the fast daemon URL (~250ms), not the slow metadata
-    const url = await daemonUrl
-    const audioUrl = url || getProxyUrl(videoId)
-
+    // Return proxy URL immediately. Audio connects to localhost proxy (~10ms)
+    // while the daemon resolves the CDN URL in parallel. The proxy then
+    // pipes the CDN stream — net effect: CDN connection and daemon run
+    // concurrently, not sequentially.
     return {
       videoId,
-      audioUrl,
+      audioUrl: getProxyUrl(videoId),
       duration: 0,
       title: 'Loading...',
       thumbnail: '',
@@ -263,6 +228,16 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     return true
   }
 
+  /**
+   * Pre-warm the CDN connection for a video by pre-resolving its URL
+   * and immediately making a small HTTPS GET. The shared keep-alive
+   * agent maintains the TCP+TLS connection for subsequent proxy requests.
+   * Fire-and-forget — called at startup for the first queue track.
+   */
+  async function prewarmCdn(videoId: string): Promise<void> {
+    return proxy.prewarmCdn(videoId)
+  }
+
   return {
     resolve,
     clearCache,
@@ -276,6 +251,8 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     corruptCache,
     /** Number of in-flight resolve operations (delegates to proxy) */
     getPendingResolveCount: proxy.getPendingResolveCount,
+    /** Pre-warm CDN connection for a video ID */
+    prewarmCdn,
   }
 }
 

@@ -7,6 +7,15 @@ import { PROXY_PORT } from '../../shared/constants'
 import { getVideoInfo, type YTDlpInfo, YTDlpError } from './yt-dlp'
 import { getDaemon } from './yt-dlp-daemon'
 
+/** Shared HTTPS agent with keep-alive for CDN connections.
+ *  Warms TCP+TLS so subsequent connections to the same CDN edge are faster. */
+const cdnAgent = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 10,
+  maxFreeSockets: 5,
+})
+
 export interface StreamCache {
   /** CDN stream URL */
   streamUrl: string
@@ -298,7 +307,10 @@ export function createProxy(options: ProxyOptions = {}) {
 
       const proxyReq = transport.get(
         targetUrl,
-        { headers: proxyHeaders },
+        {
+          headers: proxyHeaders,
+          agent: parsedUrl.protocol === 'https:' ? cdnAgent : undefined,
+        },
         (proxyRes) => {
           // Follow redirects
           if (proxyRes.statusCode && [301, 302, 303, 307].includes(proxyRes.statusCode)) {
@@ -411,6 +423,29 @@ export function createProxy(options: ProxyOptions = {}) {
     streamCache.set(videoId, entry)
   }
 
+  /**
+   * Pre-warm the CDN connection for a video by pre-resolving its URL
+   * and immediately making a small HTTPS GET. The shared keep-alive
+   * agent keeps the TCP+TLS connection warm for subsequent proxy
+   * requests (should reduce CDN connection time by ~300ms).
+   */
+  async function prewarmCdn(videoId: string): Promise<void> {
+    try {
+      const url = await getDaemon().getStreamUrl(videoId, 15000)
+      if (!url) return
+      const req = https.get(url, {
+        agent: cdnAgent,
+        headers: { 'User-Agent': 'Mozilla/5.0', 'Range': 'bytes=0-65535' },
+      }, (res) => {
+        res.resume()
+        res.on('end', () => {})
+      })
+      req.on('error', () => {})
+    } catch {
+      // Warm-up is best-effort
+    }
+  }
+
   return {
     server,
     start,
@@ -420,6 +455,7 @@ export function createProxy(options: ProxyOptions = {}) {
     setStreamCacheEntry,
     triggerBackgroundResolve,
     getPendingResolveCount,
+    prewarmCdn,
     streamCache,
   }
 }
