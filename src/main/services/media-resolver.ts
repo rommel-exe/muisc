@@ -1,4 +1,6 @@
 import { createProxy } from './proxy'
+import { getDaemon } from './yt-dlp-daemon'
+import { getVideoInfo } from './yt-dlp'
 import type { ResolvedStream } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
 
@@ -89,27 +91,63 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       }
     }
 
-    // Trigger background yt-dlp resolve — proxy caches the CDN URL when done.
-    // Fire-and-forget: the promise updates resolveCache with real metadata.
-    proxy.triggerBackgroundResolve(videoId).then((info) => {
-      const resolved: ResolvedStream = {
-        videoId: info.id,
-        audioUrl: getProxyUrl(videoId),
-        duration: info.duration,
-        title: info.title,
-        thumbnail: info.thumbnail || '',
-      }
-      resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
-      evictIfNeeded()
-    }).catch(() => {
-      // Errors logged in proxy.triggerBackgroundResolve
-    })
+    // ── Resolve the stream URL ──
+    // Two parallel paths:
+    //   1. 🏎️ Fast: daemon.getStreamUrl() (~250ms) → direct CDN URL.
+    //      Chromium's QUIC support gives faster, more consistent CDN connections.
+    //   2. 🐢 Background: getVideoInfo subprocess populates resolve cache with
+    //      metadata + proxy stream cache (for fallback/re-resolve).
+    //
+    // If the daemon fails, falls back to the proxy URL.
 
-    // Return proxy URL immediately. Audio will connect to proxy, which
-    // blocks until the background yt-dlp resolve populates the stream cache.
+    // 🏎️ Fast: daemon-extracted CDN URL (warm connection pool, ~250ms)
+    const daemonUrl = getDaemon().getStreamUrl(videoId, 5000)
+      .then((url) => {
+        if (url) {
+          proxy.setStreamCacheEntry(videoId, {
+            streamUrl: url,
+            cachedAt: Date.now(),
+            contentType: 'audio/mp4',
+          })
+        }
+        return url
+      })
+      .catch(() => '' as string)
+
+    // 🐢 Slow: full metadata via subprocess (title, duration, thumbnail)
+    getVideoInfo(videoId, { mode: 'background', timeoutMs: 30000 })
+      .then((info) => {
+        const bestFormat = info.formats
+          .filter((f) => f.acodec !== 'none' && f.url)
+          .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+        if (bestFormat?.url) {
+          proxy.setStreamCacheEntry(videoId, {
+            streamUrl: bestFormat.url,
+            cachedAt: Date.now(),
+            contentType: `audio/${bestFormat.ext}`,
+          })
+        }
+        const resolved: ResolvedStream = {
+          videoId: info.id,
+          audioUrl: bestFormat?.url || getProxyUrl(videoId),
+          duration: info.duration,
+          title: info.title,
+          thumbnail: info.thumbnail || '',
+        }
+        resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
+        evictIfNeeded()
+      })
+      .catch(() => {
+        // Errors logged in getVideoInfo
+      })
+
+    // Await just the fast daemon URL (~250ms), not the slow metadata
+    const url = await daemonUrl
+    const audioUrl = url || getProxyUrl(videoId)
+
     return {
       videoId,
-      audioUrl: getProxyUrl(videoId),
+      audioUrl,
       duration: 0,
       title: 'Loading...',
       thumbnail: '',

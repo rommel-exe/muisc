@@ -7,16 +7,16 @@ interface QueueTrack {
 }
 
 const QUEUE: QueueTrack[] = [
-  { id: 'dQw4w9WgXcQ', label: 'Rick Astley — Never Gonna Give You Up' },
-  { id: 'kJQP7kiw5Fk', label: 'Luis Fonsi — Despacito' },
-  { id: 'JGwWNGJdvx8', label: 'Ed Sheeran — Shape of You' },
-  { id: 'fJ9rUzIMcZQ', label: 'Queen — Bohemian Rhapsody' },
+  { id: '9bZkp7q19f0', label: 'PSY — Gangnam Style' },
+  { id: 'CevxZvSJLk8', label: 'Katy Perry — Roar' },
+  { id: 'e-ORhEE9VVg', label: 'Taylor Swift — Blank Space' },
+  { id: '0KSOMA3QBU0', label: 'Katy Perry — Dark Horse' },
+  { id: 'hT_nvWreIhg', label: 'OneRepublic — Counting Stars' },
+  { id: 'YQHsXMglC9A', label: 'Adele — Hello' },
   { id: 'kXYiU_JCYtU', label: 'Linkin Park — Numb' },
   { id: 'RgKAFK5djSk', label: 'Wiz Khalifa — See You Again' },
-  { id: 'OPf0YbXqDm0', label: 'Mark Ronson — Uptown Funk' },
-  { id: 'hTWKbfoikeg', label: 'Justin Bieber — Sorry' },
-  { id: '09R8_2nJtjg', label: 'Maroon 5 — Sugar' },
-  { id: 'HP-MbfHFUqs', label: 'The Chainsmokers — Closer' },
+  { id: 'JGwWNGJdvx8', label: 'Ed Sheeran — Shape of You' },
+  { id: 'fJ9rUzIMcZQ', label: 'Queen — Bohemian Rhapsody' },
 ]
 
 function App() {
