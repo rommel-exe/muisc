@@ -3,6 +3,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { URL } from 'node:url'
+import dns from 'node:dns'
 import { PROXY_PORT } from '../../shared/constants'
 import { getVideoInfo, type YTDlpInfo, YTDlpError } from './yt-dlp'
 import { getDaemon } from './yt-dlp-daemon'
@@ -424,36 +425,36 @@ export function createProxy(options: ProxyOptions = {}) {
   }
 
   /**
-   * Pre-warm the CDN connection for a video: resolve its CDN URL via
-   * the daemon, store it in the stream cache, and pre-connect to the
-   * CDN edge with a small Range GET. The shared keep-alive agent keeps
-   * TCP+TLS warm so the subsequent proxy request skips connection setup
-   * (~300ms saved).
+   * Pre-warm a track: resolve its CDN URL via the warm daemon (~250ms),
+   * cache it in the stream cache so the proxy avoids a second daemon call,
+   * and pre-resolve DNS for *.googlevideo.com so the CDN connection only
+   * pays TCP+TLS (not DNS).
    *
-   * After this completes, clicking the track should resolve nearly
-   * instantly from cache and stream from the already-warm CDN connection.
+   * Fire-and-forget, runs after app window is shown.
    */
   async function prewarmCdn(videoId: string): Promise<void> {
     try {
       const url = await getDaemon().getStreamUrl(videoId, 15000)
       if (!url) return
-      // Store in stream cache so the proxy doesn't re-resolve
+
+      // Cache the URL so resolveStreamUrl returns instantly
       streamCache.set(videoId, {
         streamUrl: url,
         cachedAt: Date.now(),
         contentType: 'audio/mp4',
       })
-      // Pre-connect to CDN via shared keep-alive agent
-      const req = https.get(url, {
-        agent: cdnAgent,
-        headers: { 'User-Agent': 'Mozilla/5.0', 'Range': 'bytes=0-65535' },
-      }, (res) => {
-        res.resume()
-        res.on('end', () => {})
+
+      // Pre-resolve DNS for the CDN hostname (googlevideo.com)
+      // so Chromium's Audio element doesn't pay DNS on first play.
+      const hostname = new URL(url).hostname
+      dns.resolve(hostname, (err) => {
+        if (err) {
+          // Fallback: just warm a known googlevideo.com subdomain
+          dns.lookup('r2---sn-5hn7su7k.googlevideo.com', () => {})
+        }
       })
-      req.on('error', () => {})
     } catch {
-      // Warm-up is best-effort
+      // Best-effort
     }
   }
 
