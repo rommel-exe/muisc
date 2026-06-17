@@ -47,7 +47,7 @@ async function runPipelineTest(): Promise<void> {
     console.log('─'.repeat(60))
 
     const fgStart = Date.now()
-    const activeStream = await resolver.resolve(activeTrack, { mode: 'foreground' })
+    const activeStream = await resolver.resolve(activeTrack)
     const fgDuration = Date.now() - fgStart
 
     console.log(`  Active track:     ${activeStream.title}`)

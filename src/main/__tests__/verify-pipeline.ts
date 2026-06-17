@@ -44,7 +44,7 @@ async function verifyPipeline() {
   console.log('─'.repeat(60))
 
   const fgStart = Date.now()
-  const stream = await resolver.resolve(activeTrack, { mode: 'foreground' })
+  const stream = await resolver.resolve(activeTrack)
   const fgMs = Date.now() - fgStart
 
   console.log(`  Track:        ${stream.title}`)

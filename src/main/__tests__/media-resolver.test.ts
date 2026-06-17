@@ -250,7 +250,7 @@ describe('MediaResolver', () => {
 
   it('should have 0 pending resolves initially', () => {
     const resolver = createMediaResolver({ proxyPort: 18941 })
-    expect(resolver.getPendingCount()).toBe(0)
+    expect(resolver.getPendingResolveCount()).toBe(0)
   })
 
   it('should clear cache without throwing', () => {
@@ -259,30 +259,65 @@ describe('MediaResolver', () => {
     expect(() => resolver.clearCache(TEST_VIDEO_ID)).not.toThrow()
   })
 
-  it('should abort all pending resolves', () => {
-    const resolver = createMediaResolver({ proxyPort: 18941 })
-    expect(() => resolver.abortAllPending()).not.toThrow()
-    expect(resolver.getPendingCount()).toBe(0)
-  })
-
-  it('should resolve a real video successfully', async () => {
+  it('should resolve instantly with proxy URL and placeholder metadata', async () => {
     const resolver = createMediaResolver({ proxyPort: 18942 })
     try {
+      const start = Date.now()
       const result = await resolver.resolve(TEST_VIDEO_ID)
+      const elapsed = Date.now() - start
+
+      // Instant return: resolve must not block on yt-dlp
+      expect(elapsed).toBeLessThan(500)
       expect(result.videoId).toBe(TEST_VIDEO_ID)
       expect(result.audioUrl).toBe(`http://127.0.0.1:18942/stream?v=${TEST_VIDEO_ID}`)
-      expect(result.title).toBeTruthy()
-      expect(result.duration).toBeGreaterThan(0)
-      expect(result.thumbnail).toBeTruthy()
-      expect(result.thumbnail).toMatch(/^https?:\/\//)
+      // Placeholder metadata until background resolve completes
+      expect(result.title).toBe('Loading...')
+      expect(result.duration).toBe(0)
+      expect(result.thumbnail).toBe('')
+    } finally {
+      await resolver.stop()
+    }
+  }, 15000)
+
+  it('should eventually populate cache with real metadata after background resolve', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18943 })
+    try {
+      await resolver.start()
+      // Trigger resolve (returns instantly with placeholder)
+      await resolver.resolve(TEST_VIDEO_ID)
+
+      // Poll for background resolve to complete (up to 20s)
+      let title: string | undefined
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        const cached = resolver.resolve(TEST_VIDEO_ID)
+        const result = await cached
+        if (result.title !== 'Loading...') {
+          title = result.title
+          break
+        }
+      }
+
+      expect(title).toBeTruthy()
+      expect(title).not.toBe('Loading...')
     } finally {
       await resolver.stop()
     }
   }, 30000)
 
-  it('should return cached result on second resolve (no network hit)', async () => {
-    const resolver = createMediaResolver({ proxyPort: 18943 })
+  it('should return same cached result on second resolve', async () => {
+    const resolver = createMediaResolver({ proxyPort: 18944 })
     try {
+      await resolver.start()
+      await resolver.resolve(TEST_VIDEO_ID)
+
+      // Wait for background resolve to complete
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        const cached = await resolver.resolve(TEST_VIDEO_ID)
+        if (cached.title !== 'Loading...') break
+      }
+
       const first = await resolver.resolve(TEST_VIDEO_ID)
       const second = await resolver.resolve(TEST_VIDEO_ID)
       expect(second.videoId).toBe(first.videoId)
@@ -295,26 +330,31 @@ describe('MediaResolver', () => {
   }, 30000)
 
   it('should force refresh when forceRefresh=true', async () => {
-    const resolver = createMediaResolver({ proxyPort: 18944 })
+    const resolver = createMediaResolver({ proxyPort: 18945 })
     try {
-      // First resolve caches it
+      await resolver.start()
       await resolver.resolve(TEST_VIDEO_ID)
-      // Second with forceRefresh re-resolves
+
+      // Wait for background resolve
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        const cached = await resolver.resolve(TEST_VIDEO_ID)
+        if (cached.title !== 'Loading...') break
+      }
+
+      // forceRefresh returns placeholder again and triggers re-resolve
       const refreshed = await resolver.resolve(TEST_VIDEO_ID, { forceRefresh: true })
       expect(refreshed.videoId).toBe(TEST_VIDEO_ID)
-      expect(refreshed.title).toBeTruthy()
+      expect(refreshed.title).toBe('Loading...')
     } finally {
       await resolver.stop()
     }
   }, 30000)
 
   it('should corrupt cached proxy stream URL', async () => {
-    const resolver = createMediaResolver({ proxyPort: 18945 })
+    const resolver = createMediaResolver({ proxyPort: 18946 })
     try {
-      // First resolve to populate proxy's in-memory stream cache
-      // (resolve calls getVideoInfo which populates resolver cache,
-      //  but corruptCache needs proxy cache — we need an HTTP request for that)
-      // So for unit purposes, just test that corruptCache returns false when no cache entry
+      // corruptCache needs proxy cache entry — without one, returns false
       expect(resolver.corruptCache(TEST_VIDEO_ID)).toBe(false)
     } finally {
       await resolver.stop()
@@ -322,10 +362,9 @@ describe('MediaResolver', () => {
   })
 
   it('should corrupt cache after proxy stream request', async () => {
-    const proxyPort = 18946
+    const proxyPort = 18947
     const resolver = createMediaResolver({ proxyPort })
     try {
-      // Start the proxy
       await resolver.start()
 
       // Make a stream request to populate proxy's cache
@@ -335,58 +374,43 @@ describe('MediaResolver', () => {
       )
       expect(streamRes.ok || streamRes.status === 206).toBe(true)
 
-      // Now corruptCache should find and corrupt the entry
       const corrupted = resolver.corruptCache(TEST_VIDEO_ID)
       expect(corrupted).toBe(true)
-
-      // The cache entry should now have a broken signature
-      // Accessing it again will trigger the 403 → re-resolve path
     } finally {
       resolver.clearCache()
       await resolver.stop()
     }
   }, 60000)
 
-  it('should abort pending resolve when new resolve for same ID comes in', async () => {
-    const resolver = createMediaResolver({ proxyPort: 18947, maxRetries: 0 })
-    try {
-      // First resolve starts (will take some time for yt-dlp)
-      const p1 = resolver.resolve(TEST_VIDEO_ID)
-      // Immediately start another — this should abort the first
-      const p2 = resolver.resolve(TEST_VIDEO_ID)
-
-      // Both should resolve, but only one took the actual yt-dlp call
-      const [, result2] = await Promise.allSettled([p1, p2])
-      // The second should succeed (it's the one that wasn't aborted)
-      if (result2.status === 'fulfilled') {
-        expect(result2.value.videoId).toBe(TEST_VIDEO_ID)
-      }
-      // The first might be rejected (aborted) or succeed (if already cached)
-      // Either is acceptable — we just want to verify no crash
-      expect(resolver.getPendingCount()).toBe(0)
-    } finally {
-      await resolver.stop()
-    }
-  }, 30000)
-
   it('should manage multiple video resolves independently', async () => {
     const resolver = createMediaResolver({ proxyPort: 18948 })
     try {
-      // Resolve two different videos concurrently
+      await resolver.start()
+
+      // Resolve two different videos concurrently (returns instantly)
       const ids = [TEST_VIDEO_ID, 'kXYiU_JCYtU'] // Rick Astley, Numb - Linkin Park
       const results = await Promise.all(
-        ids.map((id) =>
-          resolver.resolve(id).catch(() => null) // tolerate one failing
-        )
+        ids.map((id) => resolver.resolve(id).catch(() => null))
       )
 
       const succeeded = results.filter(Boolean)
-      expect(succeeded.length).toBeGreaterThan(0)
+      expect(succeeded.length).toBe(2)
       for (const r of succeeded) {
         expect(r!.videoId).toBeTruthy()
         expect(r!.audioUrl).toContain('/stream?v=')
-        expect(r!.duration).toBeGreaterThan(0)
+        // Both return placeholder metadata initially
+        expect(r!.title).toBe('Loading...')
       }
+
+      // Wait for background resolves to complete
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 500))
+        const r1 = await resolver.resolve(TEST_VIDEO_ID)
+        const r2 = await resolver.resolve('kXYiU_JCYtU')
+        if (r1.title !== 'Loading...' && r2.title !== 'Loading...') break
+      }
+
+      expect(resolver.getPendingResolveCount()).toBe(0)
     } finally {
       await resolver.stop()
     }

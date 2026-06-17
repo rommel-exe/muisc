@@ -30,18 +30,10 @@ export function registerHandlers(resolver: MediaResolver): void {
   })
 
   /**
-   * Debug: Get the number of pending (in-flight) resolve operations.
+   * Debug: Get the number of in-flight background resolve operations.
    */
   ipcMain.handle('test-pending-count', async () => {
-    return resolver.getPendingCount()
-  })
-
-  /**
-   * Debug: Abort all pending resolve operations.
-   */
-  ipcMain.handle('test-abort-all', async () => {
-    resolver.abortAllPending()
-    return true
+    return resolver.getPendingResolveCount()
   })
 
   /**
@@ -70,7 +62,6 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('resolve-track')
   ipcMain.removeAllListeners('test-corrupt-cache')
   ipcMain.removeAllListeners('test-pending-count')
-  ipcMain.removeAllListeners('test-abort-all')
   ipcMain.removeAllListeners(IPC_CHANNELS.PREFETCH_QUEUE)
   console.log('[IPC] Handlers unregistered')
 }

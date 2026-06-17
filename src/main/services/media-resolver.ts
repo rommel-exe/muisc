@@ -1,15 +1,10 @@
 import { createProxy } from './proxy'
-import { getVideoInfo, YTDlpError } from './yt-dlp'
 import type { ResolvedStream } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
 
 export interface ResolveOptions {
   /** Force re-resolution even if cached */
   forceRefresh?: boolean
-  /** Extraction mode hint (default: 'foreground') */
-  mode?: 'foreground' | 'background'
-  /** External abort signal (e.g. from background preloader) */
-  signal?: AbortSignal
 }
 
 export interface MediaResolverConfig {
@@ -35,7 +30,6 @@ export interface MediaResolverConfig {
 export function createMediaResolver(config: MediaResolverConfig = {}) {
   const {
     proxyPort = PROXY_PORT,
-    maxRetries = 1,
     cacheSize = 100,
     cacheTtlMs = 5 * 60 * 60 * 1000,
     preloadedWindowSize = 3,
@@ -44,70 +38,20 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
 
   /**
    * Re-resolve callback for proxy's CDN 403/410 recovery.
-   * Clears MediaResolver's cache and returns a fresh CDN stream URL.
+   * Clears MediaResolver's cache and triggers a fresh background resolve.
    */
   const reResolveStream = async (videoId: string): Promise<string> => {
-    // Clear resolve cache so next resolve-track gets fresh metadata
     resolveCache.delete(videoId)
-
-    // Abort any pending resolve for this video ID
-    const existing = pendingResolves.get(videoId)
-    if (existing) {
-      existing.abort()
-      console.log(`[MediaResolver] Aborted pending resolve for ${videoId} during 403/410 recovery`)
-    }
-
-    const controller = new AbortController()
-    pendingResolves.set(videoId, controller)
-
-    try {
-      // Retry once on transient failures (GPU process crash, etc.)
-      let lastError: Error | undefined
-      for (let attempt = 0; attempt <= 1; attempt++) {
-        try {
-          const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: controller.signal })
-          const bestFormat = info.formats
-            .filter((f) => f.acodec !== 'none' && f.url)
-            .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-
-          if (!bestFormat?.url) {
-            throw new Error('No audio format found during 403/410 recovery')
-          }
-
-          // Update proxy's stream cache with new CDN URL
-          proxy.setStreamCacheEntry(videoId, {
-            streamUrl: bestFormat.url,
-            cachedAt: Date.now(),
-            contentType: `audio/${bestFormat.ext}`,
-          })
-
-          return bestFormat.url
-        } catch (err: any) {
-          if (controller.signal.aborted) throw err
-          lastError = err
-          if (attempt < 1) {
-            await new Promise((r) => setTimeout(r, 1000))
-          }
-        }
-      }
-      throw lastError ?? new Error('Stream re-resolve failed')
-    } finally {
-      pendingResolves.delete(videoId)
-    }
+    await proxy.triggerBackgroundResolve(videoId)
+    const cached = proxy.getStreamCacheEntry(videoId)
+    if (cached?.streamUrl) return cached.streamUrl
+    throw new Error('Stream re-resolve failed')
   }
 
   const proxy = createProxy({ port: proxyPort, cacheTtlMs, onReResolve: reResolveStream })
 
   // LRU cache: videoId → ResolvedStream (minus audioUrl, which is derived from proxy)
   const resolveCache = new Map<string, { info: ResolvedStream; cachedAt: number }>()
-
-  // Track pending resolves so we can abort duplicates
-  const pendingResolves = new Map<string, AbortController>()
-
-  // ── Sliding window preloader state ──
-
-  // AbortControllers for background preloads so we can cancel stale ones on window shift
-  const backgroundControllers = new Map<string, AbortController>()
 
   /**
    * Get a proxy URL for a video ID.
@@ -121,23 +65,21 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * Resolve a video ID to a playable audio source.
    *
    * Flow:
-   * 1. Check resolve cache (skip if forceRefresh) — 0ms on hit
-   * 2. Abort any previous/stale resolve for this video ID (rapid-skip guard)
-   * 3. Resolve via yt-dlp subprocess with retry
-   * 4. Pre-populate proxy stream cache for immediate audio playback
-   * 5. Cache metadata in LRU
-   * 6. Return ResolvedStream with the proxy URL
+   * 1. Check resolve cache — 0ms on hit, return proxy URL immediately
+   * 2. Trigger background yt-dlp resolve via proxy (fire-and-forget)
+   * 3. Return proxy URL immediately with cached or placeholder metadata
    *
-   * Note: InnerTube (youtubei.js) was evaluated as a fast-path resolver
-   * but youtubei.js@17.0.1 cannot produce streaming URLs for audio formats
-   * (no direct URL, no cipher data). yt-dlp is the sole resolver.
-   * Background preloading hides the latency for all but the first cold resolve.
+   * The proxy's stream cache is populated by backgroundResolve. When the
+   * renderer's Audio element connects to the proxy, the proxy blocks until
+   * the stream cache is populated, then starts piping the YouTube CDN stream.
+   * This means the audio connection establishes in parallel with yt-dlp,
+   * and the renderer is never blocked on the yt-dlp subprocess.
    */
   async function resolve(
     videoId: string,
     opts: ResolveOptions = {}
   ): Promise<ResolvedStream> {
-    const { forceRefresh = false, mode = 'foreground', signal: externalSignal } = opts
+    const { forceRefresh = false } = opts
 
     // Check cache first
     if (!forceRefresh) {
@@ -147,95 +89,30 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       }
     }
 
-    // When no external signal is provided, use internal abort tracking
-    // to deduplicate rapid foreground resolves for the same video ID.
-    // Background preloads manage their own controllers externally.
-    if (!externalSignal) {
-      // Abort previous foreground resolve for the same video ID (rapid re-spam)
-      const existing = pendingResolves.get(videoId)
-      if (existing) {
-        existing.abort()
-        console.log(`[MediaResolver] Aborted pending resolve for ${videoId}`)
-      }
-
-      // Abort any in-flight background preload for the same video ID so the
-      // foreground resolve doesn't race a background yt-dlp subprocess.
-      // Without this, rapid skip-spam can leave both running concurrently,
-      // wasting resources and potentially corrupting the proxy stream cache.
-      const bgController = backgroundControllers.get(videoId)
-      if (bgController) {
-        bgController.abort()
-        console.log(`[MediaResolver] Aborted background preload for ${videoId} (foreground resolve)`)
-        // executeBackgroundPreload's finally{} will clean up the Map entry
-      }
-    }
-
-    const controller = new AbortController()
-    if (!externalSignal) {
-      pendingResolves.set(videoId, controller)
-    }
-
-    // Use external signal (e.g. from background preloader) or internal controller
-    const activeSignal = externalSignal ?? controller.signal
-
-    // ── Helper: populate proxy cache + resolve cache + return ResolvedStream ──
-    const cacheAndReturn = (
-      videoId: string,
-      title: string,
-      duration: number,
-      thumbnail: string,
-    ): ResolvedStream => {
+    // Trigger background yt-dlp resolve — proxy caches the CDN URL when done.
+    // Fire-and-forget: the promise updates resolveCache with real metadata.
+    proxy.triggerBackgroundResolve(videoId).then((info) => {
       const resolved: ResolvedStream = {
-        videoId,
+        videoId: info.id,
         audioUrl: getProxyUrl(videoId),
-        duration,
-        title,
-        thumbnail,
+        duration: info.duration,
+        title: info.title,
+        thumbnail: info.thumbnail || '',
       }
       resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
       evictIfNeeded()
-      return resolved
-    }
+    }).catch(() => {
+      // Errors logged in proxy.triggerBackgroundResolve
+    })
 
-    // ── yt-dlp resolve with retry ──
-    try {
-      const tStart = Date.now()
-      let lastError: Error | undefined
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-          console.log(`[MediaResolver] Resolving ${videoId} (attempt ${attempt + 1})...`)
-          const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: activeSignal, mode })
-          console.log(`[MediaResolver] Resolved ${videoId} in ${Date.now() - tStart}ms`)
-
-          // Pre-populate proxy stream cache with the best audio format
-          const bestFormat = info.formats
-            .filter((f) => f.acodec !== 'none' && f.url)
-            .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-
-          if (bestFormat?.url) {
-            proxy.setStreamCacheEntry(videoId, {
-              streamUrl: bestFormat.url,
-              cachedAt: Date.now(),
-              contentType: `audio/${bestFormat.ext}`,
-            })
-          }
-
-          const resolved = cacheAndReturn(info.id, info.title, info.duration, info.thumbnail)
-          pendingResolves.delete(videoId)
-          return resolved
-        } catch (err: any) {
-          if (activeSignal.aborted) throw err
-          lastError = err
-          const isRetryable =
-            err instanceof YTDlpError &&
-            (err.code === 'TIMEOUT' || err.code === 'PARSE_ERROR')
-          if (!isRetryable || attempt >= maxRetries) throw err
-          await new Promise((r) => setTimeout(r, 1000))
-        }
-      }
-      throw lastError ?? new Error('Unknown resolve error')
-    } finally {
-      pendingResolves.delete(videoId)
+    // Return proxy URL immediately. Audio will connect to proxy, which
+    // blocks until the background yt-dlp resolve populates the stream cache.
+    return {
+      videoId,
+      audioUrl: getProxyUrl(videoId),
+      duration: 0,
+      title: 'Loading...',
+      thumbnail: '',
     }
   }
 
@@ -258,71 +135,41 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
   // ── Sliding window queue preloader ──
 
   /**
-   * Prefetch upcoming queue tracks into the LRU cache.
-   * Keeps the next N tracks warm by resolving them in background mode.
+   * Prefetch upcoming queue tracks into the proxy stream cache and
+   * MediaResolver's metadata cache.
    *
-   * Call this whenever the queue changes or playback advances:
-   * - After adding tracks to the queue
-   * - After skip/next/prev
-   * - After play starts on a new track
+   * With the instant-return proxy strategy, this pre-fetches metadata
+   * (title, duration, thumbnail) and stream URLs so they're ready when
+   * the user navigates. Not required for the <2s cold-click goal but
+   * improves subsequent-click UX.
    *
-   * Concurrency is capped to avoid saturating network bandwidth.
-   * Stale preloads (for IDs no longer in the window) are aborted automatically.
+   * Call this whenever the queue changes or playback advances.
    */
   async function prefetchQueue(upcomingVideoIds: string[]): Promise<void> {
-    // 1. Abort any in-flight preloads for IDs outside the current window
-    const windowedIds = new Set(upcomingVideoIds.slice(0, preloadedWindowSize))
-    for (const [id, controller] of backgroundControllers) {
-      if (!windowedIds.has(id)) {
-        controller.abort()
-        backgroundControllers.delete(id)
-      }
-    }
-
-    // 2. Determine which upcoming tracks actually need preloading
     const targets = upcomingVideoIds
       .slice(0, preloadedWindowSize)
       .filter((id) => {
-        // Already being preloaded (backgroundControllers keys are video IDs)
-        if (backgroundControllers.has(id)) return false
-        // Already in cache and still fresh
         const cached = resolveCache.get(id)
         if (cached && Date.now() - cached.cachedAt < cacheTtlMs) return false
         return true
       })
+      .slice(0, maxConcurrentPreloads)
 
-    // 3. Feed targets into the background preloader, respecting concurrency cap
-    const availableSlots = Math.max(0, maxConcurrentPreloads - backgroundControllers.size)
-    for (const videoId of targets.slice(0, availableSlots)) {
-      // Fire-and-forget — errors are handled internally
-      executeBackgroundPreload(videoId)
-    }
-  }
-
-  /**
-   * Background preload a single video ID.
-   * Resolves in background mode and caches the result when complete.
-   * The AbortController is registered in `backgroundControllers` so that
-   * `prefetchQueue` can cancel stale preloads and `stop()` can kill all.
-   */
-  async function executeBackgroundPreload(videoId: string): Promise<void> {
-    const controller = new AbortController()
-    backgroundControllers.set(videoId, controller)
-
-    try {
-      console.log(`[MediaResolver] Background preloading: ${videoId}`)
-      // Pass the signal to resolve() so external abort actually cancels yt-dlp
-      await resolve(videoId, { mode: 'background', signal: controller.signal })
-      console.log(`[MediaResolver] Background preload complete: ${videoId}`)
-    } catch (err: any) {
-      // Aborted preloads are intentional — don't log as warnings
-      if (err instanceof YTDlpError && err.code === 'ABORTED') {
-        console.log(`[MediaResolver] Background preload aborted: ${videoId}`)
-      } else {
-        console.warn(`[MediaResolver] Background preload failed for ${videoId}:`, err.message)
-      }
-    } finally {
-      backgroundControllers.delete(videoId)
+    // Fire-and-forget — proxy.triggerBackgroundResolve deduplicates
+    for (const videoId of targets) {
+      proxy.triggerBackgroundResolve(videoId).then((info) => {
+        const resolved: ResolvedStream = {
+          videoId: info.id,
+          audioUrl: getProxyUrl(videoId),
+          duration: info.duration,
+          title: info.title,
+          thumbnail: info.thumbnail || '',
+        }
+        resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
+        evictIfNeeded()
+      }).catch(() => {
+        // Errors logged in proxy
+      })
     }
   }
 
@@ -351,13 +198,6 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * Stop the proxy server gracefully. Call this on app quit.
    */
   async function stop(): Promise<void> {
-    // Abort all pending background preloads
-    for (const [id, controller] of backgroundControllers) {
-      controller.abort()
-      console.log(`[MediaResolver] Aborted background preload for ${id}`)
-    }
-    backgroundControllers.clear()
-
     resolveCache.clear()
     await proxy.stop()
     console.log('[MediaResolver] Stopped')
@@ -385,24 +225,6 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     return true
   }
 
-  /**
-   * Get the number of pending (in-flight) resolve operations.
-   */
-  function getPendingCount(): number {
-    return pendingResolves.size
-  }
-
-  /**
-   * Abort all pending resolve operations.
-   */
-  function abortAllPending(): void {
-    for (const [videoId, controller] of pendingResolves) {
-      controller.abort()
-      console.log(`[MediaResolver] Aborted pending resolve for ${videoId}`)
-    }
-    pendingResolves.clear()
-  }
-
   return {
     resolve,
     clearCache,
@@ -414,10 +236,8 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     getProxyUrl,
     /** Corrupt cached stream URL for testing 403 recovery */
     corruptCache,
-    /** Number of in-flight resolve operations */
-    getPendingCount,
-    /** Abort all pending resolve operations */
-    abortAllPending,
+    /** Number of in-flight resolve operations (delegates to proxy) */
+    getPendingResolveCount: proxy.getPendingResolveCount,
   }
 }
 

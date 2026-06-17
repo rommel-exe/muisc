@@ -4,7 +4,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { URL } from 'node:url'
 import { PROXY_PORT } from '../../shared/constants'
-import { getVideoInfo, YTDlpError } from './yt-dlp'
+import { getVideoInfo, type YTDlpInfo, YTDlpError } from './yt-dlp'
 
 export interface StreamCache {
   /** CDN stream URL */
@@ -47,8 +47,10 @@ export function createProxy(options: ProxyOptions = {}) {
   // In-memory cache: videoId → StreamCache
   const streamCache = new Map<string, StreamCache>()
 
-  // Track in-flight yt-dlp resolves so we can abort stale ones
-  const pendingResolves = new Map<string, AbortController>()
+  // Track in-flight yt-dlp resolves so we can await them instead of duplicating work.
+  // Shared with MediaResolver so resolve() can kick off bg work that proxy waits on.
+  const pendingResolves = new Map<string, Promise<string>>()
+  const pendingControllers = new Map<string, AbortController>()
 
   const server = http.createServer(async (req, res) => {
     // CORS headers on every response
@@ -103,61 +105,142 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /**
    * Get or resolve a stream URL for a video ID.
-   * Re-resolves if cache is expired.
-   * Aborts any previous in-flight resolve for the same video ID
-   * to prevent yt-dlp process pile-up on rapid skips.
+   * Checks cache first, then awaits any in-flight background resolve,
+   * and finally starts a new resolve if nothing is pending.
    */
   async function resolveStreamUrl(videoId: string): Promise<string> {
+    // 1. Cache hit
     const cached = streamCache.get(videoId)
-    const now = Date.now()
-
-    if (cached && now - cached.cachedAt < cacheTtlMs) {
+    if (cached && Date.now() - cached.cachedAt < cacheTtlMs) {
       return cached.streamUrl
     }
 
-    // Abort any previous pending resolve for this video ID
-    const existing = pendingResolves.get(videoId)
-    if (existing) {
-      existing.abort()
-      console.log(`[Proxy] Aborted stale resolve for ${videoId}`)
+    // 2. There's already a background resolve in-flight — await it
+    const pending = pendingResolves.get(videoId)
+    if (pending) {
+      const url = await pending
+      // Re-check cache (resolve populates it)
+      const hit = streamCache.get(videoId)
+      if (hit) return hit.streamUrl
+      return url
     }
 
+    // 3. Nothing pending — start a fresh foreground resolve
+    return triggerResolve(videoId)
+  }
+
+  /**
+   * Internal: run yt-dlp and cache the result.
+   * Called by resolveStreamUrl and triggerBackgroundResolve.
+   */
+  async function triggerResolve(videoId: string): Promise<string> {
     const controller = new AbortController()
-    pendingResolves.set(videoId, controller)
+    pendingControllers.set(videoId, controller)
+    const promise = doResolve(videoId, controller)
+    pendingResolves.set(videoId, promise)
 
     try {
-      // Re-resolve via yt-dlp with retry (handles transient GPU-crash kills)
-      let lastError: Error | undefined
-      for (let attempt = 0; attempt <= 1; attempt++) {
-        try {
-          const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: controller.signal })
-          const bestFormat = info.formats
-            .filter((f) => f.acodec !== 'none' && f.url)
-            .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-
-          if (!bestFormat?.url) {
-            throw new ProxyError('No audio format found', 'STREAM_NOT_FOUND')
-          }
-
-          streamCache.set(videoId, {
-            streamUrl: bestFormat.url,
-            cachedAt: Date.now(),
-            contentType: `audio/${bestFormat.ext}`,
-          })
-
-          return bestFormat.url
-        } catch (err: any) {
-          if (controller.signal.aborted) throw err
-          lastError = err
-          if (attempt < 1) {
-            await new Promise((r) => setTimeout(r, 1000))
-          }
-        }
-      }
-      throw lastError ?? new Error('Stream resolve failed')
+      return await promise
     } finally {
       pendingResolves.delete(videoId)
+      pendingControllers.delete(videoId)
     }
+  }
+
+  async function doResolve(videoId: string, controller: AbortController): Promise<string> {
+    let lastError: Error | undefined
+    for (let attempt = 0; attempt <= 1; attempt++) {
+      try {
+        const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: controller.signal })
+        const bestFormat = info.formats
+          .filter((f) => f.acodec !== 'none' && f.url)
+          .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+
+        if (!bestFormat?.url) {
+          throw new ProxyError('No audio format found', 'STREAM_NOT_FOUND')
+        }
+
+        streamCache.set(videoId, {
+          streamUrl: bestFormat.url,
+          cachedAt: Date.now(),
+          contentType: `audio/${bestFormat.ext}`,
+        })
+
+        return bestFormat.url
+      } catch (err: any) {
+        if (controller.signal.aborted) throw err
+        lastError = err
+        if (attempt < 1) {
+          await new Promise((r) => setTimeout(r, 1000))
+        }
+      }
+    }
+    throw lastError ?? new Error('Stream resolve failed')
+  }
+
+  /**
+   * Trigger a background yt-dlp resolve for a video ID.
+   * Fire-and-forget — calls getVideoInfo once, extracts the stream URL,
+   * populates the stream cache, and stores the promise so resolveStreamUrl
+   * can await it if the audio request arrives before the resolve completes.
+   *
+   * Returns the full YTDlpInfo so the caller (MediaResolver) can extract
+   * metadata (title, duration, thumbnail).
+   */
+  function triggerBackgroundResolve(videoId: string): Promise<YTDlpInfo> {
+    // Deduplicate: if already resolving (either URL or info), return existing
+    const existing = pendingInfoResolves.get(videoId)
+    if (existing) return existing
+
+    const controller = new AbortController()
+    pendingControllers.set(videoId, controller)
+
+    const infoPromise = getVideoInfo(videoId, {
+      timeoutMs: 15000,
+      signal: controller.signal,
+    })
+
+    // Chain: once info is resolved, populate stream cache
+    const chained: Promise<YTDlpInfo> = infoPromise.then((info) => {
+      const bestFormat = info.formats
+        .filter((f) => f.acodec !== 'none' && f.url)
+        .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
+
+      if (bestFormat?.url) {
+        streamCache.set(videoId, {
+          streamUrl: bestFormat.url,
+          cachedAt: Date.now(),
+          contentType: `audio/${bestFormat.ext}`,
+        })
+      }
+
+      return info
+    }).catch((err) => {
+      console.warn(`[Proxy] Background resolve failed for ${videoId}:`, err.message)
+      // Return minimal info so caller doesn't crash
+      return { id: videoId, title: 'Unknown', duration: 0, thumbnail: '', formats: [] } as YTDlpInfo
+    }).finally(() => {
+      pendingControllers.delete(videoId)
+      pendingInfoResolves.delete(videoId)
+      // Don't remove from pendingResolves here — resolveStreamUrl may still need it
+      // resolveStreamUrl clears it when it's done
+    })
+
+    // Store in both maps so resolveStreamUrl can await
+    pendingResolves.set(videoId, chained.then((info) => {
+      const bestFormat = info.formats.find((f) => f.acodec !== 'none' && f.url)
+      return bestFormat?.url ?? ''
+    }))
+    pendingInfoResolves.set(videoId, chained)
+
+    return chained
+  }
+
+  // Track background resolves that return full YTDlpInfo
+  const pendingInfoResolves = new Map<string, Promise<YTDlpInfo>>()
+
+  function getPendingResolveCount(): number {
+    return pendingInfoResolves.size
   }
 
   /**
@@ -311,6 +394,8 @@ export function createProxy(options: ProxyOptions = {}) {
     clearCache,
     getStreamCacheEntry,
     setStreamCacheEntry,
+    triggerBackgroundResolve,
+    getPendingResolveCount,
     streamCache,
   }
 }
