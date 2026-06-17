@@ -424,15 +424,26 @@ export function createProxy(options: ProxyOptions = {}) {
   }
 
   /**
-   * Pre-warm the CDN connection for a video by pre-resolving its URL
-   * and immediately making a small HTTPS GET. The shared keep-alive
-   * agent keeps the TCP+TLS connection warm for subsequent proxy
-   * requests (should reduce CDN connection time by ~300ms).
+   * Pre-warm the CDN connection for a video: resolve its CDN URL via
+   * the daemon, store it in the stream cache, and pre-connect to the
+   * CDN edge with a small Range GET. The shared keep-alive agent keeps
+   * TCP+TLS warm so the subsequent proxy request skips connection setup
+   * (~300ms saved).
+   *
+   * After this completes, clicking the track should resolve nearly
+   * instantly from cache and stream from the already-warm CDN connection.
    */
   async function prewarmCdn(videoId: string): Promise<void> {
     try {
       const url = await getDaemon().getStreamUrl(videoId, 15000)
       if (!url) return
+      // Store in stream cache so the proxy doesn't re-resolve
+      streamCache.set(videoId, {
+        streamUrl: url,
+        cachedAt: Date.now(),
+        contentType: 'audio/mp4',
+      })
+      // Pre-connect to CDN via shared keep-alive agent
       const req = https.get(url, {
         agent: cdnAgent,
         headers: { 'User-Agent': 'Mozilla/5.0', 'Range': 'bytes=0-65535' },
