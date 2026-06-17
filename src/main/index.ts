@@ -7,8 +7,6 @@ import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 // Disable hardware acceleration to prevent GPU process crash on macOS
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-gpu')
-app.commandLine.appendSwitch('disable-software-rasterizer')
-app.commandLine.appendSwitch('disable-gpu-process-crash-limit')
 
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
@@ -73,6 +71,11 @@ app.whenReady().then(async () => {
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+// Catch GPU/child process crashes so they don't cascade into app termination
+app.on('child-process-gone', (_event, details) => {
+  console.warn(`[App] Child process gone: type=${details.type} reason=${details.reason} exit_code=${details.exitCode}`)
 })
 
 // Graceful shutdown: stop proxy and cleanup
