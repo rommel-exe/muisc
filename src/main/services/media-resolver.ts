@@ -199,10 +199,13 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
 
     // ── yt-dlp resolve with retry ──
     try {
+      const tStart = Date.now()
       let lastError: Error | undefined
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
+          console.log(`[MediaResolver] Resolving ${videoId} (attempt ${attempt + 1})...`)
           const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: activeSignal, mode })
+          console.log(`[MediaResolver] Resolved ${videoId} in ${Date.now() - tStart}ms`)
 
           // Pre-populate proxy stream cache with the best audio format
           const bestFormat = info.formats
