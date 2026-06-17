@@ -5,6 +5,7 @@ import https from 'node:https'
 import { URL } from 'node:url'
 import { PROXY_PORT } from '../../shared/constants'
 import { getVideoInfo, type YTDlpInfo, YTDlpError } from './yt-dlp'
+import { getDaemon } from './yt-dlp-daemon'
 
 export interface StreamCache {
   /** CDN stream URL */
@@ -147,30 +148,27 @@ export function createProxy(options: ProxyOptions = {}) {
     }
   }
 
-  async function doResolve(videoId: string, controller: AbortController): Promise<string> {
+  async function doResolve(videoId: string, _controller: AbortController): Promise<string> {
     let lastError: Error | undefined
     for (let attempt = 0; attempt <= 1; attempt++) {
       try {
-        const info = await getVideoInfo(videoId, { timeoutMs: 15000, signal: controller.signal })
-        const bestFormat = info.formats
-          .filter((f) => f.acodec !== 'none' && f.url)
-          .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-
-        if (!bestFormat?.url) {
-          throw new ProxyError('No audio format found', 'STREAM_NOT_FOUND')
+        // 🏎️ Fast path: warm daemon (~635ms) instead of cold subprocess (~3500ms)
+        const daemon = getDaemon()
+        const url = await daemon.getStreamUrl(videoId, 15000)
+        if (url) {
+          streamCache.set(videoId, {
+            streamUrl: url,
+            cachedAt: Date.now(),
+            contentType: 'audio/mp4',
+          })
+          return url
         }
-
-        streamCache.set(videoId, {
-          streamUrl: bestFormat.url,
-          cachedAt: Date.now(),
-          contentType: `audio/${bestFormat.ext}`,
-        })
-
-        return bestFormat.url
+        throw new ProxyError('No stream URL returned', 'STREAM_NOT_FOUND')
       } catch (err: any) {
-        if (controller.signal.aborted) throw err
+        if (_controller.signal.aborted) throw err
         lastError = err
         if (attempt < 1) {
+          console.warn(`[Proxy] Daemon resolve failed for ${videoId}, retrying...`)
           await new Promise((r) => setTimeout(r, 1000))
         }
       }
@@ -180,32 +178,46 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /**
    * Trigger a background yt-dlp resolve for a video ID.
-   * Fire-and-forget — calls getVideoInfo once, extracts the stream URL,
-   * populates the stream cache, and stores the promise so resolveStreamUrl
-   * can await it if the audio request arrives before the resolve completes.
+   * Runs TWO extractions in parallel:
+   *   1. 🏎️ Fast URL extraction via --get-url (~2s) — populates stream cache ASAP
+   *   2. 🐢 Full metadata via -j (~12s on first run) — returns title/duration/thumbnail
    *
-   * Returns the full YTDlpInfo so the caller (MediaResolver) can extract
-   * metadata (title, duration, thumbnail).
+   * pendingResolves resolves as soon as the fast URL is available,
+   * so the audio stream can start playing while metadata is still loading.
+   *
+   * Returns the full YTDlpInfo for MediaResolver metadata extraction.
    */
   function triggerBackgroundResolve(videoId: string): Promise<YTDlpInfo> {
-    // Deduplicate: if already resolving (either URL or info), return existing
     const existing = pendingInfoResolves.get(videoId)
     if (existing) return existing
 
     const controller = new AbortController()
     pendingControllers.set(videoId, controller)
 
-    const infoPromise = getVideoInfo(videoId, {
-      timeoutMs: 15000,
-      signal: controller.signal,
+    // 🏎️ Fast path: stream URL via warm daemon (~635ms vs ~3500ms for cold subprocess)
+    const urlPromise: Promise<string> = getDaemon().getStreamUrl(videoId, 15000).then((url) => {
+      if (url) {
+        streamCache.set(videoId, {
+          streamUrl: url,
+          cachedAt: Date.now(),
+          contentType: 'audio/webm',
+        })
+      }
+      return url
+    }).catch((err) => {
+      console.warn(`[Proxy] Fast URL resolve failed for ${videoId}:`, err.message)
+      return ''
     })
 
-    // Chain: once info is resolved, populate stream cache
-    const chained: Promise<YTDlpInfo> = infoPromise.then((info) => {
+    // 🐢 Slow path: full metadata
+    const infoPromise: Promise<YTDlpInfo> = getVideoInfo(videoId, {
+      timeoutMs: 15000,
+      signal: controller.signal,
+    }).then((info) => {
+      // Update stream cache with accurate content-type from metadata
       const bestFormat = info.formats
         .filter((f) => f.acodec !== 'none' && f.url)
         .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))[0]
-
       if (bestFormat?.url) {
         streamCache.set(videoId, {
           streamUrl: bestFormat.url,
@@ -213,27 +225,39 @@ export function createProxy(options: ProxyOptions = {}) {
           contentType: `audio/${bestFormat.ext}`,
         })
       }
-
       return info
     }).catch((err) => {
-      console.warn(`[Proxy] Background resolve failed for ${videoId}:`, err.message)
-      // Return minimal info so caller doesn't crash
+      console.warn(`[Proxy] Background metadata resolve failed for ${videoId}:`, err.message)
       return { id: videoId, title: 'Unknown', duration: 0, thumbnail: '', formats: [] } as YTDlpInfo
-    }).finally(() => {
-      pendingControllers.delete(videoId)
-      pendingInfoResolves.delete(videoId)
-      // Don't remove from pendingResolves here — resolveStreamUrl may still need it
-      // resolveStreamUrl clears it when it's done
     })
 
-    // Store in both maps so resolveStreamUrl can await
-    pendingResolves.set(videoId, chained.then((info) => {
-      const bestFormat = info.formats.find((f) => f.acodec !== 'none' && f.url)
-      return bestFormat?.url ?? ''
+    // pendingResolves: fast URL, or if that fails, fall through to metadata URL
+    pendingResolves.set(videoId, urlPromise.then((url) => {
+      if (url) return url
+      // Fast path failed — wait for metadata path to get the URL
+      return infoPromise.then((info) => {
+        const f = info.formats.find((ff) => ff.acodec !== 'none' && ff.url)
+        if (f?.url) {
+          streamCache.set(videoId, {
+            streamUrl: f.url,
+            cachedAt: Date.now(),
+            contentType: `audio/${f.ext}`,
+          })
+          return f.url
+        }
+        return ''
+      })
     }))
-    pendingInfoResolves.set(videoId, chained)
 
-    return chained
+    pendingInfoResolves.set(videoId, infoPromise)
+
+    // Clean up tracking maps when BOTH paths settle (not just the faster one)
+    Promise.allSettled([urlPromise, infoPromise]).finally(() => {
+      pendingControllers.delete(videoId)
+      pendingInfoResolves.delete(videoId)
+    })
+
+    return infoPromise
   }
 
   // Track background resolves that return full YTDlpInfo

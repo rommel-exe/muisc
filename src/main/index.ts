@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createMediaResolver } from './services/media-resolver'
 import { registerHandlers, unregisterHandlers } from './ipc/handlers'
 import { warmInnerTube } from './services/innertube'
+import { warmDaemon, getDaemon } from './services/yt-dlp-daemon'
 import { warmYtdlp } from './services/yt-dlp'
 
 // Prevent GPU/utility process crash cascade on macOS.
@@ -64,19 +65,21 @@ app.whenReady().then(async () => {
   // Register IPC handlers
   registerHandlers(mediaResolver)
 
-  // Pre-warm InnerTube session and yt-dlp at startup so the first cold
-  // resolve doesn't pay init overhead. Fire-and-forget.
-  warmInnerTube().catch(() => {})
-  warmYtdlp().catch(() => {})
-
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
+  // Create window BEFORE warm-ups so the GPU/Utility crash cascade
+  // (caused by --no-sandbox + disabled GPU flags) resolves first.
+  // This prevents SIGTERM from reaching yt-dlp subprocesses.
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
   createWindow()
   console.log('[App] Window created, app running')
+
+  // Pre-warm yt-dlp daemon and InnerTube session so the first cold
+  // resolve doesn't pay init overhead. Fire-and-forget.
+  warmDaemon().catch(() => {})
+  warmInnerTube().catch(() => {})
+  warmYtdlp().catch(() => {})
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
@@ -102,6 +105,7 @@ app.on('will-quit', async () => {
   console.warn('[App] will-quit — cleaning up')
   unregisterHandlers()
   await mediaResolver.stop()
+  getDaemon().stop().catch(() => {})
 })
 
 // Quit when all windows are closed, except on macOS.
