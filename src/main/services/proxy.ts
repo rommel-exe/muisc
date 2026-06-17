@@ -426,9 +426,12 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /**
    * Pre-warm a track: resolve its CDN URL via the warm daemon (~250ms),
-   * cache it in the stream cache so the proxy avoids a second daemon call,
-   * and pre-resolve DNS for *.googlevideo.com so the CDN connection only
-   * pays TCP+TLS (not DNS).
+   * cache it so the proxy avoids a second daemon call, then pre-connect
+   * to the CDN edge and fully download into the keep-alive agent's pool.
+   *
+   * When the proxy later makes its CDN request (same URL, same agent),
+   * the keep-alive socket is REUSED — no TCP handshake, no TLS handshake.
+   * This saves ~300ms of connection overhead.
    *
    * Fire-and-forget, runs after app window is shown.
    */
@@ -444,15 +447,25 @@ export function createProxy(options: ProxyOptions = {}) {
         contentType: 'audio/mp4',
       })
 
-      // Pre-resolve DNS for the CDN hostname (googlevideo.com)
-      // so Chromium's Audio element doesn't pay DNS on first play.
+      // Pre-resolve DNS so the OS cache is warm
       const hostname = new URL(url).hostname
-      dns.resolve(hostname, (err) => {
-        if (err) {
-          // Fallback: just warm a known googlevideo.com subdomain
-          dns.lookup('r2---sn-5hn7su7k.googlevideo.com', () => {})
-        }
-      })
+      dns.resolve(hostname, () => {})
+
+      // Pre-connect to CDN — fully download into the keep-alive agent's
+      // free socket pool. When proxyStream makes its HTTPS GET to the
+      // SAME URL, the agent reuses this socket (same hostname).
+      https.get(url, { agent: cdnAgent, headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        // Consume the first 1MB into memory (discarded), then resume
+        // streaming to keep the connection alive without buffering.
+        let size = 0
+        res.on('data', (chunk: Buffer) => {
+          size += chunk.length
+          if (size > 1_048_576) {
+            res.removeAllListeners('data')
+            res.resume() // keep consuming to maintain keep-alive
+          }
+        })
+      }).on('error', () => {})
     } catch {
       // Best-effort
     }
