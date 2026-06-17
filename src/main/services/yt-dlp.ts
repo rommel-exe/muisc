@@ -210,6 +210,7 @@ export async function getVideoInfo(
     // Background payload includes richer metadata (larger JSON)
     const maxBuffer = mode === 'foreground' ? 1024 * 1024 : 10 * 1024 * 1024
 
+    const tBefore = Date.now()
     const { stdout } = await execFileAsync(binary, args, {
       timeout: timeoutMs,
       maxBuffer,
@@ -217,8 +218,11 @@ export async function getVideoInfo(
       killSignal: 'SIGKILL',
       env: ytDlpEnv,
     })
+    const tAfterExec = Date.now()
 
     const info = JSON.parse(stdout) as YTDlpInfo
+    const tAfterParse = Date.now()
+    console.log(`[yt-dlp] ${videoId}: exec=${tAfterExec - tBefore}ms parse=${tAfterParse - tAfterExec}ms`)
     return info
   } catch (err: any) {
     // Check for explicit abort signal first
