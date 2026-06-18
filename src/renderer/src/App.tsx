@@ -26,6 +26,8 @@ function App() {
   const [logs, setLogs] = useState<string[]>([])
   const [trackTitle, setTrackTitle] = useState('')
   const [prefetchedUpTo, setPrefetchedUpTo] = useState(-1)
+  const [customId, setCustomId] = useState('')
+  const [customResolving, setCustomResolving] = useState(false)
 
   // Refs to handle rapid skip spam — only the latest request takes effect
   const latestReq = useRef(-1)
@@ -116,12 +118,78 @@ function App() {
     if (prev >= 0) playTrack(prev)
   }, [currentIdx, playTrack])
 
+  const playCustomId = useCallback(async (id: string) => {
+    const trimmed = id.trim()
+    if (!trimmed) return
+
+    setCustomResolving(true)
+    setCurrentIdx(-1)
+    setTrackTitle('')
+
+    const t0 = Date.now()
+    addLog(`⏳ Custom resolve ${trimmed}...`)
+
+    try {
+      const resolved = await window.api.resolveTrack(trimmed)
+      const t1 = Date.now()
+      addLog(`resolve: ${t1 - t0}ms  — ${resolved.title}`)
+      setTrackTitle(resolved.title)
+
+      playerControls.load(resolved.audioUrl)
+      const t2 = Date.now()
+      addLog(`load:    ${t2 - t1}ms`)
+
+      await playerControls.play()
+      const t3 = Date.now()
+      addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+    } catch (err: any) {
+      addLog(`ERROR: ${err.message}`)
+    } finally {
+      setCustomResolving(false)
+    }
+  }, [playerControls, addLog])
+
   const formatTime = (s: number) =>
     `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
 
   return (
     <div style={{ background: '#111', color: '#ddd', fontFamily: 'monospace', padding: 16, minHeight: '100vh' }}>
       <h1 style={{ margin: '0 0 12px', fontSize: 16 }}>muisc test</h1>
+
+      {/* Custom ID input */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+        <input
+          value={customId}
+          onChange={(e) => setCustomId(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') playCustomId(customId) }}
+          placeholder="Paste YouTube video ID..."
+          style={{
+            flex: 1,
+            padding: '6px 8px',
+            background: '#1a1a1a',
+            color: '#ddd',
+            border: '1px solid #333',
+            borderRadius: 0,
+            fontFamily: 'monospace',
+            fontSize: 12,
+            outline: 'none',
+          }}
+        />
+        <button
+          onClick={() => playCustomId(customId)}
+          disabled={customResolving || !customId.trim()}
+          style={{
+            padding: '6px 14px',
+            background: customResolving ? '#333' : '#06a',
+            color: '#fff',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: 12,
+          }}
+        >
+          {customResolving ? '...' : '▶ Play'}
+        </button>
+      </div>
 
       {/* Queue */}
       <div style={{ marginBottom: 12 }}>
