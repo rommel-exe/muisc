@@ -49,9 +49,12 @@ function App() {
 
   // ── Background audio pre-load ──
   const preloadedUrl = useRef<string | null>(null)
+  const userInitiatedPlayback = useRef(false)
 
+  // Only preload the first track if the user hasn't already clicked something
   useEffect(() => {
     window.api.resolveTrack(QUEUE[0].id).then((resolved) => {
+      if (userInitiatedPlayback.current) return
       preloadedUrl.current = resolved.audioUrl
       playerControls.preload(resolved.audioUrl)
     }).catch(() => {})
@@ -105,6 +108,7 @@ function App() {
     const track = QUEUE[idx]
     if (!track) return
 
+    userInitiatedPlayback.current = true
     latestReq.current = idx
     setCurrentIdx(idx)
     setResolving(true)
@@ -143,6 +147,7 @@ function App() {
 
   // ── Play a search result by video ID ──
   const playSearchResult = useCallback(async (result: SearchTrack) => {
+    userInitiatedPlayback.current = true
     latestReq.current = -2 // use a sentinel to distinguish from queue tracks
     setCurrentIdx(-1)
     setResolving(true)
@@ -176,6 +181,7 @@ function App() {
     const trimmed = id.trim()
     if (!trimmed) return
 
+    userInitiatedPlayback.current = true
     setCustomResolving(true)
     setCurrentIdx(-1)
     setTrackTitle('')

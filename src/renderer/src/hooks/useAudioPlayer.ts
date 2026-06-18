@@ -29,10 +29,13 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     loading: false,
   })
 
-  // Create audio element on mount
+  // Create audio element on mount, append to DOM so Electron's Chromium
+  // outputs sound (non-DOM Audio() elements don't play in Electron).
   useEffect(() => {
     const audio = new Audio()
     audio.preload = 'auto'
+    audio.style.display = 'none'
+    document.body.appendChild(audio)
     audioRef.current = audio
 
     const onTimeUpdate = () => {
@@ -92,6 +95,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       audio.removeEventListener('canplay', onCanPlay)
       audio.pause()
       audio.src = ''
+      audio.remove()
       audioRef.current = null
     }
   }, [])
