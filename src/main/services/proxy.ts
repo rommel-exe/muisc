@@ -426,46 +426,29 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /**
    * Pre-warm a track: resolve its CDN URL via the warm daemon (~250ms),
-   * cache it so the proxy avoids a second daemon call, then pre-connect
-   * to the CDN edge and fully download into the keep-alive agent's pool.
-   *
-   * When the proxy later makes its CDN request (same URL, same agent),
-   * the keep-alive socket is REUSED — no TCP handshake, no TLS handshake.
-   * This saves ~300ms of connection overhead.
+   * cache it in the stream cache so the proxy avoids a second daemon call,
+   * and pre-resolve DNS for the CDN hostname so the proxy's CDN request
+   * doesn't pay DNS resolution (~100-500ms saved).
    *
    * Fire-and-forget, runs after app window is shown.
+   * Does NOT pre-connect to the CDN (concurrent GET requests cause
+   * YouTube CDN edge throttling, making things worse).
    */
   async function prewarmCdn(videoId: string): Promise<void> {
     try {
       const url = await getDaemon().getStreamUrl(videoId, 15000)
       if (!url) return
 
-      // Cache the URL so resolveStreamUrl returns instantly
+      // Cache the URL so the proxy's resolveStreamUrl returns instantly
       streamCache.set(videoId, {
         streamUrl: url,
         cachedAt: Date.now(),
         contentType: 'audio/mp4',
       })
 
-      // Pre-resolve DNS so the OS cache is warm
+      // Pre-resolve DNS for the CDN hostname
       const hostname = new URL(url).hostname
       dns.resolve(hostname, () => {})
-
-      // Pre-connect to CDN — fully download into the keep-alive agent's
-      // free socket pool. When proxyStream makes its HTTPS GET to the
-      // SAME URL, the agent reuses this socket (same hostname).
-      https.get(url, { agent: cdnAgent, headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-        // Consume the first 1MB into memory (discarded), then resume
-        // streaming to keep the connection alive without buffering.
-        let size = 0
-        res.on('data', (chunk: Buffer) => {
-          size += chunk.length
-          if (size > 1_048_576) {
-            res.removeAllListeners('data')
-            res.resume() // keep consuming to maintain keep-alive
-          }
-        })
-      }).on('error', () => {})
     } catch {
       // Best-effort
     }
