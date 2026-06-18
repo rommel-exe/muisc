@@ -7,12 +7,10 @@ import { warmInnerTube } from './services/innertube'
 import { warmDaemon, getDaemon } from './services/yt-dlp-daemon'
 import { warmYtdlp } from './services/yt-dlp'
 
-// Prevent GPU/utility process crash cascade on macOS.
-app.disableHardwareAcceleration()
-app.commandLine.appendSwitch('disable-gpu')
-app.commandLine.appendSwitch('no-sandbox')
-app.commandLine.appendSwitch('disable-gpu-sandbox')
-app.commandLine.appendSwitch('utility-disable-sandbox')
+// Run GPU in-process so there's no separate GPU process to crash (exit_code=15
+// on this macOS version). The test UI renders fine without a dedicated GPU proc.
+app.commandLine.appendSwitch('in-process-gpu')
+
 // Don't crash the whole app when a child process dies
 app.commandLine.appendSwitch('disable-breakpad')
 
@@ -65,9 +63,8 @@ app.whenReady().then(async () => {
   // Register IPC handlers
   registerHandlers(mediaResolver)
 
-  // Create window BEFORE warm-ups so the GPU/Utility crash cascade
-  // (caused by --no-sandbox + disabled GPU flags) resolves first.
-  // This prevents SIGTERM from reaching yt-dlp subprocesses.
+  // Create window before fire-and-forget warm-ups so the renderer loads
+  // before yt-dlp / Innertube init consumes CPU.
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
@@ -90,19 +87,20 @@ app.whenReady().then(async () => {
   })
 })
 
-// Catch GPU/child process crashes so they don't cascade into app termination
+// Catch GPU/child process crashes — just log them.
 app.on('child-process-gone', (_event, details) => {
   console.warn(`[App] Child process gone: type=${details.type} reason=${details.reason} exit_code=${details.exitCode}`)
 })
 
-// Prevent cascade-quit when a child process dies — the app should survive
-// a crashed Utility/GPU process and recreate it.
+// Suppress quit-on-crash. The renderer keeps running fine without GPU
+// compositing for this test UI. The user can kill the process by pressing
+// Ctrl+C in the terminal that ran `npm run dev`.
 app.on('before-quit', (event) => {
-  console.warn('[App] before-quit — preventing cascade (child process crash)')
+  console.warn('[App] before-quit — preventing cascade')
   event.preventDefault()
 })
 
-// Graceful shutdown only on explicit user quit
+// Clean shutdown on explicit quit
 app.on('will-quit', async () => {
   console.warn('[App] will-quit — cleaning up')
   unregisterHandlers()
