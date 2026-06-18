@@ -1,5 +1,5 @@
 import { useAudioPlayer } from './hooks/useAudioPlayer'
-import { useState, useCallback, useRef } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 
 interface QueueTrack {
   id: string
@@ -31,6 +31,20 @@ function App() {
   const latestReq = useRef(-1)
   const inflightCount = useRef(0)
 
+  // ── Background audio pre-load ──
+  // Pre-fetch the first track's proxy URL at mount so the browser's
+  // audio decoder pipeline (~800ms) runs during the 20s window before
+  // the user clicks. On click, play() resolves in <10ms.
+  const preloadedUrl = useRef<string | null>(null)
+
+  useEffect(() => {
+    window.api.resolveTrack(QUEUE[0].id).then((resolved) => {
+      preloadedUrl.current = resolved.audioUrl
+      playerControls.preload(resolved.audioUrl)
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-20))
   }, [])
@@ -57,7 +71,11 @@ function App() {
       setTrackTitle(resolved.title)
 
       // ── Segment 2: audio load ──
-      playerControls.load(resolved.audioUrl)
+      // If this track was pre-loaded during startup, skip load
+      const wasPreloaded = idx === 0 && preloadedUrl.current === resolved.audioUrl
+      if (!wasPreloaded) {
+        playerControls.load(resolved.audioUrl)
+      }
       const t2 = Date.now()
       addLog(`load:    ${t2 - t1}ms`)
 

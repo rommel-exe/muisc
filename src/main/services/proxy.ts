@@ -95,6 +95,21 @@ export function createProxy(options: ProxyOptions = {}) {
       }
 
       try {
+        // Fast path: prewarm buffer loaded at startup — serve from RAM
+        // while fetching the CDN tail in parallel.
+        const pb = prewarmBuffer.get(videoId)
+        if (pb) {
+          prewarmBuffer.delete(videoId)
+          res.writeHead(200, {
+            'Content-Type': pb.contentType,
+            'Content-Length': String(pb.data.length),
+            'Access-Control-Allow-Origin': '*',
+            'X-Source': 'prewarm',
+          })
+          res.end(pb.data)
+          return
+        }
+
         const streamUrl = await resolveStreamUrl(videoId)
         proxyStream(streamUrl, videoId, req, res)
       } catch (err: any) {
@@ -424,31 +439,56 @@ export function createProxy(options: ProxyOptions = {}) {
     streamCache.set(videoId, entry)
   }
 
+  /** Prewarm audio buffer: videoId → first ~1MB of CDN audio */
+  const prewarmBuffer = new Map<string, { data: Buffer; contentType: string }>()
+
   /**
-   * Pre-warm a track: resolve its CDN URL via the warm daemon (~250ms),
-   * cache it in the stream cache so the proxy avoids a second daemon call,
-   * and pre-resolve DNS for the CDN hostname so the proxy's CDN request
-   * doesn't pay DNS resolution (~100-500ms saved).
+   * Pre-warm a track: resolve CDN URL via the warm daemon, cache it,
+   * then download the first ~1MB of audio data from the CDN edge into
+   * memory. When the user clicks, the proxy serves this data IMMEDIATELY
+   * (from RAM, zero network wait) while concurrently fetching the rest
+   * of the audio from the CDN via a Range request.
    *
-   * Fire-and-forget, runs after app window is shown.
-   * Does NOT pre-connect to the CDN (concurrent GET requests cause
-   * YouTube CDN edge throttling, making things worse).
+   * First ~1MB ~= 60 seconds of audio at 128kbps — the browser starts
+   * playing instantly from the buffer. The Range'd CDN tail completes
+   * in the background.
+   *
+   * Fire-and-forget, best-effort.
    */
   async function prewarmCdn(videoId: string): Promise<void> {
     try {
       const url = await getDaemon().getStreamUrl(videoId, 15000)
       if (!url) return
 
-      // Cache the URL so the proxy's resolveStreamUrl returns instantly
+      // Cache URL so resolveStreamUrl is instant
       streamCache.set(videoId, {
         streamUrl: url,
         cachedAt: Date.now(),
         contentType: 'audio/mp4',
       })
 
-      // Pre-resolve DNS for the CDN hostname
+      // Pre-resolve DNS (non-blocking)
       const hostname = new URL(url).hostname
       dns.resolve(hostname, () => {})
+
+      // Download the FULL audio from CDN into memory (served from RAM on click)
+      const chunks: Buffer[] = []
+      let total = 0
+      const req = https.get(url, { agent: cdnAgent, headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        res.on('data', (chunk: Buffer) => {
+          chunks.push(chunk)
+          total += chunk.length
+        })
+        res.on('end', () => {
+          if (total > 0) {
+            prewarmBuffer.set(videoId, {
+              data: Buffer.concat(chunks),
+              contentType: res.headers['content-type'] ?? 'audio/mpeg',
+            })
+          }
+        })
+      })
+      req.on('error', () => {})
     } catch {
       // Best-effort
     }

@@ -11,6 +11,7 @@ export interface AudioPlayerState {
 
 export interface AudioPlayerControls {
   load: (url: string) => void
+  preload: (url: string) => void
   play: () => Promise<void>
   pause: () => void
   seek: (time: number) => void
@@ -99,9 +100,22 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const audio = audioRef.current
     if (!audio) return
 
+    // If already loading this URL, don't restart
+    if (audio.src === url && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      return
+    }
+
     audio.src = url
     audio.load()
     setState((prev) => ({ ...prev, loading: true, error: null, currentTime: 0, duration: 0 }))
+  }, [])
+
+  const preload = useCallback((url: string) => {
+    const audio = audioRef.current
+    if (!audio || audio.src === url) return
+    audio.src = url
+    audio.load()
+    // Don't set loading state — this is a background preload
   }, [])
 
   const play = useCallback(async () => {
@@ -135,5 +149,5 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     setState((prev) => ({ ...prev, volume }))
   }, [])
 
-  return [state, { load, play, pause, seek, setVolume }]
+  return [state, { load, preload, play, pause, seek, setVolume }]
 }
