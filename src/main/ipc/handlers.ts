@@ -1,6 +1,7 @@
 import { ipcMain } from 'electron'
 import type { MediaResolver } from '../services/media-resolver'
 import type { ResolveOptions } from '../services/media-resolver'
+import { searchYouTube } from '../services/innertube'
 import { IPC_CHANNELS } from '../../shared/constants'
 
 /**
@@ -51,6 +52,20 @@ export function registerHandlers(resolver: MediaResolver): void {
     })
     return true
   })
+
+  /**
+   * Search YouTube for tracks matching a query.
+   * Returns lightweight search results (no streaming URLs).
+   */
+  ipcMain.handle(
+    IPC_CHANNELS.MUSIC_SEARCH,
+    async (_event, query: string) => {
+      if (!query || typeof query !== 'string') {
+        throw new Error('Invalid query: expected a non-empty string')
+      }
+      return searchYouTube(query)
+    }
+  )
 
   console.log('[IPC] Handlers registered')
 }

@@ -23,10 +23,19 @@ This section reflects the **actual** codebase structure. When you add, move, ren
 
 ```
 src/
+├── application/    ← Application Layer engines (main process)
+│   ├── MediaEngine.ts    ← Master orchestrator: state transitions, concurrency, self-healing
+│   ├── QueueEngine.ts    ← Pure queue state machine: list, index, history, repeat, shuffle
+│   ├── TrackIdentityEngine.ts ← Weighted matching & confidence scoring for track resolution
+│   ├── SearchEngine.ts   ← Search normalization: Innertube wrapper, title/duration parsing
+│   └── PlaylistEngine.ts ← Playlist CRUD, SQLite abstraction, session hydration
 ├── main/           ← Electron main process (Node context)
 │   ├── index.ts       ← BrowserWindow creation, app lifecycle
-│   ├── ipc/           ← IPC handler registration (future)
-│   └── services/      ← yt-dlp, proxy, innertube, database, media-engine (future)
+│   ├── ipc/           ← IPC handler registration
+│   └── services/      ← yt-dlp, proxy, innertube, database, media-resolver
+├── playback/       ← Audio playback interfaces (mocked in tests)
+│   ├── AudioService.ts   ← HTMLAudioElement wrapper interface
+│   └── MediaResolver.ts  ← Stream resolution interface
 ├── preload/        ← Preload scripts (contextBridge)
 │   ├── index.ts       ← Exposes electronAPI to renderer
 │   └── index.d.ts     ← Type declarations for renderer
@@ -36,7 +45,7 @@ src/
 │       ├── main.tsx   ← React root mount
 │       ├── App.tsx    ← Root component
 │       ├── env.d.ts   ← Vite client types
-│       └── components/ ← React components (future)
+│       └── components/ ← React components
 └── shared/         ← Types, constants (imported by main + renderer)
     ├── types.ts       ← Track, Playlist, Queue, PlaybackState interfaces
     └── constants.ts   ← IPC channel names, config defaults

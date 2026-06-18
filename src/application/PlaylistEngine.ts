@@ -1,0 +1,111 @@
+import type { Track, Playlist } from '../shared/types'
+import { QueueEngine } from './QueueEngine'
+import { MediaEngine } from './MediaEngine'
+
+// ── Internal State ──
+
+let _playlists: Playlist[] = []
+let _playlistTracks: Map<string, Track[]> = new Map()
+
+// ── Core Methods ──
+
+function createPlaylist(name: string): Playlist {
+  const playlist: Playlist = {
+    id: `pl_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+    name,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+  _playlists.push(playlist)
+  _playlistTracks.set(playlist.id, [])
+  return playlist
+}
+
+function addTrackToPlaylist(playlistId: string, track: Track): void {
+  const existing = _playlistTracks.get(playlistId)
+  if (existing) {
+    existing.push(track)
+  }
+  // Update playlist timestamp
+  const pl = _playlists.find(p => p.id === playlistId)
+  if (pl) {
+    pl.updatedAt = Date.now()
+  }
+}
+
+function getUserPlaylists(): Playlist[] {
+  return [..._playlists]
+}
+
+function getPlaylistTracks(playlistId: string): Track[] {
+  return [...(_playlistTracks.get(playlistId) ?? [])]
+}
+
+function removeTrackFromPlaylist(playlistId: string, trackId: string): void {
+  const existing = _playlistTracks.get(playlistId)
+  if (existing) {
+    const idx = existing.findIndex(t => t.id === trackId)
+    if (idx >= 0) {
+      existing.splice(idx, 1)
+    }
+  }
+  const pl = _playlists.find(p => p.id === playlistId)
+  if (pl) {
+    pl.updatedAt = Date.now()
+  }
+}
+
+function renamePlaylist(playlistId: string, newName: string): void {
+  const pl = _playlists.find(p => p.id === playlistId)
+  if (pl) {
+    pl.name = newName
+    pl.updatedAt = Date.now()
+  }
+}
+
+function deletePlaylist(playlistId: string): void {
+  _playlists = _playlists.filter(p => p.id !== playlistId)
+  _playlistTracks.delete(playlistId)
+}
+
+interface SessionState {
+  queue: Track[]
+  currentIndex: number
+  volume: number
+}
+
+/**
+ * Hydrate application state from a saved session.
+ * Restores QueueEngine state and MediaEngine volume.
+ */
+function hydrateSession(sessionState: SessionState): void {
+  const { queue, currentIndex, volume } = sessionState
+
+  if (queue && queue.length > 0) {
+    QueueEngine.setQueue(queue, currentIndex)
+  }
+
+  // Restore MediaEngine volume (setVolume clamps to [0, 1])
+  if (typeof volume === 'number') {
+    MediaEngine.setVolume(volume)
+  }
+}
+
+function clear(): void {
+  _playlists = []
+  _playlistTracks.clear()
+}
+
+// ── Exported Singleton ──
+
+export const PlaylistEngine = {
+  createPlaylist,
+  addTrackToPlaylist,
+  getUserPlaylists,
+  getPlaylistTracks,
+  removeTrackFromPlaylist,
+  renamePlaylist,
+  deletePlaylist,
+  hydrateSession,
+  clear,
+}

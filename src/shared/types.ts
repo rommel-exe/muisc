@@ -1,12 +1,12 @@
 export interface Track {
-  id: string
-  youtubeId: string
-  title: string
-  artist: string
-  album: string
-  duration: number // seconds
-  thumbnail: string
-  addedAt: number // timestamp
+  id: string            // Global Unique Identifier (YouTube ID or Content Hash)
+  title: string         // Normalized Title
+  artist: string        // Primary Artist Name
+  album?: string        // Album Name if available
+  duration: number      // Length in seconds
+  thumbnailUrl: string  // High-res image link
+  source: 'youtube' | 'spotify_imported' | 'local'
+  sourceId: string      // Original source ID string
 }
 
 export interface Playlist {
@@ -30,6 +30,8 @@ export interface QueueItem {
 }
 
 export type RepeatMode = 'none' | 'all' | 'one'
+
+export type PlaybackStateType = 'IDLE' | 'BUFFERING' | 'PLAYING' | 'PAUSED' | 'ERRORED'
 
 export interface PlaybackState {
   currentTrackId: string | null

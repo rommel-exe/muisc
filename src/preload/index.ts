@@ -5,6 +5,13 @@ import { IPC_CHANNELS } from '../shared/constants'
 // Custom APIs for renderer
 const api = {
   /**
+   * Search YouTube for tracks matching a query.
+   * Returns lightweight search results (no streaming URLs).
+   */
+  search: (query: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MUSIC_SEARCH, query),
+
+  /**
    * Resolve a video ID to a playable audio source.
    * Returns ResolvedStream with proxy URL.
    */

@@ -8,7 +8,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/main/**/*.test.ts'],
+    include: ['src/main/**/*.test.ts', 'tests/**/*.test.ts', 'src/application/**/*.test.ts'],
     testTimeout: 30000,
     hookTimeout: 30000,
   },

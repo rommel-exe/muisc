@@ -58,6 +58,89 @@ export interface InnertubeResult {
   contentType: string
 }
 
+/** Search result item (no streaming URL — lightweight) */
+export interface InnertubeSearchResult {
+  videoId: string
+  title: string
+  artist: string
+  duration: number
+  thumbnail: string
+}
+
+// ── Search ──
+
+/**
+ * Search YouTube for videos matching a query.
+ * Returns normalized search results (no streaming URLs).
+ * Filters out non-video results (channels, playlists, etc.).
+ */
+export async function searchYouTube(
+  query: string,
+  signal?: AbortSignal
+): Promise<InnertubeSearchResult[]> {
+  try {
+    if (signal?.aborted) return []
+
+    const yt = await getInstance()
+    if (signal?.aborted) return []
+
+    const results = await yt.search(query)
+
+    if (!results?.results) return []
+
+    const tracks: InnertubeSearchResult[] = []
+    for (const item of results.results) {
+      if (signal?.aborted) return []
+      if (item.type !== 'Video') continue
+
+      const video = item as any
+      const rawTitle: string = video.title?.text ?? ''
+      const durationText: string = video.length_text?.text ?? '0:00'
+
+      tracks.push({
+        videoId: video.video_id,
+        title: rawTitle,
+        artist: video.author?.name ?? 'Unknown',
+        duration: parseDurationText(durationText),
+        thumbnail: video.thumbnails?.[0]?.url ?? '',
+      })
+    }
+
+    return tracks
+  } catch (err: any) {
+    if (err.name === 'AbortError' || signal?.aborted) return []
+    console.warn('[Innertube] Search failed:', err.message)
+    return []
+  }
+}
+
+/**
+ * Get search suggestions for autocomplete.
+ */
+export async function getSearchSuggestions(
+  query: string
+): Promise<string[]> {
+  try {
+    const yt = await getInstance()
+    const suggestions = await yt.getSearchSuggestions(query)
+    return suggestions?.map((s: any) => (typeof s === 'string' ? s : s.query ?? '')) ?? []
+  } catch {
+    return []
+  }
+}
+
+/** Parse a duration string like "3:39" or "1:02:15" to seconds */
+function parseDurationText(text: string): number {
+  const parts = text.split(':')
+  if (parts.length === 3) {
+    return parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseInt(parts[2], 10)
+  }
+  if (parts.length === 2) {
+    return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10)
+  }
+  return parseInt(text, 10) || 0
+}
+
 // ── Resolver ──
 
 /**

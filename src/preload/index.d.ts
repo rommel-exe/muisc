@@ -8,10 +8,22 @@ interface ResolvedStream {
   thumbnail: string
 }
 
+interface SearchResult {
+  videoId: string
+  title: string
+  artist: string
+  duration: number
+  thumbnail: string
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
     api: {
+      /** Search YouTube for tracks matching a query */
+      search: (query: string) => Promise<SearchResult[]>
+
+      /** Resolve a video ID to a playable audio source */
       resolveTrack: (
         videoId: string,
         opts?: { forceRefresh?: boolean }
