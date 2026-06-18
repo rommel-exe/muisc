@@ -8,6 +8,8 @@ import { PROXY_PORT } from '../../shared/constants'
 import { getVideoInfo, type YTDlpInfo, YTDlpError } from './yt-dlp'
 import { getDaemon } from './yt-dlp-daemon'
 
+const PROXY_TIMING_LOGS = false
+
 /** Shared HTTPS agent with keep-alive for CDN connections.
  *  Warms TCP+TLS so subsequent connections to the same CDN edge are faster. */
 const cdnAgent = new https.Agent({
@@ -95,22 +97,53 @@ export function createProxy(options: ProxyOptions = {}) {
       }
 
       try {
-        // Fast path: prewarm buffer loaded at startup — serve from RAM
-        // while fetching the CDN tail in parallel.
+        const handlerT0 = Date.now()
+
+        // Fast path: prewarm buffer — serve first chunk from RAM, then
+        // pipe CDN tail from byte CHUNK_SIZE onwards via Range request.
         const pb = prewarmBuffer.get(videoId)
         if (pb) {
           prewarmBuffer.delete(videoId)
+          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm HIT ${videoId}: ${pb.data.length} bytes`)
+
+          const streamUrl = await resolveStreamUrl(videoId)
+          const parsedUrl = new URL(streamUrl)
+          const transport = parsedUrl.protocol === 'https:' ? https : http
+
+          const tPre = Date.now()
+
+          // Write headers + 1MB buffer IMMEDIATELY — browser starts parsing
+          // while CDN tail is fetched in parallel
           res.writeHead(200, {
             'Content-Type': pb.contentType,
-            'Content-Length': String(pb.data.length),
             'Access-Control-Allow-Origin': '*',
-            'X-Source': 'prewarm',
+            'Transfer-Encoding': 'chunked',
           })
-          res.end(pb.data)
+          res.write(pb.data)
+          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${pb.data.length}b in ${Date.now()-tPre}ms`)
+
+          // Fetch CDN tail in parallel (Range from buffer end)
+          const tailReq = transport.get(streamUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+              'Referer': 'https://www.youtube.com/',
+              'Range': `bytes=${pb.data.length}-`,
+            },
+            agent: parsedUrl.protocol === 'https:' ? cdnAgent : undefined,
+          }, (tailRes) => {
+            if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN TTFB=${Date.now()-tPre}ms status=${tailRes.statusCode}`)
+            tailRes.pipe(res)
+          })
+          tailReq.on('error', () => {
+            // CDN tail failed — end response gracefully
+            res.end()
+          })
           return
         }
+        console.log(`[Proxy] Prewarm MISS ${videoId} — buffer has ${prewarmBuffer.size} entries`)
 
         const streamUrl = await resolveStreamUrl(videoId)
+        if (PROXY_TIMING_LOGS) console.log(`[Proxy] HANDLER ${videoId}: resolve=${Date.now()-handlerT0}ms → proxyStream`)
         proxyStream(streamUrl, videoId, req, res)
       } catch (err: any) {
         console.error(`[Proxy] Failed to stream ${videoId}:`, err.message)
@@ -177,7 +210,7 @@ export function createProxy(options: ProxyOptions = {}) {
     let lastError: Error | undefined
     for (let attempt = 0; attempt <= 1; attempt++) {
       try {
-        // 🏎️ Fast path: warm daemon (~635ms) instead of cold subprocess (~3500ms)
+        // 🏎️ Fast path: warm daemon
         const daemon = getDaemon()
         const url = await daemon.getStreamUrl(videoId, 15000)
         if (url) {
@@ -219,7 +252,7 @@ export function createProxy(options: ProxyOptions = {}) {
     const controller = new AbortController()
     pendingControllers.set(videoId, controller)
 
-    // 🏎️ Fast path: stream URL via warm daemon (~635ms vs ~3500ms for cold subprocess)
+    // 🏎️ Fast path: stream URL via warm daemon
     const urlPromise: Promise<string> = getDaemon().getStreamUrl(videoId, 15000).then((url) => {
       if (url) {
         streamCache.set(videoId, {
@@ -227,6 +260,8 @@ export function createProxy(options: ProxyOptions = {}) {
           cachedAt: Date.now(),
           contentType: 'audio/webm',
         })
+        // 🔥 Download first PREWARM_CHUNK_SIZE bytes into prewarm buffer
+        downloadAudioChunk(videoId, url)
       }
       return url
     }).catch((err) => {
@@ -303,6 +338,9 @@ export function createProxy(options: ProxyOptions = {}) {
     clientReq: http.IncomingMessage,
     clientRes: http.ServerResponse
   ) {
+    const tStart = Date.now()
+    let cdnFirstByteMs = 0
+
     const makeRequest = (targetUrl: string, redirectCount = 0) => {
       if (redirectCount > 5) {
         clientRes.writeHead(502, { 'Content-Type': 'application/json' })
@@ -332,9 +370,19 @@ export function createProxy(options: ProxyOptions = {}) {
           if (proxyRes.statusCode && [301, 302, 303, 307].includes(proxyRes.statusCode)) {
             const location = proxyRes.headers.location
             if (location) {
+              if (PROXY_TIMING_LOGS) console.log(`[Proxy] CDN REDIRECT ${redirectCount+1} ${videoId} → ${location.substring(0, 80)}`)
               makeRequest(location, redirectCount + 1)
               return
             }
+          }
+
+          // CDN first byte timing (first response after any redirects)
+          if (cdnFirstByteMs === 0) {
+            cdnFirstByteMs = Date.now() - tStart
+            const cl = proxyRes.headers['content-length'] ?? '?'
+            const cr = proxyRes.headers['content-range'] ?? '-'
+            const ct = proxyRes.headers['content-type'] ?? '?'
+            if (PROXY_TIMING_LOGS) console.log(`[Proxy] CDN TTFB ${videoId}: ${cdnFirstByteMs}ms status=${proxyRes.statusCode} len=${cl} range=${cr} type=${ct}`)
           }
 
           // Handle 403/410 — stale URL, re-resolve
@@ -370,6 +418,19 @@ export function createProxy(options: ProxyOptions = {}) {
           }
 
           clientRes.writeHead(proxyRes.statusCode ?? 200, headers)
+
+          let dataStartMs = 0
+          let dataBytes = 0
+          proxyRes.on('data', (chunk: Buffer) => {
+            if (dataStartMs === 0) {
+              dataStartMs = Date.now()
+              if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA START ${videoId}: +${dataStartMs - tStart}ms redirects=${redirectCount}`)
+            }
+            dataBytes += chunk.length
+          })
+          proxyRes.on('end', () => {
+            if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA END ${videoId}: ${dataBytes} bytes transferred`)
+          })
           proxyRes.pipe(clientRes)
         }
       )
@@ -439,21 +500,69 @@ export function createProxy(options: ProxyOptions = {}) {
     streamCache.set(videoId, entry)
   }
 
-  /** Prewarm audio buffer: videoId → first ~1MB of CDN audio */
+  /** Prewarm audio buffer: videoId → first N KB of CDN audio bytes */
   const prewarmBuffer = new Map<string, { data: Buffer; contentType: string }>()
+  /** Max tracks to keep in prewarm buffer (evict oldest) */
+  const MAX_PREWARM = 5
+  /** Bytes to pre-buffer for instant serve (moov atom for format 18 can be 200-800KB) */
+  const PREWARM_CHUNK_SIZE = 1024 * 1024
+
+  function evictPrewarmBuffer(): void {
+    if (prewarmBuffer.size <= MAX_PREWARM) return
+    const oldest = prewarmBuffer.keys().next().value
+    if (oldest) prewarmBuffer.delete(oldest)
+  }
 
   /**
-   * Pre-warm a track: resolve CDN URL via the warm daemon, cache it,
-   * then download the first ~1MB of audio data from the CDN edge into
-   * memory. When the user clicks, the proxy serves this data IMMEDIATELY
-   * (from RAM, zero network wait) while concurrently fetching the rest
-   * of the audio from the CDN via a Range request.
-   *
-   * First ~1MB ~= 60 seconds of audio at 128kbps — the browser starts
-   * playing instantly from the buffer. The Range'd CDN tail completes
-   * in the background.
-   *
+   * Download the first PREWARM_CHUNK_SIZE bytes of CDN audio into the
+   * prewarm buffer. Also warms the CDN keep-alive connection.
    * Fire-and-forget, best-effort.
+   */
+  function downloadAudioChunk(videoId: string, url: string): void {
+    const t0 = Date.now()
+    const hostname = new URL(url).hostname
+    try { dns.resolve(hostname, () => {}) } catch {}
+
+    const chunks: Buffer[] = []
+    let total = 0
+    let done = false
+    const req = https.get(url, {
+      agent: cdnAgent,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+        'Referer': 'https://www.youtube.com/',
+      },
+    }, (res) => {
+      const ct = res.headers['content-type'] ?? 'audio/mpeg'
+      res.on('data', (chunk: Buffer) => {
+        if (done) return
+        chunks.push(chunk)
+        total += chunk.length
+        if (total >= PREWARM_CHUNK_SIZE) {
+          done = true
+          req.destroy()
+          prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
+          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes in ${Date.now()-t0}ms`)
+          evictPrewarmBuffer()
+        }
+      })
+      res.on('end', () => {
+        if (!done && total > 0) {
+          prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
+          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes (complete) in ${Date.now()-t0}ms`)
+          evictPrewarmBuffer()
+        }
+      })
+    })
+    req.on('error', () => {})
+    req.setTimeout(8000, () => { if (!done) req.destroy() })
+  }
+
+  /**
+   * Pre-warm the CDN connection for a video: resolve CDN URL via
+   * the daemon, cache it, then buffer the full audio into RAM for
+   * instant serve. Fire-and-forget — called at startup for the first
+   * queue track.
    */
   async function prewarmCdn(videoId: string): Promise<void> {
     try {
@@ -467,24 +576,14 @@ export function createProxy(options: ProxyOptions = {}) {
         contentType: 'audio/mp4',
       })
 
-      // Pre-resolve DNS (non-blocking)
-      const hostname = new URL(url).hostname
-      dns.resolve(hostname, () => {})
-
-      // Download the FULL audio from CDN into memory (served from RAM on click)
+      // Download full audio into RAM — served instantly on first click
       const chunks: Buffer[] = []
       let total = 0
       const req = https.get(url, { agent: cdnAgent, headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-        res.on('data', (chunk: Buffer) => {
-          chunks.push(chunk)
-          total += chunk.length
-        })
+        res.on('data', (chunk: Buffer) => { chunks.push(chunk); total += chunk.length })
         res.on('end', () => {
           if (total > 0) {
-            prewarmBuffer.set(videoId, {
-              data: Buffer.concat(chunks),
-              contentType: res.headers['content-type'] ?? 'audio/mpeg',
-            })
+            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: res.headers['content-type'] ?? 'audio/mpeg' })
           }
         })
       })

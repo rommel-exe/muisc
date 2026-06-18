@@ -28,6 +28,7 @@ function App() {
   const [prefetchedUpTo, setPrefetchedUpTo] = useState(-1)
   const [customId, setCustomId] = useState('')
   const [customResolving, setCustomResolving] = useState(false)
+  const preResolveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // Refs to handle rapid skip spam — only the latest request takes effect
   const latestReq = useRef(-1)
@@ -160,7 +161,18 @@ function App() {
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         <input
           value={customId}
-          onChange={(e) => setCustomId(e.target.value)}
+          onChange={(e) => {
+            const val = e.target.value
+            setCustomId(val)
+            // Debounced pre-resolve: start daemon + audio buffering before user clicks Play
+            if (preResolveTimer.current) clearTimeout(preResolveTimer.current)
+            if (val.trim().length === 11) {
+              // Pre-resolve immediately so daemon + audio buffering start ASAP
+              preResolveTimer.current = setTimeout(() => {
+                window.api.resolveTrack(val.trim()).catch(() => {})
+              }, 100)
+            }
+          }}
           onKeyDown={(e) => { if (e.key === 'Enter') playCustomId(customId) }}
           placeholder="Paste YouTube video ID..."
           style={{

@@ -26,16 +26,24 @@ YDL_OPTS = {
     "noplaylist": True,
     "skip_download": True,
     "no_check_certificate": True,
-    "format": "18",  # 360p mp4 with AAC audio — always available, plays fine in <audio>
+    # 140 = DASH m4a (AAC, 128kbps) — web-optimized fMP4: browser starts
+    # playing after the first segment (~2s), not after full download.
+    # 251 = Opus webm fallback. bestaudio as last resort.
+    "format": "140/251/bestaudio/best",
     "extractor_args": {
         "youtube": {
-            # Single android client = one API call (not two with android+web)
+            # Android client avoids bot detection that web client triggers
+            # without cookies. Trade-off: only format 18 (combined 360p MP4)
+            # is available — but as a fallback path it's fine.
             "player_client": ["android"],
             "player_skip": ["webpage", "js", "configs", "initial_data"],
         }
     },
     "no_add_chapters": True,
     "no_embed_metadata": True,
+    # Critical: disable disk cache so warm-up (process=False) doesn't
+    # poison the real extraction with cached metadata that lacks format URLs.
+    "no_cache_dir": True,
 }
 
 ydl = YoutubeDL(YDL_OPTS)
@@ -52,8 +60,12 @@ ydl = YoutubeDL(YDL_OPTS)
 # The result is discarded. This is NOT pre-resolving user data.
 try:
     warm_t0 = time.time()
+    # process=False skips format URL extraction but still makes the YouTube API
+    # call, establishing the HTTP connection pool. Use a different video from the
+    # default queue so process=False doesn't poison any cache for user queries.
+    # dQw4w9WgXcQ used to be here — using a different ID to avoid cache conflicts.
     ydl.extract_info(
-        "https://www.youtube.com/watch?v=dQw4w9WgXcQ", download=False, process=False
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw", download=False, process=False
     )
     warm_ms = int((time.time() - warm_t0) * 1000)
 except Exception:
