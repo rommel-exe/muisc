@@ -136,6 +136,15 @@ function App() {
       if (latestReq.current !== idx) return
 
       addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+
+      // Fire-and-forget: get real song title from metadata (background resolves concurrently)
+      if (latestReq.current === idx) {
+        window.api.resolveTrackInfo(track.id).then((info) => {
+          if (latestReq.current !== idx) return
+          setTrackTitle(info.title)
+          addLog(`title:  "${info.title}"`)
+        }).catch(() => {})
+      }
     } catch (err: any) {
       if (latestReq.current === idx) {
         addLog(`ERROR: ${err.message}`)
@@ -169,6 +178,13 @@ function App() {
       await playerControls.play()
       const t3 = Date.now()
       addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+
+      // Fire-and-forget: get real song title from metadata
+      window.api.resolveTrackInfo(result.videoId).then((info) => {
+        if (latestReq.current !== -2) return
+        setTrackTitle(info.title)
+        addLog(`title:  "${info.title}"`)
+      }).catch(() => {})
     } catch (err: any) {
       addLog(`ERROR: ${err.message}`)
     } finally {
@@ -182,6 +198,7 @@ function App() {
     if (!trimmed) return
 
     userInitiatedPlayback.current = true
+    latestReq.current = -2 // same sentinel as search results
     setCustomResolving(true)
     setCurrentIdx(-1)
     setTrackTitle('')
@@ -202,6 +219,13 @@ function App() {
       await playerControls.play()
       const t3 = Date.now()
       addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+
+      // Fire-and-forget: get real song title from metadata
+      window.api.resolveTrackInfo(trimmed).then((info) => {
+        if (latestReq.current !== -2) return
+        setTrackTitle(info.title)
+        addLog(`title:  "${info.title}"`)
+      }).catch(() => {})
     } catch (err: any) {
       addLog(`ERROR: ${err.message}`)
     } finally {

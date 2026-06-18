@@ -54,6 +54,21 @@ export function registerHandlers(resolver: MediaResolver): void {
   })
 
   /**
+   * Resolve a video ID's metadata (title, duration, thumbnail).
+   * Unlike resolve-track, this waits for the full yt-dlp metadata extraction
+   * before returning — use it when you need the real song title for display.
+   */
+  ipcMain.handle(
+    'resolve-track-info',
+    async (_event, videoId: string) => {
+      if (!videoId || typeof videoId !== 'string') {
+        throw new Error('Invalid videoId: expected a non-empty string')
+      }
+      return resolver.resolveTrackInfo(videoId)
+    }
+  )
+
+  /**
    * Search YouTube for tracks matching a query.
    * Returns lightweight search results (no streaming URLs).
    */
@@ -75,6 +90,7 @@ export function registerHandlers(resolver: MediaResolver): void {
  */
 export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('resolve-track')
+  ipcMain.removeAllListeners('resolve-track-info')
   ipcMain.removeAllListeners('test-corrupt-cache')
   ipcMain.removeAllListeners('test-pending-count')
   ipcMain.removeAllListeners(IPC_CHANNELS.PREFETCH_QUEUE)

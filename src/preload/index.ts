@@ -1,9 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { ResolvedStream } from '../shared/types'
 import { IPC_CHANNELS } from '../shared/constants'
 
 // Custom APIs for renderer
 const api = {
+  /**
+   * Resolve a video ID's real metadata (title, duration, thumbnail).
+   * Awaits the full yt-dlp metadata extraction before returning.
+   */
+  resolveTrackInfo: (videoId: string): Promise<ResolvedStream> =>
+    ipcRenderer.invoke('resolve-track-info', videoId),
+
   /**
    * Search YouTube for tracks matching a query.
    * Returns lightweight search results (no streaming URLs).

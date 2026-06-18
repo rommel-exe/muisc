@@ -29,6 +29,9 @@ declare global {
         opts?: { forceRefresh?: boolean }
       ) => Promise<ResolvedStream>
 
+      /** Resolve a video ID's real metadata (awaits full yt-dlp extraction) */
+      resolveTrackInfo: (videoId: string) => Promise<ResolvedStream>
+
       /** Prefetch upcoming queue tracks into the LRU cache */
       prefetchQueue: (upcomingVideoIds: string[]) => Promise<boolean>
 

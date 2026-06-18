@@ -1,4 +1,5 @@
 import { createProxy } from './proxy'
+import type { YTDlpInfo } from './yt-dlp'
 import type { ResolvedStream } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
 
@@ -53,6 +54,11 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
   // LRU cache: videoId → ResolvedStream (minus audioUrl, which is derived from proxy)
   const resolveCache = new Map<string, { info: ResolvedStream; cachedAt: number }>()
 
+  /** Tracks in-flight metadata resolves so resolveTrackInfo can await them.
+   *  Deleted only after the cache is populated (not when the TCP connection settles),
+   *  eliminating the race between background-resolve completion and cache update. */
+  const pendingInfo = new Map<string, Promise<YTDlpInfo>>()
+
   /**
    * Get a proxy URL for a video ID.
    * This is the URL the renderer should load into HTMLAudioElement.
@@ -92,7 +98,10 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     // Trigger background yt-dlp resolve — proxy caches the CDN URL when done.
     // Fire-and-forget: the promise resolves the daemon URL (~250ms in Python)
     // and updates resolveCache with real metadata when infoPromise settles.
-    proxy.triggerBackgroundResolve(videoId).then((info) => {
+    const infoPromise = proxy.triggerBackgroundResolve(videoId)
+    pendingInfo.set(videoId, infoPromise)
+
+    infoPromise.then((info) => {
       const resolved: ResolvedStream = {
         videoId: info.id,
         audioUrl: getProxyUrl(videoId),
@@ -104,6 +113,8 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       evictIfNeeded()
     }).catch(() => {
       // Errors logged in proxy.triggerBackgroundResolve
+    }).finally(() => {
+      pendingInfo.delete(videoId)
     })
 
     // Return proxy URL immediately. Audio connects to localhost proxy (~10ms)
@@ -133,6 +144,39 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     for (const [key] of toRemove) {
       resolveCache.delete(key)
     }
+  }
+
+  /**
+   * Wait for the real metadata (title, duration, thumbnail) for a video ID.
+   *
+   * resolve() returns placeholder metadata immediately so the audio stream
+   * can start loading in parallel. Call this after resolve() when you need
+   * the real title/duration — it waits for the in-flight yt-dlp metadata
+   * extraction to complete, then returns the populated cache result.
+   *
+   * If no resolve is in-flight, triggers a fresh background resolve and waits.
+   * Safe to call multiple times — subsequent calls hit the cache instantly.
+   */
+  async function resolveTrackInfo(videoId: string): Promise<ResolvedStream> {
+    // Check cache first — fast path when metadata is ready
+    const cached = resolveCache.get(videoId)
+    if (cached && Date.now() - cached.cachedAt < cacheTtlMs) {
+      return cached.info
+    }
+
+    // Wait for an in-flight resolve, or start one
+    const pending = pendingInfo.get(videoId) ?? proxy.triggerBackgroundResolve(videoId)
+    const info = await pending
+    const resolved: ResolvedStream = {
+      videoId: info.id,
+      audioUrl: getProxyUrl(videoId),
+      duration: info.duration,
+      title: info.title,
+      thumbnail: info.thumbnail || '',
+    }
+    resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
+    evictIfNeeded()
+    return resolved
   }
 
   // ── Sliding window queue preloader ──
@@ -240,6 +284,7 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
 
   return {
     resolve,
+    resolveTrackInfo,
     clearCache,
     start,
     stop,
