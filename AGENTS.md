@@ -113,4 +113,14 @@ Don't skip phases. Each builds on the previous:
 - macOS needs `zip` target alongside `dmg` for auto-update (`latest-mac.yml` generation)
 - electron-vite@^3 bundles Vite 6 internally — don't upgrade Vite or electron-vite independently without checking compatibility
 - macOS 26 (Sequoia) requires `app.commandLine.appendSwitch('no-sandbox')` to prevent child process crashes (exit_code=15)
-- Spotify `get_access_token` endpoint is WAF-blocked (403) — app now requires `sp_dc` cookie from logged-in web session for import
+- Spotify import (spotify.ts) uses a **two-endpoint anonymous approach** via the web player's internal APIs:
+  1. `spclient.wg.spotify.com/playlist/v2/playlist/{id}` — returns all track URIs (no pagination)
+  2. `api-partner.spotify.com/pathfinder/v1/query` (GraphQL, persisted hash) — resolves URIs to track metadata in batches of 50
+  - **Rate limits are the web player's** — not the REST API — so large imports work out of the box
+- TOTP auth is used to get an anonymous token (same flow as open.spotify.com):
+  - Secrets extracted from `web-player.*.js` bundle: `{secret:"...", version:N}`
+  - Update `TOKEN_SECRETS` in `src/main/services/spotify.ts` when they expire
+  - The `/api/token` endpoint returns the same cached token per IP — this is normal
+- sp_dc cookie still works as a REST API fallback for power users (faster, no GraphQL batching)
+- The old `get_access_token` endpoint is WAF-blocked (403) — do not try to use it
+- The old `__NEXT_DATA__` HTML fallback is dead — Spotify pages are fully CSR now
