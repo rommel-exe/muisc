@@ -30,9 +30,9 @@ src/
 │   ├── SearchEngine.ts   ← Search normalization: Innertube wrapper, title/duration parsing
 │   └── PlaylistEngine.ts ← Playlist CRUD, SQLite abstraction, session hydration
 ├── main/           ← Electron main process (Node context)
-│   ├── index.ts       ← BrowserWindow creation, app lifecycle
+│   ├── index.ts       ← BrowserWindow creation, app lifecycle (+ no-sandbox flag)
 │   ├── ipc/           ← IPC handler registration
-│   └── services/      ← yt-dlp, proxy, innertube, database, media-resolver
+│   └── services/      ← yt-dlp, proxy, innertube, database, media-resolver, spotify
 ├── playback/       ← Audio playback interfaces (mocked in tests)
 │   ├── AudioService.ts   ← HTMLAudioElement wrapper interface
 │   └── MediaResolver.ts  ← Stream resolution interface
@@ -112,3 +112,5 @@ Don't skip phases. Each builds on the previous:
 - Innertube is unofficial — can break without notice
 - macOS needs `zip` target alongside `dmg` for auto-update (`latest-mac.yml` generation)
 - electron-vite@^3 bundles Vite 6 internally — don't upgrade Vite or electron-vite independently without checking compatibility
+- macOS 26 (Sequoia) requires `app.commandLine.appendSwitch('no-sandbox')` to prevent child process crashes (exit_code=15)
+- Spotify `get_access_token` endpoint is WAF-blocked (403) — app now requires `sp_dc` cookie from logged-in web session for import
