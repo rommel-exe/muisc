@@ -3,7 +3,9 @@ import type { MediaResolver } from '../services/media-resolver'
 import type { ResolveOptions } from '../services/media-resolver'
 import { searchYouTube } from '../services/innertube'
 import { IPC_CHANNELS } from '../../shared/constants'
-import { importSpotifyPlaylist } from '../services/spotify-importer'
+import { importSpotifyPlaylist, rematchPlaylist } from '../services/spotify-importer'
+import { PlaylistEngine } from '../../application/PlaylistEngine'
+import { QueueEngine } from '../../application/QueueEngine'
 
 /**
  * Register all IPC handlers for the media resolver pipeline.
@@ -132,6 +134,51 @@ export function registerHandlers(resolver: MediaResolver): void {
       return true
     }
     return false
+  })
+
+  // ── Playlist Browsing + Queue Loading ──
+
+  /**
+   * List all user playlists.
+   */
+  ipcMain.handle(IPC_CHANNELS.GET_PLAYLISTS, () => {
+    return PlaylistEngine.getUserPlaylists()
+  })
+
+  /**
+   * Get tracks for a playlist by ID.
+   */
+  ipcMain.handle(IPC_CHANNELS.GET_PLAYLIST_TRACKS, (_event, playlistId: string) => {
+    if (typeof playlistId !== 'string' || !playlistId) {
+      throw new Error('Invalid playlistId: expected a non-empty string')
+    }
+    return PlaylistEngine.getPlaylistTracks(playlistId)
+  })
+
+  /**
+   * Load a playlist's tracks into the queue and return them.
+   *
+   * If the playlist has stored Spotify source data (was imported), re-matches
+   * it automatically first — so improvements like disabling safety mode apply
+   * to playlists imported before the fix.
+   */
+  ipcMain.handle('load-playlist-into-queue', async (_event, playlistId: string) => {
+    if (typeof playlistId !== 'string' || !playlistId) {
+      throw new Error('Invalid playlistId: expected a non-empty string')
+    }
+
+    // Auto-rematch if this is a Spotify-imported playlist
+    const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
+    if (pl?.spotifySource) {
+      await rematchPlaylist(playlistId)
+    }
+
+    const tracks = PlaylistEngine.getPlaylistTracks(playlistId)
+    if (tracks.length === 0) {
+      throw new Error('Playlist is empty')
+    }
+    QueueEngine.setQueue(tracks, 0)
+    return tracks
   })
 
   console.log('[IPC] Handlers registered')

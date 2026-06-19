@@ -9,11 +9,24 @@ export interface Track {
   sourceId: string      // Original source ID string
 }
 
+export interface SpotifySourceTrack {
+  title: string
+  artist: string
+  duration: number
+}
+
+export interface SpotifySource {
+  url: string
+  tracks: SpotifySourceTrack[]
+}
+
 export interface Playlist {
   id: string
   name: string
   createdAt: number
   updatedAt: number
+  /** If this playlist was imported from Spotify, the original data used to re-match */
+  spotifySource?: SpotifySource
 }
 
 export interface PlaylistTrack {

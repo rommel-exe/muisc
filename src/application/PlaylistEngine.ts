@@ -1,4 +1,4 @@
-import type { Track, Playlist } from '../shared/types'
+import type { Track, Playlist, SpotifySource } from '../shared/types'
 import { QueueEngine } from './QueueEngine'
 import { MediaEngine } from './MediaEngine'
 
@@ -91,6 +91,32 @@ function hydrateSession(sessionState: SessionState): void {
   }
 }
 
+function findPlaylistByName(name: string): Playlist | undefined {
+  return _playlists.find(p => p.name === name)
+}
+
+/**
+ * Replace all tracks for a playlist (used for re-matching).
+ */
+function setPlaylistTracks(playlistId: string, tracks: Track[]): void {
+  _playlistTracks.set(playlistId, [...tracks])
+  const pl = _playlists.find(p => p.id === playlistId)
+  if (pl) {
+    pl.updatedAt = Date.now()
+  }
+}
+
+/**
+ * Set the Spotify source data on a playlist so it can be re-matched later.
+ */
+function setPlaylistSource(playlistId: string, source: SpotifySource): void {
+  const pl = _playlists.find(p => p.id === playlistId)
+  if (pl) {
+    pl.spotifySource = source
+    pl.updatedAt = Date.now()
+  }
+}
+
 function clear(): void {
   _playlists = []
   _playlistTracks.clear()
@@ -106,6 +132,9 @@ export const PlaylistEngine = {
   removeTrackFromPlaylist,
   renamePlaylist,
   deletePlaylist,
+  findPlaylistByName,
+  setPlaylistTracks,
+  setPlaylistSource,
   hydrateSession,
   clear,
 }
