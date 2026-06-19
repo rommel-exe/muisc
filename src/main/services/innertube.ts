@@ -33,8 +33,9 @@ async function getInstance(): Promise<Innertube> {
   if (instancePromise) return instancePromise
 
   instancePromise = Innertube.create({
-    // Use defaults: no cache, no special config.
-    // The session handles cookies and client context automatically.
+    // Disable safety mode so explicit/mature content appears in search results.
+    // Default is true for anonymous sessions, which blocks explicit music from imports.
+    enable_safety_mode: false,
   }).catch((err) => {
     // Reset on failure so next caller retries
     instancePromise = null
