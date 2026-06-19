@@ -52,8 +52,8 @@ const api = {
    * Returns the import result on completion.
    * Progress events are delivered via onSpotifyImportProgress.
    */
-  importSpotifyPlaylist: (url: string): Promise<SpotifyImportResult> =>
-    ipcRenderer.invoke(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST, url),
+  importSpotifyPlaylist: (url: string, spDc?: string): Promise<SpotifyImportResult> =>
+      ipcRenderer.invoke(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST, { url, spDc }),
 
   /**
    * Cancel an in-progress Spotify import.

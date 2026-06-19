@@ -41,12 +41,14 @@ function sendProgress(
  * 4. Reports progress via IPC events on the provided webContents
  *
  * @param url - Spotify playlist URL
+ * @param spDc - Optional sp_dc cookie value from a logged-in Spotify web session
  * @param sender - BrowserWindow webContents for progress events
  * @param signal - Optional AbortSignal for cancellation
  * @returns Import result summary
  */
 export async function importSpotifyPlaylist(
   url: string,
+  spDc: string | undefined,
   sender: WebContents,
   signal?: AbortSignal
 ): Promise<SpotifyImportResult> {
@@ -57,7 +59,7 @@ export async function importSpotifyPlaylist(
     throw new Error('Import cancelled')
   }
 
-  const playlist = await fetchSpotifyPlaylist(url, signal)
+  const playlist = await fetchSpotifyPlaylist(url, spDc, signal)
 
   let tracks = playlist.tracks
   if (tracks.length > MAX_TRACKS) {

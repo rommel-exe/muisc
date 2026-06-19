@@ -33,6 +33,17 @@ function parsePlaylistId(url: string): string | null {
   return null
 }
 
+// ── sp_dc Cookie Auth ──
+
+/**
+ * Build a Spotify Web API Authorization header from an sp_dc cookie value.
+ * The sp_dc cookie (set by open.spotify.com on login) acts as a Basic auth
+ * credential: base64(sp_dc + ':'). No OAuth app registration needed.
+ */
+function buildSpDcAuth(spDc: string): string {
+  return 'Basic ' + Buffer.from(spDc + ':').toString('base64')
+}
+
 // ── HTTP Helpers ──
 
 const SPOTIFY_UA =
@@ -65,19 +76,44 @@ interface SpotifyAccessToken {
 }
 
 /**
- * Get a temporary access token from Spotify's public endpoint.
- * This is the same endpoint the web player uses — no OAuth app needed.
+ * Get authorization for the Spotify Web API.
+ *
+ * Strategy:
+ *   1. If an sp_dc cookie value is provided, use it as Basic auth
+ *      (no OAuth app registration needed — same as the web player).
+ *   2. Otherwise, try the public get_access_token endpoint (blocked by WAF
+ *      in many environments as of mid-2025+).
+ *
+ * Returns a { authHeader, isSpDc } tuple where authHeader is the value
+ * to pass as the Authorization HTTP header.
  */
-async function getAccessToken(signal?: AbortSignal): Promise<string> {
+async function getAuth(
+  spDc?: string,
+  signal?: AbortSignal
+): Promise<{ header: string; isSpDc: boolean }> {
+  // Strategy 1: sp_dc cookie (most reliable)
+  if (spDc && spDc.trim()) {
+    return { header: buildSpDcAuth(spDc.trim()), isSpDc: true }
+  }
+
+  // Strategy 2: get_access_token endpoint (often blocked)
   const res = await spotifyFetch('https://open.spotify.com/get_access_token', signal)
   if (!res.ok) {
-    throw new Error(`Failed to get Spotify access token (HTTP ${res.status})`)
+    throw new Error(
+      'Spotify authentication failed. Provide an sp_dc cookie from your ' +
+      'logged-in Spotify web player session to import playlists.\n\n' +
+      'To get it:\n' +
+      '1. Open open.spotify.com in Chrome and log in\n' +
+      '2. Open DevTools → Application → Cookies\n' +
+      '3. Copy the sp_dc value\n' +
+      '4. Paste it into the sp_dc field in the app'
+    )
   }
   const data = (await res.json()) as SpotifyAccessToken
   if (!data.accessToken) {
     throw new Error('Spotify access token response missing accessToken')
   }
-  return data.accessToken
+  return { header: `Bearer ${data.accessToken}`, isSpDc: false }
 }
 
 // ── API Track Fetching (with pagination) ──
@@ -94,21 +130,22 @@ interface SpotifyApiTrackItem {
 
 /**
  * Fetch ALL tracks from a playlist via the Spotify Web API with full pagination.
- * Uses an ephemeral access token from open.spotify.com.
+ * Uses sp_dc cookie auth or an ephemeral access token from open.spotify.com.
  */
 async function fetchTracksViaApi(
   playlistId: string,
+  spDc?: string,
   signal?: AbortSignal
 ): Promise<SpotifyPlaylistResult | null> {
   try {
-    const token = await getAccessToken(signal)
+    const { header } = await getAuth(spDc, signal)
     if (signal?.aborted) throw new Error('Import cancelled')
 
     // First, get the playlist name and total track count
     const metaRes = await fetch(
       `https://api.spotify.com/v1/playlists/${playlistId}?fields=name,tracks.total`,
       {
-        headers: { Authorization: `Bearer ${token}`, 'User-Agent': SPOTIFY_UA },
+        headers: { Authorization: header, 'User-Agent': SPOTIFY_UA },
         signal,
       }
     )
@@ -129,7 +166,7 @@ async function fetchTracksViaApi(
 
       const url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}&fields=items(track(name,artists(name),duration_ms,album(name),uri))`
       const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}`, 'User-Agent': SPOTIFY_UA },
+        headers: { Authorization: header, 'User-Agent': SPOTIFY_UA },
         signal,
       })
       if (!res.ok) {
@@ -297,18 +334,21 @@ function deduplicateTracks(tracks: SpotifyTrack[]): SpotifyTrack[] {
  * Fetch a public Spotify playlist by URL.
  *
  * Strategy:
- *   1. PRIMARY: Get an ephemeral access token from open.spotify.com, then paginate
- *      through the Spotify Web API to fetch ALL tracks.
+ *   1. PRIMARY: Use sp_dc cookie auth → Spotify Web API with full pagination.
+ *      If no sp_dc is provided, fall back to get_access_token endpoint (often blocked).
  *   2. FALLBACK: Parse the __NEXT_DATA__ JSON from the playlist page HTML
  *      (limited to ~100 tracks — only used when the API approach fails).
  *
  * @param url - Spotify playlist URL (e.g. https://open.spotify.com/playlist/...)
+ * @param spDc - Optional sp_dc cookie value from a logged-in Spotify web session.
+ *               When provided, used as Basic auth for the Web API directly.
  * @param signal - Optional AbortSignal for cancellation
  * @returns Playlist name and deduplicated track list
  * @throws If the URL is invalid, the playlist is private, or both fetch strategies fail
  */
 export async function fetchSpotifyPlaylist(
   url: string,
+  spDc?: string,
   signal?: AbortSignal
 ): Promise<SpotifyPlaylistResult> {
   const playlistId = parsePlaylistId(url)
@@ -320,7 +360,7 @@ export async function fetchSpotifyPlaylist(
   }
 
   // ── PRIMARY: Spotify Web API (full pagination) ──
-  const apiResult = await fetchTracksViaApi(playlistId, signal)
+  const apiResult = await fetchTracksViaApi(playlistId, spDc, signal)
   if (apiResult && apiResult.tracks.length > 0) {
     apiResult.tracks = deduplicateTracks(apiResult.tracks)
     console.log(`[Spotify] API fetch: ${apiResult.tracks.length}/${apiResult.totalCount} tracks`)

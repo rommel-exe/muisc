@@ -94,10 +94,12 @@ export function registerHandlers(resolver: MediaResolver): void {
 
   ipcMain.handle(
     IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST,
-    async (event, url: string) => {
+    async (event, args: { url: string; spDc?: string }) => {
+      const url = args?.url
       if (!url || typeof url !== 'string') {
         throw new Error('Invalid URL: expected a non-empty string')
       }
+      const spDc = args?.spDc
 
       // Cancel previous import if still running
       if (currentAbortController) {
@@ -110,7 +112,7 @@ export function registerHandlers(resolver: MediaResolver): void {
       const signal = abortController.signal
 
       try {
-        const result = await importSpotifyPlaylist(url, event.sender, signal)
+        const result = await importSpotifyPlaylist(url, spDc, event.sender, signal)
         return result
       } finally {
         if (currentAbortController === abortController) {

@@ -61,7 +61,7 @@ declare global {
       testPendingCount: () => Promise<number>
 
       // Spotify Import
-      importSpotifyPlaylist: (url: string) => Promise<SpotifyImportResult>
+      importSpotifyPlaylist: (url: string, spDc?: string) => Promise<SpotifyImportResult>
       cancelSpotifyImport: () => Promise<boolean>
       onSpotifyImportProgress: (
         callback: (progress: SpotifyImportProgress) => void

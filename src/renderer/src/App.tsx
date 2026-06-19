@@ -245,6 +245,7 @@ function App() {
 
   // ── Spotify Import state ──
   const [spotifyUrl, setSpotifyUrl] = useState('')
+  const [spotifySpDc, setSpotifySpDc] = useState('')
   const [importing, setImporting] = useState(false)
   const [importError, setImportError] = useState<string | null>(null)
   const [importProgress, setImportProgress] = useState<{
@@ -278,10 +279,12 @@ function App() {
     setImportError(null)
     setImportResult(null)
     setImportProgress(null)
-    addLog(`import: starting Spotify import...`)
+
+    const spDc = spotifySpDc.trim() || undefined
+    addLog(`import: starting Spotify import...${spDc ? ' (using sp_dc auth)' : ''}`)
 
     try {
-      const result = await window.api.importSpotifyPlaylist(trimmed)
+      const result = await window.api.importSpotifyPlaylist(trimmed, spDc)
       setImporting(false)
       setImportResult(result)
       setImportProgress(null)
@@ -395,7 +398,7 @@ function App() {
         <div style={{ fontSize: 12, color: '#1db954', marginBottom: 6 }}>
           Import from Spotify
         </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginBottom: 6 }}>
           <input
             value={spotifyUrl}
             onChange={(e) => setSpotifyUrl(e.target.value)}
@@ -444,6 +447,30 @@ function App() {
               Import
             </button>
           )}
+        </div>
+
+        {/* sp_dc cookie input */}
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input
+            value={spotifySpDc}
+            onChange={(e) => setSpotifySpDc(e.target.value)}
+            placeholder="sp_dc cookie (optional — from browser DevTools)"
+            disabled={importing}
+            style={{
+              flex: 1,
+              padding: '6px 10px',
+              background: '#151515',
+              color: '#aaa',
+              border: '1px solid #2a2a2a',
+              borderRadius: 0,
+              fontFamily: 'monospace',
+              fontSize: 11,
+              outline: 'none',
+            }}
+          />
+          <span style={{ fontSize: 10, color: '#555', flexShrink: 0 }}>
+            ? sp_dc
+          </span>
         </div>
 
         {/* Import Progress */}
