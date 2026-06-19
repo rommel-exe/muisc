@@ -378,30 +378,41 @@ export async function fetchSpotifyPlaylist(
     throw err
   }
 
-  if (html.includes('/login') || html.includes('Log in') || !html.includes('__NEXT_DATA__')) {
+  // Check if the playlist page is behind a login wall
+  if (html.includes('/login') || html.includes('Log in')) {
     throw new Error(
       'This playlist appears to be private or unavailable. ' +
       'Make it public in Spotify settings and try again.'
     )
   }
 
+  // Try to parse __NEXT_DATA__ (older Spotify page format)
   const nextData = extractNextData(html)
-  if (!nextData) {
+  if (nextData) {
+    const fallbackResult = extractTracksFromNextData(nextData)
+    if (fallbackResult && fallbackResult.tracks.length > 0) {
+      fallbackResult.tracks = deduplicateTracks(fallbackResult.tracks)
+      console.log(`[Spotify] Fallback (__NEXT_DATA__): ${fallbackResult.tracks.length} tracks (limited to ~100)`)
+      return fallbackResult
+    }
+  }
+
+  // If we got the HTML but no __NEXT_DATA__, the page is client-side rendered.
+  // The user needs to provide their sp_dc cookie for API access.
+  if (!spDc) {
     throw new Error(
-      'Could not parse Spotify playlist data. ' +
-      'The page format may have changed.'
+      'Spotify authentication required.\n\n' +
+      'To import this playlist, provide an sp_dc cookie from your logged-in ' +
+      'Spotify web player session:\n' +
+      '1. Open open.spotify.com in Chrome and log in\n' +
+      '2. Open DevTools → Application → Cookies → open.spotify.com\n' +
+      '3. Copy the sp_dc value and paste it into the sp_dc field above'
     )
   }
 
-  const fallbackResult = extractTracksFromNextData(nextData)
-  if (!fallbackResult || fallbackResult.tracks.length === 0) {
-    throw new Error(
-      'Could not extract tracks from this playlist. ' +
-      'It may be empty or the format has changed.'
-    )
-  }
-
-  fallbackResult.tracks = deduplicateTracks(fallbackResult.tracks)
-  console.log(`[Spotify] Fallback (__NEXT_DATA__): ${fallbackResult.tracks.length} tracks (limited to ~100)`)
-  return fallbackResult
+  // With spDc provided but still no data — something else is wrong
+  throw new Error(
+    'Could not extract tracks from this playlist. ' +
+    'The playlist may be empty or the Spotify API returned an unexpected response.'
+  )
 }
