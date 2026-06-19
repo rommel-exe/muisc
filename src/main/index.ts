@@ -83,6 +83,7 @@ app.whenReady().then(async () => {
       thumbnailUrl: r.thumbnail,
       source: 'youtube' as const,
       sourceId: r.videoId,
+      channelType: r.channelType,
     }))
   })
 

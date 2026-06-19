@@ -156,9 +156,7 @@ describe('TrackIdentityEngine 100% Accuracy Verification', () => {
         title: 'Linkin Park - In The End (Official Audio)',
         duration: 216,
         channelType: 'verified_topic',
-        fingerprintHash: 'a1b2c3d4e5'
-      },
-      'a1b2c3d4e5'
+      }
     )
 
     const endTime = performance.now()

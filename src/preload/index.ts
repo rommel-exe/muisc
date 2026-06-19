@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { ResolvedStream, SpotifyImportProgress, SpotifyImportResult } from '../shared/types'
+import type { ResolvedStream, SpotifyImportProgress, SpotifyImportResult, Track, Playlist } from '../shared/types'
 import { IPC_CHANNELS } from '../shared/constants'
 
 // Custom APIs for renderer
@@ -77,6 +77,25 @@ const api = {
     }
   },
 
+  // ── Playlist Browsing ──
+
+  /**
+   * List all user playlists.
+   */
+  getPlaylists: (): Promise<Playlist[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_PLAYLISTS),
+
+  /**
+   * Get tracks for a playlist by ID.
+   */
+  getPlaylistTracks: (playlistId: string): Promise<Track[]> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_PLAYLIST_TRACKS, playlistId),
+
+  /**
+   * Load a playlist's tracks into the queue for playback.
+   */
+  loadPlaylistIntoQueue: (playlistId: string): Promise<Track[]> =>
+    ipcRenderer.invoke('load-playlist-into-queue', playlistId),
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

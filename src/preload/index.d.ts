@@ -37,6 +37,24 @@ interface SpotifyImportResult {
   skipped: SpotifyImportSkipped[]
 }
 
+interface Track {
+  id: string
+  title: string
+  artist: string
+  album?: string
+  duration: number
+  thumbnailUrl: string
+  source: 'youtube' | 'spotify_imported' | 'local'
+  sourceId: string
+}
+
+interface Playlist {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -66,6 +84,11 @@ declare global {
       onSpotifyImportProgress: (
         callback: (progress: SpotifyImportProgress) => void
       ) => () => void
+
+      // Playlist Browsing + Queue
+      getPlaylists: () => Promise<Playlist[]>
+      getPlaylistTracks: (playlistId: string) => Promise<Track[]>
+      loadPlaylistIntoQueue: (playlistId: string) => Promise<Track[]>
     }
   }
 }

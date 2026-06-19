@@ -7,6 +7,8 @@ export interface Track {
   thumbnailUrl: string  // High-res image link
   source: 'youtube' | 'spotify_imported' | 'local'
   sourceId: string      // Original source ID string
+  /** Channel type from YouTube (e.g. 'verified_topic', 'user_upload') */
+  channelType?: string
 }
 
 export interface SpotifySourceTrack {

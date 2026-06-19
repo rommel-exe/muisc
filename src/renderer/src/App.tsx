@@ -14,6 +14,24 @@ interface SearchTrack {
   thumbnail: string
 }
 
+interface Track {
+  id: string
+  title: string
+  artist: string
+  album?: string
+  duration: number
+  thumbnailUrl: string
+  source: string
+  sourceId: string
+}
+
+interface Playlist {
+  id: string
+  name: string
+  createdAt: number
+  updatedAt: number
+}
+
 const QUEUE: QueueTrack[] = [
   { id: '9bZkp7q19f0', label: 'PSY — Gangnam Style' },
   { id: 'CevxZvSJLk8', label: 'Katy Perry — Roar' },
@@ -35,6 +53,11 @@ function App() {
   const [trackTitle, setTrackTitle] = useState('')
   const [customId, setCustomId] = useState('')
   const [customResolving, setCustomResolving] = useState(false)
+
+  // ── Playlist / Queue state ──
+  const [playlists, setPlaylists] = useState<Playlist[]>([])
+  const [loadedTracks, setLoadedTracks] = useState<Track[]>([])
+  const [queuePlaylistName, setQueuePlaylistName] = useState('')
 
   // ── Search state ──
   const [searchQuery, setSearchQuery] = useState('')
@@ -94,10 +117,12 @@ function App() {
     }
   }, [doSearch, searchQuery])
 
-  // ── Play a resolved stream (hardcoded queue track) ──
+  // ── Play a resolved stream (queue or imported playlist track) ──
   const playTrack = useCallback(async (idx: number) => {
-    const track = QUEUE[idx]
+    const queue = loadedTracks.length > 0 ? loadedTracks : QUEUE
+    const track = queue[idx]
     if (!track) return
+    const videoId = track.id || (track as any).sourceId
 
     userInitiatedPlayback.current = true
     latestReq.current = idx
@@ -105,10 +130,10 @@ function App() {
     setResolving(true)
 
     const t0 = Date.now()
-    addLog(`⏳ Resolving ${track.id}...`)
+    addLog(`⏳ Resolving ${videoId}...`)
 
     try {
-      const resolved = await window.api.resolveTrack(track.id)
+      const resolved = await window.api.resolveTrack(videoId)
       const t1 = Date.now()
       if (latestReq.current !== idx) return
 
@@ -130,7 +155,7 @@ function App() {
 
       // Fire-and-forget: get real song title from metadata (background resolves concurrently)
       if (latestReq.current === idx) {
-        window.api.resolveTrackInfo(track.id).then((info) => {
+        window.api.resolveTrackInfo(videoId).then((info) => {
           if (latestReq.current !== idx) return
           setTrackTitle(info.title)
           addLog(`title:  "${info.title}"`)
@@ -220,9 +245,9 @@ function App() {
     } catch (err: any) {
       addLog(`ERROR: ${err.message}`)
     } finally {
-      setCustomResolving(false)
+      setResolving(false)
     }
-  }, [playerControls, addLog])
+  }, [playerControls, addLog, loadedTracks])
 
   const goNext = useCallback(() => {
     const next = currentIdx + 1
@@ -289,6 +314,9 @@ function App() {
       setImportResult(result)
       setImportProgress(null)
       addLog(`import: "${result.playlistName}" — ${result.matchedCount}/${result.totalCount} matched`)
+      // Refresh playlist list
+      const pls = await window.api.getPlaylists()
+      setPlaylists(pls)
     } catch (err: any) {
       setImporting(false)
       setImportProgress(null)
@@ -307,6 +335,18 @@ function App() {
     setImporting(false)
     setImportProgress(null)
     addLog('import: cancelled')
+  }, [addLog])
+
+  const handleLoadPlaylist = useCallback(async (playlist: Playlist) => {
+    try {
+      addLog(`queue: loading "${playlist.name}"...`)
+      const tracks = await window.api.loadPlaylistIntoQueue(playlist.id)
+      setLoadedTracks(tracks)
+      setQueuePlaylistName(playlist.name)
+      addLog(`queue: loaded ${tracks.length} tracks from "${playlist.name}"`)
+    } catch (err: any) {
+      addLog(`queue ERROR: ${err.message}`)
+    }
   }, [addLog])
 
   return (
@@ -548,6 +588,41 @@ function App() {
             )}
           </div>
         )}
+
+        {/* Playlists */}
+        {playlists.length > 0 && (
+          <div style={{ marginTop: 8, fontSize: 12 }}>
+            <div style={{ color: '#69f', marginBottom: 4, fontSize: 11 }}>
+              Playlists ({playlists.length})
+            </div>
+            {playlists.map((pl) => (
+              <div
+                key={pl.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '4px 0',
+                }}
+              >
+                <span style={{ flex: 1, color: '#ddd' }}>{pl.name}</span>
+                <button
+                  onClick={() => handleLoadPlaylist(pl)}
+                  style={{
+                    padding: '2px 10px',
+                    background: '#36a',
+                    color: '#fff',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 11,
+                  }}
+                >
+                  Load into Queue
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Custom ID input ── */}
@@ -596,40 +671,46 @@ function App() {
 
       {/* ── Queue ── */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>Demo Queue</div>
-        {QUEUE.map((track, i) => (
-          <div
-            key={track.id}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '6px 8px',
-              background: i === currentIdx ? '#222' : 'transparent',
-              borderBottom: '1px solid #222',
-            }}
-          >
-            <span style={{ width: 20, color: '#666' }}>{i + 1}</span>
-            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {track.label}
-            </span>
-            <span style={{ fontSize: 11, color: '#555' }}>{track.id}</span>
-            <button
-              onClick={() => playTrack(i)}
-              disabled={resolving}
+        <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>
+          {loadedTracks.length > 0 ? `Queue: ${queuePlaylistName} (${loadedTracks.length} tracks)` : 'Demo Queue'}
+        </div>
+        {(loadedTracks.length > 0 ? loadedTracks : QUEUE).map((track: any, i: number) => {
+          const label = track.label || `${track.artist} — ${track.title}`
+          const id = track.id || track.sourceId
+          return (
+            <div
+              key={id}
               style={{
-                padding: '2px 8px',
-                background: i === currentIdx ? '#2a2' : '#333',
-                color: '#fff',
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 12,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 8px',
+                background: i === currentIdx ? '#222' : 'transparent',
+                borderBottom: '1px solid #222',
               }}
             >
-              {resolving && i === currentIdx ? '...' : '▶'}
-            </button>
-          </div>
-        ))}
+              <span style={{ width: 20, color: '#666' }}>{i + 1}</span>
+              <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {label}
+              </span>
+              <span style={{ fontSize: 11, color: '#555' }}>{id}</span>
+              <button
+                onClick={() => playTrack(i)}
+                disabled={resolving}
+                style={{
+                  padding: '2px 8px',
+                  background: i === currentIdx ? '#2a2' : '#333',
+                  color: '#fff',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                }}
+              >
+                {resolving && i === currentIdx ? '...' : '▶'}
+              </button>
+            </div>
+          )
+        })}
       </div>
 
       {/* ── Now Playing Controls ── */}

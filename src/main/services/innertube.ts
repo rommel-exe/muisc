@@ -66,6 +66,8 @@ export interface InnertubeSearchResult {
   artist: string
   duration: number
   thumbnail: string
+  /** YouTube channel type: 'verified_topic' for auto-generated Topic channels */
+  channelType: string
 }
 
 // ── Search ──
@@ -98,12 +100,24 @@ export async function searchYouTube(
       const rawTitle: string = video.title?.text ?? ''
       const durationText: string = video.length_text?.text ?? '0:00'
 
+      // Detect channel type from author info
+      const authorName: string = video.author?.name ?? ''
+      const badges: Array<{ type?: string }> = video.author?.badges ?? []
+      const badgeTypes = badges.map((b) => b.type ?? '')
+      const channelType =
+        authorName.toLowerCase().endsWith(' - topic')
+          ? 'verified_topic'
+          : badgeTypes.includes('BADGE_STYLE_TYPE_VERIFIED_ARTIST')
+            ? 'verified_artist'
+            : 'user_upload'
+
       tracks.push({
         videoId: video.video_id,
         title: rawTitle,
-        artist: video.author?.name ?? 'Unknown',
+        artist: authorName,
         duration: parseDurationText(durationText),
         thumbnail: video.thumbnails?.[0]?.url ?? '',
+        channelType,
       })
     }
 

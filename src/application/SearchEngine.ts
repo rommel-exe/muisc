@@ -35,6 +35,14 @@ export const ANNOTATION_PATTERNS: RegExp[] = [
   /\(ft\.?\s+.*?\)/gi,
   /\(feat\.?\s+.*?\)/gi,
   /\(with\s+.*?\)/gi,
+  // Version/edit markers — strip suffixes that aren't the core title.
+  // Handles both " - Remix" and " - Seeb Remix" (with qualifier).
+  /\s*[-–—]\s*(.+?\s+)?(Remix|Radio\s*Edit|Extended\s*Mix|Instrumental|Acoustic)\s*$/gi,
+  /\s*[-–—]\s*.+?\s+Version\s*$/gi,
+  /\s*[-–—]\s*Studio\s+Recording\s+from\s+.+?Performance\s*$/gi,
+  /\s*[-–—]\s*(Bonus\s+Track|From\s+.+?)\s*$/gi,
+  // Also handle parenthesized version markers: "(Remix)" and "(Seeb Remix)"
+  /\((.+?\s+)?(Remix|Radio\s*Edit|Extended\s*Mix|Instrumental|Acoustic)\s*\)/gi,
   /\s{2,}/g,
 ]
 
@@ -52,6 +60,23 @@ export function cleanTitle(rawTitle: string): string {
   }
 
   // Strip annotations
+  for (const pattern of ANNOTATION_PATTERNS) {
+    title = title.replace(pattern, '')
+  }
+
+  return title.trim()
+}
+
+/**
+ * Strip annotations from a title WITHOUT removing the artist prefix.
+ * Use this for Spotify/import target titles where the artist is already
+ * a separate field, so "- Remix" or "- Radio Edit" won't be mistaken
+ * for an artist separator.
+ */
+export function cleanTrackTitle(rawTitle: string): string {
+  let title = rawTitle.trim()
+
+  // Strip annotations only (no artist prefix removal)
   for (const pattern of ANNOTATION_PATTERNS) {
     title = title.replace(pattern, '')
   }
@@ -91,6 +116,16 @@ function normalizeRow(raw: RawInnertubeVideo): Track | null {
   const duration = parseDuration(durationText)
   const thumbnailUrl = renderer.thumbnail?.thumbnails?.[0]?.url ?? ''
 
+  // Extract channelType from owner badges if available
+  const ownerBadges = renderer['ownerBadges'] as Array<{ metadataBadgeRenderer?: { style?: string; tooltip?: string } }> | undefined
+  const channelType = ownerBadges?.some(
+    (b) => b?.metadataBadgeRenderer?.style === 'BADGE_STYLE_TYPE_VERIFIED_ARTIST'
+  )
+    ? 'verified_artist'
+    : extractArtist(rawTitle, title).toLowerCase().endsWith(' - topic')
+      ? 'verified_topic'
+      : undefined
+
   return {
     id: videoId,
     title,
@@ -99,6 +134,7 @@ function normalizeRow(raw: RawInnertubeVideo): Track | null {
     thumbnailUrl,
     source: 'youtube',
     sourceId: videoId,
+    channelType,
   }
 }
 
