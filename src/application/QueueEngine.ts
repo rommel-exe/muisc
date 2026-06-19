@@ -26,7 +26,7 @@ const state: QueueEngineState = {
   index: -1,
   history: [],
   shuffleActive: false,
-  repeatMode: 'none',
+  repeatMode: 'all',
 }
 
 // ── Helpers ──
@@ -51,6 +51,8 @@ function setQueue(tracks: Track[], startIndex: number): void {
   state.list = tracks.map(wrapTrack)
   state.index = startIndex >= 0 && startIndex < state.list.length ? startIndex : 0
   state.history = []
+  // Reset to 'all' so the queue loops by default (infinite play)
+  state.repeatMode = 'all'
 }
 
 function next(): QueueTrack | null {

@@ -194,9 +194,10 @@ const NON_SONG_PATTERNS: RegExp[] = [
   // BBC/event broadcasts
   /\bbbc\b/i, /\bopening act\b/i,
 
-  // Extended/remix versions
-  /\bextended mix\b/i, /\bclub mix\b/i, /\bradio edit\b/i,
-  /\bremix\b/i, /\brework\b/i,
+  // Extended/remix versions — NOTE: remix/rework/etc are NOT filtered here
+  // because our multi-query search + confidence scoring handles version
+  // matching precisely. The pre-filter would block tracks like "Sunflower - Remix"
+  // from finding their corresponding YouTube upload.
 ]
 
 interface ScoredResult {
