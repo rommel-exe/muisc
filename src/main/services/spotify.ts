@@ -3,11 +3,12 @@
 // Spotify playlist fetcher — extracts ALL track metadata from a public Spotify
 // playlist URL using Spotify's internal Web API (no OAuth app registration needed).
 //
-// Strategy (two-tier):
-//   1. PRIMARY: Get an ephemeral access token from open.spotify.com, then paginate
-//      through the Spotify Web API to fetch all tracks.
-//   2. FALLBACK: Parse the __NEXT_DATA__ JSON from the playlist page HTML
-//      (limited to ~100 tracks from the first page).
+// Strategy:
+//   1. sp_dc cookie auth → Spotify Web API with full pagination (most reliable)
+//   2. Anonymous TOTP auth → Spotify Web API with full pagination (works out of box)
+//   3. __NEXT_DATA__ HTML fallback (~100 tracks, legacy Spotify pages only)
+
+import * as crypto from 'crypto'
 
 export interface SpotifyTrack {
   title: string
@@ -44,6 +45,130 @@ function buildSpDcAuth(spDc: string): string {
   return 'Basic ' + Buffer.from(spDc + ':').toString('base64')
 }
 
+// ── Anonymous TOTP Auth ──
+//
+// Spotify's web player uses a TOTP (Time-based One-Time Password) flow to issue
+// anonymous access tokens. The secrets are embedded in the web-player JS bundle.
+// These must be updated when Spotify rotates them (extract from web-player.*.js):
+//   regex: {secret:\s*["']([^"']+)["']\s*,\s*version:\s*(\d+)\s*}
+//
+// Last updated: 2026-06-19
+
+const TOKEN_SECRETS = [
+  { secret: ',7/*F("rLJ2oxaKL^f+E1xvP@N', version: 61 },
+  { secret: 'OmE{ZA.J^":0FG\\Uz?[@WW', version: 60 },
+  { secret: '{iOFn;4}<1PFYKPV?5{%u14]M>/V0hDH', version: 59 },
+]
+
+interface SpotifyTokenResponse {
+  clientId: string
+  accessToken: string
+  accessTokenExpirationTimestampMs: number
+  isAnonymous: boolean
+}
+
+/**
+ * Transform the raw secret string into TOTP key bytes.
+ * Matches the web-player's own transformation.
+ */
+function transformSecret(secret: string): Buffer {
+  // XOR each char code with (index % 33 + 9)
+  const xorResult = secret.split('').map((ch, i) => ch.charCodeAt(0) ^ ((i % 33) + 9))
+  // Join as decimal string → UTF-8 bytes → hex → bytes
+  // This round-trip matches the web-player's Buffer.from(…,"utf8").toString("hex") / fromHex
+  const hexKey = Buffer.from(xorResult.join(''), 'utf8').toString('hex')
+  return Buffer.from(hexKey, 'hex')
+}
+
+/**
+ * Generate a 6-digit TOTP using SHA1, 30-second period.
+ */
+function generateTOTP(secretBytes: Buffer, timestampSeconds: number): string {
+  const timeStep = 30
+  const counter = Math.floor(timestampSeconds / timeStep)
+
+  const counterBuffer = Buffer.alloc(8)
+  counterBuffer.writeBigUInt64BE(BigInt(counter))
+
+  const hmac = crypto.createHmac('sha1', secretBytes)
+  hmac.update(counterBuffer)
+  const hmacResult = hmac.digest()
+
+  const offset = hmacResult[hmacResult.length - 1] & 0xf
+  const code =
+    ((hmacResult[offset] & 0x7f) << 24) |
+    ((hmacResult[offset + 1] & 0xff) << 16) |
+    ((hmacResult[offset + 2] & 0xff) << 8) |
+    (hmacResult[offset + 3] & 0xff)
+
+  return String(code % 1_000_000).padStart(6, '0')
+}
+
+/**
+ * Get an anonymous access token from Spotify using TOTP auth.
+ * This works without any user-provided credentials.
+ */
+async function getAnonymousToken(signal?: AbortSignal): Promise<SpotifyTokenResponse> {
+  const ua =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36'
+
+  // Use the newest secret (highest version)
+  const { secret, version } = TOKEN_SECRETS[0]
+  const secretBytes = transformSecret(secret)
+
+  // Step 1: Get server timestamp
+  const timeRes = await fetch('https://open.spotify.com/api/server-time', {
+    headers: { 'User-Agent': ua, Accept: 'application/json' },
+    signal,
+  })
+  if (!timeRes.ok) {
+    throw new Error(`Spotify server-time returned HTTP ${timeRes.status}`)
+  }
+  const timeData = (await timeRes.json()) as { serverTime?: number }
+  const serverTime = timeData.serverTime
+  if (!serverTime || isNaN(serverTime)) {
+    throw new Error('Spotify server-time response missing serverTime')
+  }
+
+  // Step 2: Generate TOTP from server timestamp
+  const totp = generateTOTP(secretBytes, serverTime)
+
+  // Step 3: Exchange TOTP for an access token
+  const params = new URLSearchParams({
+    reason: 'init',
+    productType: 'web-player',
+    totp,
+    totpServer: totp,
+    totpVer: String(version),
+  })
+
+  const tokenRes = await fetch(
+    `https://open.spotify.com/api/token?${params.toString()}`,
+    {
+      headers: {
+        'User-Agent': ua,
+        Accept: 'application/json',
+        Referer: 'https://open.spotify.com/',
+      },
+      signal,
+    }
+  )
+  if (!tokenRes.ok) {
+    throw new Error(
+      `Spotify token request failed (HTTP ${tokenRes.status}). ` +
+      'Try importing with an sp_dc cookie instead.'
+    )
+  }
+
+  const data = (await tokenRes.json()) as SpotifyTokenResponse
+  if (!data.accessToken) {
+    throw new Error('Spotify token response missing accessToken')
+  }
+
+  return data
+}
+
 // ── HTTP Helpers ──
 
 const SPOTIFY_UA =
@@ -68,21 +193,12 @@ function isAbortError(err: unknown): boolean {
 
 // ── Access Token ──
 
-interface SpotifyAccessToken {
-  accessToken: string
-  clientId: string
-  accessTokenExpirationTimestampMs: number
-  isAnonymous: boolean
-}
-
 /**
  * Get authorization for the Spotify Web API.
  *
  * Strategy:
- *   1. If an sp_dc cookie value is provided, use it as Basic auth
- *      (no OAuth app registration needed — same as the web player).
- *   2. Otherwise, try the public get_access_token endpoint (blocked by WAF
- *      in many environments as of mid-2025+).
+ *   1. If an sp_dc cookie value is provided, use it as Basic auth.
+ *   2. Otherwise, get an anonymous token via TOTP auth (works out of box).
  *
  * Returns a { authHeader, isSpDc } tuple where authHeader is the value
  * to pass as the Authorization HTTP header.
@@ -96,24 +212,9 @@ async function getAuth(
     return { header: buildSpDcAuth(spDc.trim()), isSpDc: true }
   }
 
-  // Strategy 2: get_access_token endpoint (often blocked)
-  const res = await spotifyFetch('https://open.spotify.com/get_access_token', signal)
-  if (!res.ok) {
-    throw new Error(
-      'Spotify authentication failed. Provide an sp_dc cookie from your ' +
-      'logged-in Spotify web player session to import playlists.\n\n' +
-      'To get it:\n' +
-      '1. Open open.spotify.com in Chrome and log in\n' +
-      '2. Open DevTools → Application → Cookies\n' +
-      '3. Copy the sp_dc value\n' +
-      '4. Paste it into the sp_dc field in the app'
-    )
-  }
-  const data = (await res.json()) as SpotifyAccessToken
-  if (!data.accessToken) {
-    throw new Error('Spotify access token response missing accessToken')
-  }
-  return { header: `Bearer ${data.accessToken}`, isSpDc: false }
+  // Strategy 2: Anonymous TOTP auth
+  const tokenData = await getAnonymousToken(signal)
+  return { header: `Bearer ${tokenData.accessToken}`, isSpDc: false }
 }
 
 // ── API Track Fetching (with pagination) ──
@@ -130,7 +231,7 @@ interface SpotifyApiTrackItem {
 
 /**
  * Fetch ALL tracks from a playlist via the Spotify Web API with full pagination.
- * Uses sp_dc cookie auth or an ephemeral access token from open.spotify.com.
+ * Uses sp_dc cookie auth or anonymous TOTP auth.
  */
 async function fetchTracksViaApi(
   playlistId: string,
@@ -138,23 +239,30 @@ async function fetchTracksViaApi(
   signal?: AbortSignal
 ): Promise<SpotifyPlaylistResult | null> {
   try {
-    const { header } = await getAuth(spDc, signal)
+    const { header, isSpDc } = await getAuth(spDc, signal)
+    console.log(`[Spotify] Auth: ${isSpDc ? 'sp_dc' : 'anonymous token'}`)
     if (signal?.aborted) throw new Error('Import cancelled')
 
-    // First, get the playlist name and total track count
+    // Fetch playlist metadata
     const metaRes = await fetch(
       `https://api.spotify.com/v1/playlists/${playlistId}?fields=name,tracks.total`,
-      {
-        headers: { Authorization: header, 'User-Agent': SPOTIFY_UA },
-        signal,
-      }
+      { headers: { Authorization: header, 'User-Agent': SPOTIFY_UA }, signal }
     )
-    if (!metaRes.ok) return null
-    const meta = (await metaRes.json()) as { name?: string; tracks?: { total?: number } }
-    const playlistName = meta.name ?? 'Imported Playlist'
-    const totalCount = meta.tracks?.total ?? 0
-
-    if (totalCount === 0) return null
+    if (metaRes.status === 429) {
+      console.log(`[Spotify] Rate limited by Spotify API. Suggest using sp_dc cookie.`)
+      return null
+    }
+    if (!metaRes.ok) {
+      console.log(`[Spotify] API metadata request failed: HTTP ${metaRes.status}`)
+      return null
+    }
+    const metaData = (await metaRes.json()) as { name?: string; tracks?: { total?: number } }
+    if (!metaData?.name || !metaData?.tracks?.total) {
+      console.log(`[Spotify] Playlist has 0 tracks or missing metadata`)
+      return null
+    }
+    const playlistName = metaData.name
+    const totalCount = metaData.tracks.total
 
     // Paginate through all tracks
     const allTracks: SpotifyTrack[] = []
@@ -170,7 +278,12 @@ async function fetchTracksViaApi(
         signal,
       })
       if (!res.ok) {
-        // Token may have expired mid-pagination — return what we have
+        if (res.status === 429) {
+          console.log(`[Spotify] Rate limited during pagination after ${allTracks.length} tracks`)
+        } else {
+          console.log(`[Spotify] Pagination request failed: HTTP ${res.status} after ${allTracks.length} tracks`)
+        }
+        // Return what we have so far
         if (allTracks.length > 0) break
         return null
       }
@@ -202,7 +315,8 @@ async function fetchTracksViaApi(
     if (allTracks.length === 0) return null
 
     return { name: playlistName, tracks: allTracks, totalCount }
-  } catch {
+  } catch (err) {
+    console.log(`[Spotify] fetchTracksViaApi failed:`, err instanceof Error ? err.message : err)
     return null
   }
 }
@@ -334,8 +448,8 @@ function deduplicateTracks(tracks: SpotifyTrack[]): SpotifyTrack[] {
  * Fetch a public Spotify playlist by URL.
  *
  * Strategy:
- *   1. PRIMARY: Use sp_dc cookie auth → Spotify Web API with full pagination.
- *      If no sp_dc is provided, fall back to get_access_token endpoint (often blocked).
+ *   1. PRIMARY: Use sp_dc cookie auth or anonymous TOTP auth → Spotify Web API
+ *      with full pagination. Anonymous TOTP works out of the box with no setup.
  *   2. FALLBACK: Parse the __NEXT_DATA__ JSON from the playlist page HTML
  *      (limited to ~100 tracks — only used when the API approach fails).
  *
@@ -398,19 +512,7 @@ export async function fetchSpotifyPlaylist(
   }
 
   // If we got the HTML but no __NEXT_DATA__, the page is client-side rendered.
-  // The user needs to provide their sp_dc cookie for API access.
-  if (!spDc) {
-    throw new Error(
-      'Spotify authentication required.\n\n' +
-      'To import this playlist, provide an sp_dc cookie from your logged-in ' +
-      'Spotify web player session:\n' +
-      '1. Open open.spotify.com in Chrome and log in\n' +
-      '2. Open DevTools → Application → Cookies → open.spotify.com\n' +
-      '3. Copy the sp_dc value and paste it into the sp_dc field above'
-    )
-  }
-
-  // With spDc provided but still no data — something else is wrong
+  // The API approach should have already worked unless the token was rejected.
   throw new Error(
     'Could not extract tracks from this playlist. ' +
     'The playlist may be empty or the Spotify API returned an unexpected response.'
