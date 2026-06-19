@@ -53,6 +53,11 @@ src/
 build/
 ├── entitlements.mac.plist ← macOS notarization entitlements
 
+tests/
+├── application-layer.test.ts ← Unit tests (MediaEngine, QueueEngine, TrackIdentityEngine)
+├── import-test-full.ts       ← Full 332-track Spotify import + YouTube match integration test
+└── import-test.ts            ← Quick smoke test
+
 .github/workflows/
 └── release.yml     ← Merged CI+Release: type-check, build (PR/push), publish (v* tag)
 ```
@@ -75,6 +80,14 @@ npm run build        # Production build (electron-vite build)
 npm run build:mac    # Build + package macOS DMG
 npm run build:win    # Build + package Windows NSIS
 npm run typecheck    # TypeScript type-check (node + web)
+npm test             # Unit tests (vitest)
+```
+
+## Integration Tests
+
+```bash
+npx tsx tests/import-test-full.ts   # Full Spotify import + YouTube match test
+npx tsx tests/import-test.ts        # Quick smoke test
 ```
 
 ## Phase Order (critical)
