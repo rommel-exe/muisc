@@ -19,6 +19,7 @@ export interface SpotifyTrack {
   duration: number   // seconds
   album?: string
   uri?: string       // spotify:track:xxx (for dedup)
+  explicit?: boolean // true if track has explicit lyrics
 }
 
 export interface SpotifyPlaylistResult {
@@ -224,6 +225,7 @@ interface GraphQLTrackData {
         data?: {
           name?: string
           uri?: string
+          explicit?: boolean
           artists?: { items?: Array<{ profile?: { name?: string }; uri?: string }> }
           duration?: { totalMilliseconds?: number }
           albumOfTrack?: { name?: string; uri?: string }
@@ -277,6 +279,7 @@ async function resolveBatch(
       duration: Math.round((trackData.duration?.totalMilliseconds ?? 0) / 1000),
       album: trackData.albumOfTrack?.name,
       uri,
+      explicit: trackData.explicit ?? undefined,
     })
   }
 
@@ -393,6 +396,7 @@ interface SpotifyApiTrackItem {
     duration_ms?: number
     album?: { name?: string }
     uri?: string
+    explicit?: boolean
   }
 }
 
@@ -431,7 +435,7 @@ async function fetchViaRestApi(
   while (offset < totalCount) {
     if (signal?.aborted) throw new Error('Import cancelled')
 
-    const url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}&fields=items(track(name,artists(name),duration_ms,album(name),uri))`
+    const url = `https://api.spotify.com/v1/playlists/${playlistId}/tracks?offset=${offset}&limit=${limit}&fields=items(track(name,artists(name),duration_ms,album(name),uri,explicit))`
     const res = await fetch(url, {
       headers: { Authorization: header, 'User-Agent': SPOTIFY_UA },
       signal,
@@ -453,6 +457,7 @@ async function fetchViaRestApi(
         duration: Math.round((t.duration_ms ?? 0) / 1000),
         album: t.album?.name,
         uri: t.uri,
+        explicit: t.explicit ?? undefined,
       })
     }
 

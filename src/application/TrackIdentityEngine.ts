@@ -8,6 +8,7 @@ interface SpotifyTrack {
   artist: string
   duration: number
   album?: string
+  explicit?: boolean
 }
 
 interface ScoredCandidate {
@@ -185,7 +186,10 @@ async function resolveFromCandidates(
  *                    Use ~0.65 for best-effort import scenarios.
  */
 async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.82): Promise<Track> {
-  const query = `${incomingTrack.artist} ${incomingTrack.title}`
+  // For explicit tracks, append "explicit" to the search query so YouTube
+  // returns the explicit version instead of the clean/edited upload.
+  const explicitSuffix = incomingTrack.explicit ? ' explicit' : ''
+  const query = `${incomingTrack.artist} ${incomingTrack.title}${explicitSuffix}`
   const results = await SearchEngine.search(query)
 
   if (results.length === 0) {

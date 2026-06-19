@@ -13,6 +13,7 @@ export interface SpotifySourceTrack {
   title: string
   artist: string
   duration: number
+  explicit?: boolean
 }
 
 export interface SpotifySource {

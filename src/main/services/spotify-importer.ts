@@ -92,7 +92,7 @@ export async function importSpotifyPlaylist(
 
     try {
       const result = await TrackIdentityEngine.resolveIdentity(
-        { title: track.title, artist: track.artist, duration: track.duration },
+        { title: track.title, artist: track.artist, duration: track.duration, explicit: track.explicit },
         MATCH_CONFIDENCE_THRESHOLD
       )
       matchedTracks.push(result)
@@ -140,6 +140,7 @@ export async function importSpotifyPlaylist(
       title: t.title,
       artist: t.artist,
       duration: t.duration,
+      explicit: t.explicit,
     })),
   })
 
@@ -211,7 +212,7 @@ export async function rematchPlaylist(
 
     try {
       const result = await TrackIdentityEngine.resolveIdentity(
-        { title: t.title, artist: t.artist, duration: t.duration },
+        { title: t.title, artist: t.artist, duration: t.duration, explicit: t.explicit },
         MATCH_CONFIDENCE_THRESHOLD
       )
       matchedTracks.push(result)
