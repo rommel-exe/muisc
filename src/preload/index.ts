@@ -1,6 +1,6 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { ResolvedStream } from '../shared/types'
+import type { ResolvedStream, SpotifyImportProgress, SpotifyImportResult } from '../shared/types'
 import { IPC_CHANNELS } from '../shared/constants'
 
 // Custom APIs for renderer
@@ -45,11 +45,38 @@ const api = {
   testPendingCount: (): Promise<number> =>
     ipcRenderer.invoke('test-pending-count'),
 
+  // ── Spotify Import ──
+
   /**
-   * Debug: Abort all pending resolve operations.
+   * Import a Spotify playlist by URL.
+   * Returns the import result on completion.
+   * Progress events are delivered via onSpotifyImportProgress.
    */
-  testAbortAll: (): Promise<boolean> =>
-    ipcRenderer.invoke('test-abort-all'),
+  importSpotifyPlaylist: (url: string): Promise<SpotifyImportResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST, url),
+
+  /**
+   * Cancel an in-progress Spotify import.
+   */
+  cancelSpotifyImport: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.CANCEL_SPOTIFY_IMPORT),
+
+  /**
+   * Listen for Spotify import progress updates.
+   * Returns a cleanup function to unsubscribe.
+   */
+  onSpotifyImportProgress: (
+    callback: (progress: SpotifyImportProgress) => void
+  ): (() => void) => {
+    const handler = (_event: IpcRendererEvent, progress: SpotifyImportProgress) => {
+      callback(progress)
+    }
+    ipcRenderer.on(IPC_CHANNELS.SPOTIFY_IMPORT_PROGRESS, handler)
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.SPOTIFY_IMPORT_PROGRESS, handler)
+    }
+  },
+
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

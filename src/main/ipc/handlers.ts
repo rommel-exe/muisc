@@ -3,6 +3,7 @@ import type { MediaResolver } from '../services/media-resolver'
 import type { ResolveOptions } from '../services/media-resolver'
 import { searchYouTube } from '../services/innertube'
 import { IPC_CHANNELS } from '../../shared/constants'
+import { importSpotifyPlaylist } from '../services/spotify-importer'
 
 /**
  * Register all IPC handlers for the media resolver pipeline.
@@ -82,6 +83,55 @@ export function registerHandlers(resolver: MediaResolver): void {
     }
   )
 
+  // ── Spotify Import ──
+
+  /**
+   * Import a Spotify playlist by URL.
+   * Sends progress events during import and returns the result on completion.
+   * Only one import can run at a time — starting a new one cancels any in-flight.
+   */
+  let currentAbortController: AbortController | null = null
+
+  ipcMain.handle(
+    IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST,
+    async (event, url: string) => {
+      if (!url || typeof url !== 'string') {
+        throw new Error('Invalid URL: expected a non-empty string')
+      }
+
+      // Cancel previous import if still running
+      if (currentAbortController) {
+        currentAbortController.abort()
+        currentAbortController = null
+      }
+
+      const abortController = new AbortController()
+      currentAbortController = abortController
+      const signal = abortController.signal
+
+      try {
+        const result = await importSpotifyPlaylist(url, event.sender, signal)
+        return result
+      } finally {
+        if (currentAbortController === abortController) {
+          currentAbortController = null
+        }
+      }
+    }
+  )
+
+  /**
+   * Cancel an in-progress Spotify import.
+   */
+  ipcMain.handle(IPC_CHANNELS.CANCEL_SPOTIFY_IMPORT, () => {
+    if (currentAbortController) {
+      currentAbortController.abort()
+      currentAbortController = null
+      return true
+    }
+    return false
+  })
+
   console.log('[IPC] Handlers registered')
 }
 
@@ -93,6 +143,9 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('resolve-track-info')
   ipcMain.removeAllListeners('test-corrupt-cache')
   ipcMain.removeAllListeners('test-pending-count')
+  ipcMain.removeAllListeners(IPC_CHANNELS.MUSIC_SEARCH)
   ipcMain.removeAllListeners(IPC_CHANNELS.PREFETCH_QUEUE)
+  ipcMain.removeAllListeners(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST)
+  ipcMain.removeAllListeners(IPC_CHANNELS.CANCEL_SPOTIFY_IMPORT)
   console.log('[IPC] Handlers unregistered')
 }

@@ -51,15 +51,6 @@ function App() {
   const preloadedUrl = useRef<string | null>(null)
   const userInitiatedPlayback = useRef(false)
 
-  // Only preload the first track if the user hasn't already clicked something
-  useEffect(() => {
-    window.api.resolveTrack(QUEUE[0].id).then((resolved) => {
-      if (userInitiatedPlayback.current) return
-      preloadedUrl.current = resolved.audioUrl
-      playerControls.preload(resolved.audioUrl)
-    }).catch(() => {})
-  }, [playerControls])
-
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-20))
   }, [])
@@ -252,6 +243,69 @@ function App() {
     return `${m}:${sec.toString().padStart(2, '0')}`
   }
 
+  // ── Spotify Import state ──
+  const [spotifyUrl, setSpotifyUrl] = useState('')
+  const [importing, setImporting] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [importProgress, setImportProgress] = useState<{
+    current: number
+    total: number
+    currentTitle: string
+    status: string
+  } | null>(null)
+  const [importResult, setImportResult] = useState<{
+    playlistName: string
+    matchedCount: number
+    totalCount: number
+    skipped: Array<{ title: string; artist: string; reason: string }>
+  } | null>(null)
+
+  // Listen for Spotify import progress events (main → renderer)
+  useEffect(() => {
+    const cleanupProgress = window.api.onSpotifyImportProgress((progress) => {
+      setImportProgress(progress)
+    })
+    return () => {
+      cleanupProgress()
+    }
+  }, [])
+
+  const handleImport = useCallback(async () => {
+    const trimmed = spotifyUrl.trim()
+    if (!trimmed) return
+
+    setImporting(true)
+    setImportError(null)
+    setImportResult(null)
+    setImportProgress(null)
+    addLog(`import: starting Spotify import...`)
+
+    try {
+      const result = await window.api.importSpotifyPlaylist(trimmed)
+      setImporting(false)
+      setImportResult(result)
+      setImportProgress(null)
+      addLog(`import: "${result.playlistName}" — ${result.matchedCount}/${result.totalCount} matched`)
+    } catch (err: any) {
+      setImporting(false)
+      setImportProgress(null)
+      // Don't show "cancelled" as an error — user did it intentionally
+      if (err.message === 'Import cancelled') {
+        addLog('import: cancelled')
+        return
+      }
+      setImportError(err.message)
+      addLog(`import ERROR: ${err.message}`)
+    }
+  }, [spotifyUrl, addLog])
+
+  const handleCancelImport = useCallback(async () => {
+    await window.api.cancelSpotifyImport()
+    setImporting(false)
+    setImportProgress(null)
+    addLog('import: cancelled')
+  }, [addLog])
+
   return (
     <div style={{ background: '#111', color: '#ddd', fontFamily: 'monospace', padding: 16, minHeight: '100vh' }}>
       <h1 style={{ margin: '0 0 12px', fontSize: 16 }}>muisc test</h1>
@@ -332,6 +386,139 @@ function App() {
                 </span>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Spotify Import Section ── */}
+      <div style={{ marginBottom: 12, borderTop: '1px solid #333', paddingTop: 12 }}>
+        <div style={{ fontSize: 12, color: '#1db954', marginBottom: 6 }}>
+          Import from Spotify
+        </div>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <input
+            value={spotifyUrl}
+            onChange={(e) => setSpotifyUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !importing) handleImport() }}
+            placeholder="Paste Spotify playlist URL..."
+            disabled={importing}
+            style={{
+              flex: 1,
+              padding: '8px 10px',
+              background: '#1a1a1a',
+              color: '#ddd',
+              border: '1px solid #333',
+              borderRadius: 0,
+              fontFamily: 'monospace',
+              fontSize: 13,
+              outline: 'none',
+            }}
+          />
+          {importing ? (
+            <button
+              onClick={handleCancelImport}
+              style={{
+                padding: '8px 16px',
+                background: '#a33',
+                color: '#fff',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              Cancel
+            </button>
+          ) : (
+            <button
+              onClick={handleImport}
+              disabled={!spotifyUrl.trim()}
+              style={{
+                padding: '8px 16px',
+                background: spotifyUrl.trim() ? '#1db954' : '#333',
+                color: '#fff',
+                border: 'none',
+                cursor: spotifyUrl.trim() ? 'pointer' : 'default',
+                fontSize: 12,
+              }}
+            >
+              Import
+            </button>
+          )}
+        </div>
+
+        {/* Import Progress */}
+        {importProgress && (
+          <div style={{ marginTop: 8, fontSize: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span style={{ color: '#888' }}>
+                {importProgress.status === 'fetching'
+                  ? 'Fetching playlist...'
+                  : importProgress.status === 'matching'
+                  ? `Matching track ${importProgress.current + 1} of ${importProgress.total}...`
+                  : 'Saving playlist...'}
+              </span>
+              <span style={{ color: '#888' }}>
+                {importProgress.total > 0
+                  ? `${Math.round((importProgress.current / importProgress.total) * 100)}%`
+                  : ''}
+              </span>
+            </div>
+            {importProgress.total > 0 && (
+              <div style={{
+                height: 4,
+                background: '#222',
+                borderRadius: 2,
+                overflow: 'hidden',
+              }}>
+                <div style={{
+                  height: '100%',
+                  width: `${(importProgress.current / importProgress.total) * 100}%`,
+                  background: '#1db954',
+                  transition: 'width 0.2s ease',
+                }} />
+              </div>
+            )}
+            {importProgress.currentTitle && (
+              <div style={{ marginTop: 4, color: '#666', fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {importProgress.currentTitle}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Import Error */}
+        {importError && (
+          <div style={{ marginTop: 8, color: '#c33', fontSize: 12 }}>
+            {importError}
+          </div>
+        )}
+
+        {/* Import Results */}
+        {importResult && (
+          <div style={{ marginTop: 8, fontSize: 12 }}>
+            <div style={{ color: '#1db954', marginBottom: 4 }}>
+              Imported &quot;{importResult.playlistName}&quot;
+            </div>
+            <div style={{ color: '#888' }}>
+              {importResult.matchedCount} of {importResult.totalCount} tracks matched
+            </div>
+            {importResult.skipped.length > 0 && (
+              <div style={{ marginTop: 4 }}>
+                <div style={{ color: '#a80', marginBottom: 2, fontSize: 11 }}>
+                  Skipped ({importResult.skipped.length}):
+                </div>
+                {importResult.skipped.slice(0, 5).map((s, i) => (
+                  <div key={i} style={{ color: '#666', fontSize: 11, lineHeight: 1.4 }}>
+                    {s.artist} — {s.title}: {s.reason}
+                  </div>
+                ))}
+                {importResult.skipped.length > 5 && (
+                  <div style={{ color: '#555', fontSize: 11 }}>
+                    ...and {importResult.skipped.length - 5} more
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

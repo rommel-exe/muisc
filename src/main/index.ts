@@ -3,16 +3,15 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { createMediaResolver } from './services/media-resolver'
 import { registerHandlers, unregisterHandlers } from './ipc/handlers'
-import { warmInnerTube } from './services/innertube'
-import { warmDaemon, getDaemon } from './services/yt-dlp-daemon'
-import { warmYtdlp } from './services/yt-dlp'
+import { warmInnerTube, searchYouTube } from './services/innertube'
+import type { InnertubeSearchResult } from './services/innertube'
+import { getDaemon } from './services/yt-dlp-daemon'
+import { setSearchFunction } from '../application/SearchEngine'
 
-// Run GPU in-process so there's no separate GPU process to crash (exit_code=15
-// on this macOS version). The test UI renders fine without a dedicated GPU proc.
-app.commandLine.appendSwitch('in-process-gpu')
-
-// Don't crash the whole app when a child process dies
-app.commandLine.appendSwitch('disable-breakpad')
+// macOS 26 (Sequoia) child process compatibility: disable sandbox for all helper
+// processes (GPU, Utility, Network) to prevent SIGTERM crashes.
+// The app serves only local content and user-initiated YouTube streams — no sandbox needed.
+app.commandLine.appendSwitch('no-sandbox')
 
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
@@ -72,13 +71,23 @@ app.whenReady().then(async () => {
   createWindow()
   console.log('[App] Window created, app running')
 
-  // Pre-warm yt-dlp daemon and InnerTube session so the first cold
-  // resolve doesn't pay init overhead. Fire-and-forget.
-  warmDaemon()
-    .then(() => mediaResolver.prewarmCdn('9bZkp7q19f0'))
-    .catch(() => {})
+  // Wire the production search function into SearchEngine.
+  // This enables TrackIdentityEngine.resolveIdentity() to work end-to-end.
+  setSearchFunction(async (query: string) => {
+    const results = await searchYouTube(query)
+    return results.map((r: InnertubeSearchResult) => ({
+      id: r.videoId,
+      title: r.title,
+      artist: r.artist,
+      duration: r.duration,
+      thumbnailUrl: r.thumbnail,
+      source: 'youtube' as const,
+      sourceId: r.videoId,
+    }))
+  })
+
+  // Warm InnerTube session (pure JS, no subprocesses — safe to run).
   warmInnerTube().catch(() => {})
-  warmYtdlp().catch(() => {})
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
@@ -87,9 +96,17 @@ app.whenReady().then(async () => {
   })
 })
 
-// Catch GPU/child process crashes — just log them.
-app.on('child-process-gone', (_event, details) => {
+// Catch GPU/child process crashes — prevent Electron from quitting.
+// Electron 35+ supports event.preventDefault() on child-process-gone.
+app.on('child-process-gone', (event, details) => {
   console.warn(`[App] Child process gone: type=${details.type} reason=${details.reason} exit_code=${details.exitCode}`)
+  // Prevent the crash cascade — the renderer keeps running fine without
+  // dedicated helper processes for this app.
+  try {
+    event.preventDefault()
+  } catch {
+    // Some Electron versions may not support preventDefault here
+  }
 })
 
 // Suppress quit-on-crash. The renderer keeps running fine without GPU

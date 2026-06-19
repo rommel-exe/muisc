@@ -57,3 +57,26 @@ export interface ResolvedStream {
   title: string
   thumbnail: string
 }
+
+// ── Spotify Import Types ──
+
+export interface SpotifyImportProgress {
+  current: number
+  total: number
+  currentTitle: string
+  status: 'fetching' | 'matching' | 'saving'
+}
+
+export interface SpotifyImportSkipped {
+  title: string
+  artist: string
+  reason: string
+}
+
+export interface SpotifyImportResult {
+  playlistId: string
+  playlistName: string
+  matchedCount: number
+  totalCount: number
+  skipped: SpotifyImportSkipped[]
+}

@@ -105,7 +105,7 @@ function normalizeRow(raw: RawInnertubeVideo): Track | null {
 /**
  * Extract artist name from raw title by looking at the part before the separator.
  */
-function extractArtist(rawTitle: string, normalizedTitle: string): string {
+function extractArtist(rawTitle: string, _normalizedTitle: string): string {
   const match = rawTitle.match(/^(.+?)\s*[-–—]\s*(.+)/)
   if (match) {
     return match[1].trim()
@@ -113,28 +113,37 @@ function extractArtist(rawTitle: string, normalizedTitle: string): string {
   return 'Unknown Artist'
 }
 
-// ── Search ──
+// ── Search Function Injection ──
+
+/**
+ * The production search function is injected at startup by the main process.
+ * Tests can mock SearchEngine directly via vi.mock.
+ */
+let _searchFn: ((query: string) => Promise<Track[]>) | null = null
+
+/**
+ * Set the production search function (called once at app startup).
+ * Accepts a query string and returns normalized Track[].
+ */
+export function setSearchFunction(fn: (query: string) => Promise<Track[]>): void {
+  _searchFn = fn
+}
 
 /**
  * Search YouTube for tracks matching a query.
  * Returns normalized Track[] suitable for QueueEngine.
  *
- * Note: In test environments, this function uses the mock from vi.mock.
- * In production, it will use the Innertube service from src/main/services/.
+ * In production, the search function is injected via setSearchFunction().
+ * In test environments, this module is mocked via vi.mock.
  */
-async function search(_query: string): Promise<Track[]> {
-  // This function is mocked in tests via vi.mock('../../src/application/SearchEngine')
-  // In production, it would:
-  //   1. Import Innertube from src/main/services/innertube
-  //   2. Call Innertube search endpoint
-  //   3. Filter out livestreams, channels, playlists
-  //   4. Call normalizeRow for each result
-  //   5. Return Track[]
-  throw new Error(
-    'SearchEngine.search() is not implemented for production yet. ' +
-    'It requires wiring to the Innertube service in the main process. ' +
-    'See src/main/services/innertube.ts for the resolver.'
-  )
+async function search(query: string): Promise<Track[]> {
+  if (!_searchFn) {
+    throw new Error(
+      'SearchEngine not initialized. Call setSearchFunction() at app startup ' +
+      'with the production search implementation.'
+    )
+  }
+  return _searchFn(query)
 }
 
 /**
@@ -151,4 +160,5 @@ export const SearchEngine = {
   search,
   getSuggestions,
   normalizeRow,
+  setSearchFunction,
 }

@@ -40,7 +40,16 @@ export const IPC_CHANNELS = {
   UPDATE_DOWNLOADED: 'update-downloaded',
 
   // Preloader
-  PREFETCH_QUEUE: 'prefetch-queue'
+  PREFETCH_QUEUE: 'prefetch-queue',
+
+  // Spotify Import
+  IMPORT_SPOTIFY_PLAYLIST: 'import-spotify-playlist',
+  CANCEL_SPOTIFY_IMPORT: 'cancel-spotify-import',
+
+  // Spotify Import Events (main → renderer)
+  SPOTIFY_IMPORT_PROGRESS: 'spotify-import-progress',
+  SPOTIFY_IMPORT_DONE: 'spotify-import-done',
+  SPOTIFY_IMPORT_ERROR: 'spotify-import-error',
 } as const
 
 // Default playback config

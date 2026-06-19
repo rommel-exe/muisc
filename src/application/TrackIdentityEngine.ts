@@ -179,8 +179,12 @@ async function resolveFromCandidates(
 /**
  * Resolve a Spotify track to a YouTube match by searching via SearchEngine.
  * Full production pipeline: search → normalize → score → select.
+ *
+ * @param incomingTrack - The Spotify track to match
+ * @param threshold - Minimum confidence score (0-1). Default 0.82.
+ *                    Use ~0.65 for best-effort import scenarios.
  */
-async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
+async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.82): Promise<Track> {
   const query = `${incomingTrack.artist} ${incomingTrack.title}`
   const results = await SearchEngine.search(query)
 
@@ -189,6 +193,13 @@ async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
   }
 
   const scored = results.map((track) => {
+    // NOTE: channelType (e.g. 'verified_topic') is not available in the Track
+    // type returned by SearchEngine. The Innertube search response has this
+    // info, but it's lost at the normalization boundary. This means the
+    // 'verified_topic' 0.3 confidence bonus is never applied in production,
+    // reducing match accuracy for the import feature. To fix this, extend
+    // the Track type with an optional `channelType` field and populate it
+    // in the SearchEngine normalization pipeline.
     const score = calculateConfidence(
       { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
       { title: track.title, duration: track.duration }
@@ -198,7 +209,7 @@ async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
 
   scored.sort((a, b) => b.score - a.score)
 
-  if (scored.length === 0 || scored[0].score < 0.82) {
+  if (scored.length === 0 || scored[0].score < threshold) {
     throw new Error(`No match above confidence threshold for "${query}"`)
   }
 

@@ -16,6 +16,27 @@ interface SearchResult {
   thumbnail: string
 }
 
+interface SpotifyImportProgress {
+  current: number
+  total: number
+  currentTitle: string
+  status: 'fetching' | 'matching' | 'saving'
+}
+
+interface SpotifyImportSkipped {
+  title: string
+  artist: string
+  reason: string
+}
+
+interface SpotifyImportResult {
+  playlistId: string
+  playlistName: string
+  matchedCount: number
+  totalCount: number
+  skipped: SpotifyImportSkipped[]
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -38,7 +59,13 @@ declare global {
       // Debug/test methods
       testCorruptCache: (videoId: string) => Promise<boolean>
       testPendingCount: () => Promise<number>
-      testAbortAll: () => Promise<boolean>
+
+      // Spotify Import
+      importSpotifyPlaylist: (url: string) => Promise<SpotifyImportResult>
+      cancelSpotifyImport: () => Promise<boolean>
+      onSpotifyImportProgress: (
+        callback: (progress: SpotifyImportProgress) => void
+      ) => () => void
     }
   }
 }
