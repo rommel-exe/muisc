@@ -89,16 +89,8 @@ export function useMediaEngine(logger?: (msg: string) => void): {
       setEngineState(state)
     })
 
-    // Seed initial state from main process queue
-    window.api.getQueue().then((q) => {
-      setEngineState((prev) => ({
-        ...prev,
-        queueList: q.list,
-        queueIndex: q.index,
-        shuffleActive: q.shuffleActive,
-        repeatMode: q.repeatMode as RepeatMode,
-      }))
-    }).catch(() => {})
+    // Seed initial queue state — must go through engine so _state is populated
+    engine.refreshState()
 
     return () => {
       unsub()
