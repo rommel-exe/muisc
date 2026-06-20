@@ -114,66 +114,27 @@ function App() {
     }
   }, [doSearch, searchQuery])
 
-  // ── Get next track info ──
-  const getNextTrackInfo = useCallback((): { idx: number; videoId: string } | null => {
-    if (queueList.length === 0) return null
-    const currentIdx = queueIndex
-
-    if (repeatMode === 'one') {
-      const t = queueList[currentIdx]?.track
-      if (!t) return null
-      return { idx: currentIdx, videoId: t.id || t.sourceId }
-    }
-
-    if (shuffleActive) {
-      let idx: number
-      do {
-        idx = Math.floor(Math.random() * queueList.length)
-      } while (idx === currentIdx && queueList.length > 1)
-      const t = queueList[idx]?.track
-      if (!t) return null
-      return { idx, videoId: t.id || t.sourceId }
-    }
-
-    const nextIdx = currentIdx + 1
-    if (nextIdx < queueList.length) {
-      const t = queueList[nextIdx]?.track
-      if (!t) return null
-      return { idx: nextIdx, videoId: t.id || t.sourceId }
-    }
-
-    if (repeatMode === 'all') {
-      const t = queueList[0]?.track
-      if (!t) return null
-      return { idx: 0, videoId: t.id || t.sourceId }
-    }
-
-    return null
-  }, [queueList, queueIndex, shuffleActive, repeatMode])
-
   // ── Preload next track into secondary audio element ──
   const preloadNextTrack = useCallback(async () => {
-    const nextInfo = getNextTrackInfo()
-    if (!nextInfo) return
+    const peeked = await window.api.queuePeekNext()
+    if (!peeked) return
 
-    // Don't preload if already preloaded this videoId
-    if (nextInfo.videoId === preloadedVideoId.current) return
+    const videoId = peeked.track.id || peeked.track.sourceId
+    if (videoId === preloadedVideoId.current) return
 
-    addLog(`preloading next: ${nextInfo.videoId} ...`)
-    preloadedQueueIndex.current = nextInfo.idx
-    preloadedVideoId.current = nextInfo.videoId
+    addLog(`preloading next: ${videoId} ...`)
+    preloadedQueueIndex.current = -1  // unknown until queueNext
+    preloadedVideoId.current = videoId
 
     // Resolve the stream URL (triggers proxy prewarm + cache)
-    window.api.resolveTrack(nextInfo.videoId).then((resolved) => {
-      // Check if still valid
-      if (preloadedVideoId.current !== nextInfo.videoId) return
-      // Preload into secondary audio element
+    window.api.resolveTrack(videoId).then((resolved) => {
+      if (preloadedVideoId.current !== videoId) return
       playerControls.preloadNext(resolved.audioUrl)
-      addLog(`preloaded: ${nextInfo.videoId}`)
+      addLog(`preloaded: ${videoId}`)
     }).catch(() => {
-      addLog(`preload FAILED: ${nextInfo.videoId}`)
+      addLog(`preload FAILED: ${videoId}`)
     })
-  }, [getNextTrackInfo, playerControls, addLog])
+  }, [playerControls, addLog])
 
   // ── Play track by queue index ──
   const playFromQueue = useCallback(async (idx: number) => {
@@ -258,24 +219,9 @@ function App() {
     currentVideoIdRef.current = videoId
   }, [])
 
-  // ── Helper: get upcoming N track IDs ──
+  // ── Helper: get upcoming N track IDs (from local queue state, best-effort) ──
   const getUpcomingVideoIds = useCallback((n: number): string[] => {
     const ids: string[] = []
-    if (queueList.length === 0) return ids
-
-    if (repeatMode === 'one') {
-      return [queueList[queueIndex]?.track?.id ?? ''].filter(Boolean)
-    }
-
-    if (shuffleActive) {
-      const pool = queueList.filter((_, i) => i !== queueIndex)
-      const shuffled = [...pool].sort(() => Math.random() - 0.5)
-      for (let i = 0; i < Math.min(n, shuffled.length); i++) {
-        ids.push(shuffled[i].track.id)
-      }
-      return ids
-    }
-
     for (let i = 1; i <= n; i++) {
       const idx = queueIndex + i
       if (idx < queueList.length) {
@@ -358,42 +304,44 @@ function App() {
 
   // ── Queue navigation ──
   const goNext = useCallback(async () => {
-    if (queueList.length === 0) return
-
-    const nextInfo = getNextTrackInfo()
-    if (!nextInfo) {
+    const result = await window.api.queueNext()
+    if (!result) {
       addLog('end of queue')
       return
     }
 
-    // Try instant swap first
-    if (preloadedQueueIndex.current >= 0 &&
-        playerState.isNextReady &&
-        currentVideoIdRef.current
-    ) {
+    const { track, index: newIndex } = result
+    const videoId = track.id || track.sourceId
+
+    // Try instant swap if standby element is preloaded for this track
+    if (preloadedVideoId.current === videoId && playerState.isNextReady) {
       const swapped = await playerControls.swapToNext()
       if (swapped) {
-        addLog('next: INSTANT swap (<1ms)')
-        const track = queueList[preloadedQueueIndex.current]?.track
-        if (track) setTrackTitle(track.title)
-        setQueueIndex(nextInfo.idx)
-        // Preload the next one
-        currentVideoIdRef.current = preloadedVideoId.current ?? ''
+        addLog('next: INSTANT swap')
+        setTrackTitle(track.title)
+        setQueueIndex(newIndex)
+        currentVideoIdRef.current = videoId
         preloadedVideoId.current = null
         preloadedQueueIndex.current = -1
+        // Preload the next-next track
         preloadNextTrack()
         refreshQueue()
         return
       }
     }
 
-    // Fallback: play from queue
-    playFromQueue(nextInfo.idx)
-  }, [queueList, getNextTrackInfo, playerControls, playerState.isNextReady, addLog, preloadNextTrack, refreshQueue, playFromQueue])
+    // Fallback: resolve + play
+    playFromQueue(newIndex)
+  }, [playerControls, playerState.isNextReady, addLog, preloadNextTrack, refreshQueue, playFromQueue])
 
-  const goPrev = useCallback(() => {
-    if (queueIndex > 0) playFromQueue(queueIndex - 1)
-  }, [queueIndex, playFromQueue])
+  const goPrev = useCallback(async () => {
+    const result = await window.api.queuePrev()
+    if (!result) {
+      addLog('no previous track')
+      return
+    }
+    playFromQueue(result.index)
+  }, [addLog, playFromQueue])
 
   // ── Auto-advance on track ended (via explicit ended flag) ──
   const isAdvancing = useRef(false)
@@ -484,12 +432,16 @@ function App() {
   const handleLoadPlaylist = useCallback(async (playlist: Playlist) => {
     try {
       addLog(`queue: loading "${playlist.name}"...`)
+      // Stop current audio before replacing queue
+      playerControls.pause()
       await window.api.loadPlaylistIntoQueue(playlist.id)
+      setQueueIndex(0)
       setQueuePlaylistName(playlist.name)
+      setTrackTitle('')
       refreshQueue()
       addLog(`queue: loaded "${playlist.name}"`)
     } catch (err: any) { addLog(`queue ERROR: ${err.message}`) }
-  }, [addLog, refreshQueue])
+  }, [addLog, refreshQueue, playerControls])
 
   const handleAddPlaylistToQueue = useCallback(async (playlist: Playlist) => {
     try {

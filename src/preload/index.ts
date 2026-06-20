@@ -143,6 +143,27 @@ const api = {
    */
   setRepeat: (mode: string): Promise<string> =>
     ipcRenderer.invoke(IPC_CHANNELS.SET_REPEAT, mode),
+
+  /**
+   * Advance to the next track via QueueEngine state machine.
+   * Returns { queueId, track, index } or null.
+   */
+  queueNext: (): Promise<{ queueId: string; track: Track; index: number } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.QUEUE_NEXT),
+
+  /**
+   * Go to the previous track via QueueEngine state machine.
+   * Returns { queueId, track, index } or null.
+   */
+  queuePrev: (): Promise<{ queueId: string; track: Track; index: number } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.QUEUE_PREV),
+
+  /**
+   * Peek at the next track without advancing the queue.
+   * Returns { track, index: null } or null.
+   */
+  queuePeekNext: (): Promise<{ track: Track; index: null } | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.QUEUE_PEEK_NEXT),
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

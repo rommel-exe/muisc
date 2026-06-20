@@ -20,6 +20,9 @@ export const IPC_CHANNELS = {
   REMOVE_FROM_QUEUE: 'remove-from-queue',
   REORDER_QUEUE: 'reorder-queue',
   CLEAR_QUEUE: 'clear-queue',
+  QUEUE_NEXT: 'queue-next',
+  QUEUE_PREV: 'queue-previous',
+  QUEUE_PEEK_NEXT: 'queue-peek-next',
 
   // Playlists
   CREATE_PLAYLIST: 'create-playlist',

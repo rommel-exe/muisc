@@ -109,6 +109,11 @@ declare global {
       removeFromQueue: (index: number) => Promise<QueueTrackRef[]>
       setShuffle: (active?: boolean) => Promise<{ shuffleActive: boolean; list: QueueTrackRef[]; index: number }>
       setRepeat: (mode: string) => Promise<string>
+
+      // Queue Navigation (uses QueueEngine state machine)
+      queueNext: () => Promise<{ queueId: string; track: Track; index: number } | null>
+      queuePrev: () => Promise<{ queueId: string; track: Track; index: number } | null>
+      queuePeekNext: () => Promise<{ track: Track; index: null } | null>
     }
   }
 }

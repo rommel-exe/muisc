@@ -288,6 +288,40 @@ export function registerHandlers(resolver: MediaResolver): void {
     return QueueEngine.getList()
   })
 
+  // ── Queue Navigation (delegates to QueueEngine state machine) ──
+
+  /**
+   * Advance to the next track via QueueEngine.next().
+   * Returns { queueId, track, index } or null if end of queue.
+   */
+  ipcMain.handle(IPC_CHANNELS.QUEUE_NEXT, () => {
+    const result = QueueEngine.next()
+    if (!result) return null
+    return { ...result, index: QueueEngine.getCurrentIndex() }
+  })
+
+  /**
+   * Go to the previous track via QueueEngine.previous().
+   * Returns { queueId, track, index } or null if no previous track.
+   */
+  ipcMain.handle(IPC_CHANNELS.QUEUE_PREV, () => {
+    const result = QueueEngine.previous()
+    if (!result) return null
+    return { ...result, index: QueueEngine.getCurrentIndex() }
+  })
+
+  /**
+   * Peek at the next track without advancing (non-destructive).
+   * Returns { queueId, track, index } or null if no upcoming track.
+   * The index is approximate for shuffle mode (QueueEngine.peekNext).
+   */
+  ipcMain.handle(IPC_CHANNELS.QUEUE_PEEK_NEXT, () => {
+    const track = QueueEngine.peekNext()
+    if (!track) return null
+    // Peek doesn't affect index — we return current next candidate
+    return { track, index: null }
+  })
+
   console.log('[IPC] Handlers registered')
 }
 
@@ -313,5 +347,8 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners(IPC_CHANNELS.SET_REPEAT)
   ipcMain.removeAllListeners(IPC_CHANNELS.GET_PLAYLISTS)
   ipcMain.removeAllListeners(IPC_CHANNELS.GET_PLAYLIST_TRACKS)
+  ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_NEXT)
+  ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_PREV)
+  ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_PEEK_NEXT)
   console.log('[IPC] Handlers unregistered')
 }
