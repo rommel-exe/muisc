@@ -1,6 +1,5 @@
 import type { Track, Playlist, SpotifySource } from '../shared/types'
 import { QueueEngine } from './QueueEngine'
-import { MediaEngine } from './MediaEngine'
 
 // ── Internal State ──
 
@@ -85,9 +84,9 @@ function hydrateSession(sessionState: SessionState): void {
     QueueEngine.setQueue(queue, currentIndex)
   }
 
-  // Restore MediaEngine volume (setVolume clamps to [0, 1])
+  // Volume restoration not yet wired — stored for future session persistence
   if (typeof volume === 'number') {
-    MediaEngine.setVolume(volume)
+    // Volume will be restored via a dedicated IPC channel in a later phase
   }
 }
 

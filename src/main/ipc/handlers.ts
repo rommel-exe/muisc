@@ -299,6 +299,8 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('resolve-track-info')
   ipcMain.removeAllListeners('test-corrupt-cache')
   ipcMain.removeAllListeners('test-pending-count')
+  ipcMain.removeAllListeners('load-playlist-into-queue')
+  ipcMain.removeAllListeners('add-playlist-to-queue')
   ipcMain.removeAllListeners(IPC_CHANNELS.MUSIC_SEARCH)
   ipcMain.removeAllListeners(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST)
   ipcMain.removeAllListeners(IPC_CHANNELS.CANCEL_SPOTIFY_IMPORT)

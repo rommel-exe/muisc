@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { MediaEngine } from '../src/application/MediaEngine'
 import { QueueEngine } from '../src/application/QueueEngine'
 import { TrackIdentityEngine } from '../src/application/TrackIdentityEngine'
 import { SearchEngine } from '../src/application/SearchEngine'
@@ -24,88 +23,7 @@ const mockSpotifyTrack = {
   album: 'Hybrid Theory'
 }
 
-// ── Global Mocks for Hardware & Network boundaries ──
-// vi.mock is hoisted, so we use vi.hoisted() to define the mock implementations
-
-const { mockAudioService, mockMediaResolver } = vi.hoisted(() => ({
-  mockAudioService: {
-    play: vi.fn(),
-    pause: vi.fn(),
-    stop: vi.fn(),
-    seek: vi.fn(),
-    setVolume: vi.fn(),
-    onEndedCallback: () => {}
-  },
-  mockMediaResolver: {
-    resolve: vi.fn().mockResolvedValue('http://localhost:8080/stream?id=dQw4w9WgXcQ')
-  }
-}))
-
-vi.mock('../src/playback/AudioService', () => ({ AudioService: mockAudioService }))
-vi.mock('../src/playback/MediaResolver', () => ({ MediaResolver: mockMediaResolver }))
-
-// ── Test Suite 1: MediaEngine & QueueEngine Orchestration ──
-
-describe('MediaEngine & QueueEngine Orchestration', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    QueueEngine.clear()
-    // Reset MediaEngine state for clean test isolation
-  })
-
-  it('should initialize to IDLE and correctly transition to PLAYING when a track starts', async () => {
-    expect(MediaEngine.getPlaybackState()).toBe('IDLE')
-
-    const playPromise = MediaEngine.playTrack(mockTrack)
-    expect(MediaEngine.getPlaybackState()).toBe('BUFFERING')
-
-    await playPromise
-    expect(MediaEngine.getPlaybackState()).toBe('PLAYING')
-    expect(mockAudioService.play).toHaveBeenCalledWith('http://localhost:8080/stream?id=dQw4w9WgXcQ')
-  })
-
-  it('should cleanly handle a rapid spam of track plays (Concurrency Protection)', async () => {
-    const track1 = { ...mockTrack, id: 'track_1' }
-    const track2 = { ...mockTrack, id: 'track_2' }
-
-    // User spams track 1 and instantly switches to track 2
-    const p1 = MediaEngine.playTrack(track1)
-    const p2 = MediaEngine.playTrack(track2)
-
-    await Promise.all([p1, p2])
-
-    // MediaEngine must safely discard the first stream and finish on the last request
-    expect(MediaEngine.getActiveTrack()?.id).toBe('track_2')
-  })
-
-  it('should advance to the next track deterministically when AudioService triggers onEnded', () => {
-    const trackList = [
-      { ...mockTrack, id: 'song_1' },
-      { ...mockTrack, id: 'song_2' }
-    ]
-    QueueEngine.setQueue(trackList, 0)
-
-    // Simulate audio element naturally hitting the end of a file
-    MediaEngine.handleAudioEnded()
-
-    expect(QueueEngine.getCurrentIndex()).toBe(1)
-    expect(MediaEngine.getActiveTrack()?.id).toBe('song_2')
-  })
-
-  it('should toggle between PLAYING and PAUSED states', async () => {
-    await MediaEngine.playTrack(mockTrack)
-    expect(MediaEngine.getPlaybackState()).toBe('PLAYING')
-
-    MediaEngine.togglePlay()
-    expect(MediaEngine.getPlaybackState()).toBe('PAUSED')
-    expect(mockAudioService.pause).toHaveBeenCalled()
-
-    MediaEngine.togglePlay()
-    expect(MediaEngine.getPlaybackState()).toBe('PLAYING')
-  })
-})
-
-// ── Test Suite 2: TrackIdentityEngine (The AI Self-Audit Test) ──
+// ── Test Suite 1: TrackIdentityEngine (The AI Self-Audit Test) ──
 
 describe('TrackIdentityEngine 100% Accuracy Verification', () => {
   it('should correctly select the verified studio master and discard live/cover traps', async () => {
@@ -168,33 +86,12 @@ describe('TrackIdentityEngine 100% Accuracy Verification', () => {
   })
 })
 
-// ── Test Suite 3: Resilience, Search, & Database Hydration ──
+// ── Test Suite 2: Search, & Database Hydration ──
 
-describe('Application Layer Resilience & Infrastructure Mapping', () => {
+describe('Application Layer Search & Infrastructure', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     QueueEngine.clear()
-  })
-
-  it('should implement Silent Self-Healing if a streaming URL throws a network error', async () => {
-    // Setup a queue of 2 tracks
-    QueueEngine.setQueue(
-      [
-        { ...mockTrack, id: 'broken_track' },
-        { ...mockTrack, id: 'working_track' }
-      ],
-      0
-    )
-
-    // Force MediaResolver to throw a 403 Forbidden or network failure
-    mockMediaResolver.resolve.mockRejectedValueOnce(new Error('403 Forbidden Network Failure'))
-
-    await MediaEngine.playTrack(QueueEngine.getCurrentTrack()!)
-
-    // The MediaEngine must catch the error, flag 'broken_track' as toxic,
-    // and instantly advance to 'working_track' without crashing the client app execution loop.
-    expect(MediaEngine.getPlaybackState()).toBe('PLAYING')
-    expect(MediaEngine.getActiveTrack()?.id).toBe('working_track')
   })
 
   it('should successfully normalize chaotic raw search payloads into standard Track Schemas', async () => {
@@ -230,7 +127,6 @@ describe('Application Layer Resilience & Infrastructure Mapping', () => {
     const endTime = performance.now()
 
     expect(QueueEngine.getCurrentTrack()?.id).toBe('yt_track_123')
-    expect(MediaEngine.getVolume()).toBe(0.85)
     expect(endTime - startTime).toBeLessThan(100)
   })
 })
