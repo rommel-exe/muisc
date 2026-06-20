@@ -1,0 +1,2398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Muisc — Complete Architecture Report</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --pink: #f778ba;
+    --purple: #bc8cff;
+    --cyan: #39d2c0;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+    line-height: 1.7;
+    padding: 0;
+  }
+  .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+
+  /* Header */
+  .hero {
+    text-align: center;
+    padding: 80px 24px 60px;
+    background: linear-gradient(180deg, #161b22 0%, #0d1117 100%);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 48px;
+  }
+  .hero h1 {
+    font-size: 48px;
+    font-weight: 800;
+    letter-spacing: -1px;
+    margin-bottom: 8px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero .subtitle {
+    color: var(--text-dim);
+    font-size: 18px;
+    margin-bottom: 20px;
+  }
+  .hero .meta {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .hero .meta span { display: flex; align-items: center; gap: 6px; }
+  .hero .meta .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge-blue { background: #1f3a5f; color: var(--accent); }
+  .badge-green { background: #1a3a2a; color: var(--green); }
+  .badge-orange { background: #3a2a1a; color: var(--orange); }
+  .badge-purple { background: #2a1a3a; color: var(--purple); }
+  .badge-pink { background: #3a1a2a; color: var(--pink); }
+
+  /* TOC */
+  .toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 48px;
+  }
+  .toc h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 16px; }
+  .toc ol {
+    columns: 2;
+    column-gap: 40px;
+    list-style: none;
+    counter-reset: toc-counter;
+  }
+  .toc li {
+    counter-increment: toc-counter;
+    margin-bottom: 6px;
+    break-inside: avoid;
+  }
+  .toc li::before {
+    content: counter(toc-counter) ".";
+    color: var(--accent);
+    font-weight: 600;
+    margin-right: 8px;
+    font-size: 12px;
+  }
+  .toc a {
+    color: var(--text);
+    text-decoration: none;
+    font-size: 14px;
+    transition: color 0.15s;
+  }
+  .toc a:hover { color: var(--accent); }
+
+  /* Sections */
+  section {
+    margin-bottom: 64px;
+    scroll-margin-top: 24px;
+  }
+  section h2 {
+    font-size: 28px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section h2 .section-num {
+    font-size: 14px;
+    color: var(--accent);
+    background: #1f3a5f;
+    padding: 2px 10px;
+    border-radius: 99px;
+    font-weight: 600;
+  }
+  section > p.lede {
+    color: var(--text-dim);
+    font-size: 16px;
+    margin-bottom: 28px;
+    border-left: 3px solid var(--accent);
+    padding-left: 16px;
+  }
+  section h3 {
+    font-size: 20px;
+    font-weight: 600;
+    margin: 28px 0 12px;
+    color: var(--accent);
+  }
+  section h4 {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 20px 0 8px;
+    color: var(--cyan);
+  }
+
+  /* Diagrams */
+  .mermaid-wrapper {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 20px 0;
+    overflow-x: auto;
+  }
+  .mermaid-wrapper .caption {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
+    margin-top: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 12px;
+  }
+
+  /* Code blocks */
+  pre {
+    background: #1a1f29;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 12px 0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; }
+  pre code { background: none; padding: 0; }
+  .inline-code {
+    background: #1a1f29;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 13px;
+    border: 1px solid var(--border);
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  th, td {
+    padding: 10px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    background: #1a1f29;
+    font-weight: 600;
+    color: var(--text-dim);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  tr:hover td { background: rgba(88,166,255,0.04); }
+
+  /* Cards */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    margin: 16px 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+  .card h4 { margin: 0 0 8px; font-size: 15px; color: var(--accent); }
+  .card p { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+
+  /* Lists */
+  ul, ol { margin: 8px 0 8px 20px; }
+  li { margin-bottom: 4px; font-size: 14px; color: var(--text-dim); }
+
+  /* Two column layout for some sections */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin: 16px 0;
+  }
+  @media (max-width: 768px) {
+    .two-col { grid-template-columns: 1fr; }
+    .toc ol { columns: 1; }
+    .hero h1 { font-size: 32px; }
+  }
+
+  /* Callout */
+  .callout {
+    background: #1f3a5f;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+    font-size: 14px;
+  }
+  .callout strong { color: var(--accent); }
+  .callout.warn { background: #3a2a1a; border-color: var(--orange); }
+  .callout.warn strong { color: var(--orange); }
+  .callout.ok { background: #1a3a2a; border-color: var(--green); }
+  .callout.ok strong { color: var(--green); }
+
+  .src-ref {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: inline-block;
+    margin-top: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Stats bar */
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 12px;
+    margin: 20px 0;
+  }
+  .stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+  }
+  .stat .num { font-size: 28px; font-weight: 700; color: var(--accent); }
+  .stat .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+  .file-ref {
+    background: #1a1f29;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 8px 0;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .file-ref::before {
+    content: "📄";
+    font-size: 14px;
+  }
+
+  footer {
+    text-align: center;
+    padding: 40px 24px;
+    color: var(--text-dim);
+    font-size: 13px;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════ HERO ═══════════════════ -->
+<header class="hero">
+  <h1>Muisc Architecture Report</h1>
+  <p class="subtitle">A comprehensive analysis of the Muisc desktop music streaming application</p>
+  <div class="meta">
+    <span><span class="badge badge-blue">v0.2.0</span></span>
+    <span>📦 Electron 35 + React 19</span>
+    <span>🎵 yt-dlp + YouTube Audio Streaming</span>
+    <span>📅 June 2026</span>
+    <span><span class="badge badge-green">24 Source Files</span></span>
+    <span><span class="badge badge-purple">5 Engines</span></span>
+    <span><span class="badge badge-pink">~5,600 LOC</span></span>
+  </div>
+</header>
+
+<div class="container">
+
+<!-- ═══════════ TOC ═══════════ -->
+<div class="toc">
+<h2>Table of Contents</h2>
+<ol>
+  <li><a href="#overview">Application Overview</a></li>
+  <li><a href="#architecture">System Architecture</a></li>
+  <li><a href="#audio-pipeline">Audio Pipeline</a></li>
+  <li><a href="#application-layer">Application Layer (Engines)</a></li>
+  <li><a href="#ipc">IPC Communication Layer</a></li>
+  <li><a href="#services">Services Layer</a></li>
+  <li><a href="#proxy">Stream Proxy &amp; Caching</a></li>
+  <li><a href="#daemon">yt-dlp Daemon</a></li>
+  <li><a href="#frontend">Frontend Architecture</a></li>
+  <li><a href="#search">Search &amp; Discovery</a></li>
+  <li><a href="#spotify">Spotify Import Pipeline</a></li>
+  <li><a href="#matching">Track Identity &amp; Matching</a></li>
+  <li><a href="#data-flow">Data Flow Diagrams</a></li>
+  <li><a href="#config">Configuration &amp; Build</a></li>
+  <li><a href="#ci-cd">CI/CD Pipeline</a></li>
+  <li><a href="#testing">Testing Strategy</a></li>
+</ol>
+</div>
+
+<!-- ═══════════ 1. OVERVIEW ═══════════ -->
+<section id="overview">
+<h2><span class="section-num">1</span> Application Overview</h2>
+<p class="lede">Muisc is a free, native-desktop music streaming player that sources audio from YouTube and presents it in a curated, playlist-forward experience. No subscription, no account, no ads.</p>
+
+<div class="callout">
+  <strong>🧭 What Makes Muisc Different:</strong>
+  Zero-cost streaming from YouTube's entire catalog, playlist-forward architecture, local-first storage (no cloud), glassmorphism UI, and cross-platform desktop native build.
+</div>
+
+<div class="stats-row">
+  <div class="stat"><div class="num">24</div><div class="label">Source Files</div></div>
+  <div class="stat"><div class="num">5</div><div class="label">Engines</div></div>
+  <div class="stat"><div class="num">7</div><div class="label">Services</div></div>
+  <div class="stat"><div class="num">19</div><div class="label">IPC Channels</div></div>
+  <div class="stat"><div class="num">5,600</div><div class="label">Est. LOC</div></div>
+  <div class="stat"><div class="num">3</div><div class="label">Platform Targets</div></div>
+</div>
+
+<h3>Technology Stack</h3>
+<table>
+  <thead><tr><th>Layer</th><th>Choice</th><th>Version</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>Desktop Framework</td><td>Electron</td><td>35.2.1</td><td>Cross-platform native desktop shell</td></tr>
+    <tr><td>Primary Language</td><td>TypeScript</td><td>5.8.3</td><td>Type-safe implementation (main + renderer)</td></tr>
+    <tr><td>Build Tool</td><td>electron-vite</td><td>3.1.0</td><td>Vite 6-powered build for main/preload/renderer</td></tr>
+    <tr><td>Frontend</td><td>React</td><td>19.1.0</td><td>UI framework</td></tr>
+    <tr><td>Audio Extraction</td><td>yt-dlp</td><td>—</td><td>YouTube audio URL extraction (subprocess)</td></tr>
+    <tr><td>YouTube Search</td><td>youtubei.js (Innertube)</td><td>17.0.1</td><td>Pure-JS YouTube API, no API key needed</td></tr>
+    <tr><td>Audio Playback</td><td>HTMLAudioElement</td><td>—</td><td>Local HTTP proxy → &lt;audio&gt; element</td></tr>
+    <tr><td>Local Storage</td><td>SQLite (planned)</td><td>—</td><td>Persistent playlist/queue storage</td></tr>
+    <tr><td>Packaging</td><td>electron-builder</td><td>26.0.12</td><td>DMG / AppImage / NSIS installers</td></tr>
+    <tr><td>Auto-Update</td><td>electron-updater</td><td>6.6.2</td><td>GitHub Releases update checking</td></tr>
+    <tr><td>Testing</td><td>Vitest</td><td>4.1.9</td><td>Unit + integration test runner</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════ 2. SYSTEM ARCHITECTURE ═══════════ -->
+<section id="architecture">
+<h2><span class="section-num">2</span> System Architecture</h2>
+<p class="lede">Muisc follows Electron's standard three-process architecture (Main, Preload, Renderer) with a clearly-separated Application Layer that contains all business logic independent of Electron.</p>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+graph TB
+    subgraph Main_Process["⚡ Main Process (Node.js)"]
+        direction TB
+        MI["src/main/index.ts<br/>App Lifecycle"]
+        IPC["src/main/ipc/handlers.ts<br/>IPC Handlers"]
+        subgraph Services["Services"]
+            IN["innertube.ts<br/>YouTube Search"]
+            MR["media-resolver.ts<br/>Track→Audio Bridge"]
+            PX["proxy.ts<br/>HTTP Stream Proxy"]
+            YT["yt-dlp.ts<br/>Subprocess Wrapper"]
+            DD["yt-dlp-daemon.ts<br/>Python Daemon Mgr"]
+            SP["spotify.ts<br/>Playlist Fetcher"]
+            SI["spotify-importer.ts<br/>Import Orchestrator"]
+        end
+        subgraph Engines["Application Layer (Pure TS)"]
+            QE["QueueEngine<br/>Queue State Machine"]
+            TE["TrackIdentityEngine<br/>Matching &amp; Scoring"]
+            SE["SearchEngine<br/>Search Normalization"]
+            PE["PlaylistEngine<br/>Playlist CRUD"]
+        end
+    end
+
+    subgraph Preload["🔒 Preload (Context Bridge)"]
+        PL["src/preload/index.ts<br/>contextBridge"]
+        PLT["index.d.ts<br/>Type Declarations"]
+    end
+
+    subgraph Renderer["🖥️ Renderer (Chromium)"]
+        APP["src/renderer/src/App.tsx<br/>Root Component"]
+        AP["useAudioPlayer.ts<br/>Dual-element Audio Hook"]
+    end
+
+    subgraph External["🌐 External Systems"]
+        YTCDN["YouTube CDN"]
+        YTAPI["YouTube InnerTube API"]
+        SPAPI["Spotify API<br/>spclient + GraphQL"]
+        PYTHON["Python Runtime<br/>yt-dlp + yt_dlp"]
+    end
+
+    MI --> IPC
+    IPC --> MR
+    IPC --> QE
+    IPC --> TE
+    IPC --> PE
+    IPC --> IN
+    IPC --> SI
+
+    MR --> PX
+    MR --> YT
+    PX --> DD
+    DD --> PYTHON
+    YT --> PYTHON
+
+    IN --> YTAPI
+    SP --> SPAPI
+
+    PL --> IPC
+    APP --> PL
+
+    APP --> AP
+    AP --> PX
+    PX --> YTCDN
+
+    MR --> SE
+    SI --> TE
+    TE --> SE
+    SE --> IN
+</pre>
+<div class="caption">High-level system architecture showing process boundaries, module relationships, and external system interactions</div>
+</div>
+
+<h3>Process Architecture</h3>
+<table>
+  <thead><tr><th>Process</th><th>Context</th><th>Files</th><th>Responsibilities</th></tr></thead>
+  <tbody>
+    <tr><td>🟦 Main</td><td>Node.js</td><td>14 files</td><td>App lifecycle, IPC handlers, all services (yt-dlp, proxy, Innertube, Spotify), Application Layer engines</td></tr>
+    <tr><td>🔒 Preload</td><td>Node.js (isolated)</td><td>2 files</td><td>contextBridge: exposes typed API surface to renderer, validates IPC calls</td></tr>
+    <tr><td>🖥️ Renderer</td><td>Chromium</td><td>4 files</td><td>React app, audio hook, UI rendering, user interaction</td></tr>
+    <tr><td>🐍 Python (daemon)</td><td>Subprocess</td><td>1 file</td><td>yt-dlp module kept warm in memory, reads stdin → writes stdout</td></tr>
+    <tr><td>🧠 Application</td><td>Pure TypeScript</td><td>4 files</td><td>Business logic engines — no Electron dependency, fully testable</td></tr>
+  </tbody>
+</table>
+
+<div class="file-ref">Application Layer: <code>src/application/</code> — Pure TypeScript, no Electron imports, designed for testability</div>
+<div class="file-ref">Main Process: <code>src/main/</code> — Electron main process with IPC handlers and services</div>
+<div class="file-ref">Renderer: <code>src/renderer/src/</code> — React 19 frontend with audio hooks</div>
+
+<h3>Key Architectural Decisions</h3>
+<div class="card-grid">
+  <div class="card">
+    <h4>🔄 Instant-Return Proxy</h4>
+    <p><code>resolve()</code> returns a proxy URL immediately with placeholder metadata. Audio connects to localhost (~10ms) while yt-dlp resolves the CDN URL in parallel — the audio pipeline and URL resolution run concurrently, not sequentially.</p>
+  </div>
+  <div class="card">
+    <h4>🎹 Dual Audio Elements</h4>
+    <p>Two hidden <code>&lt;audio&gt;</code> elements: ACTIVE (playing) and STANDBY (preloading next). On transition, they swap roles instantly — zero-latency gapless playback.</p>
+  </div>
+  <div class="card">
+    <h4>🐍 Persistent Python Daemon</h4>
+    <p>A dedicated Python process keeps yt-dlp's module imports warm (~945ms saved per call). Reads video IDs from stdin, writes stream URLs to stdout. Auto-restarts on crash.</p>
+  </div>
+  <div class="card">
+    <h4>🎯 Duration-Gated Matching</h4>
+    <p>Track identity matching uses duration as the gatekeeper: ±2s = 60% of max score. Forces the EXACT YouTube upload matching the Spotify track's duration, rejecting remixes, covers, and live versions.</p>
+  </div>
+  <div class="card">
+    <h4>🔍 Multi-Query Search Strategy</h4>
+    <p>Up to 9 search queries tried in order (standard, official, explicit, topic, remix, etc.) until confidence threshold ≥ 0.65 is met. Scores improve with each query, early exit when found.</p>
+  </div>
+  <div class="card">
+    <h4>💾 Prewarm Buffer</h4>
+    <p>First 1MB of each audio stream is cached in RAM. The proxy serves this instantly to the browser, then fetches the remainder from CDN via a Range request — sub-second cold start.</p>
+  </div>
+</div>
+</section>
+
+<!-- ═══════════ 3. AUDIO PIPELINE ═══════════ -->
+<section id="audio-pipeline">
+<h2><span class="section-num">3</span> Audio Pipeline</h2>
+<p class="lede">The audio pipeline is the heart of Muisc. From track selection to speakers, every stage is designed for minimal latency — the goal is &lt;2s from click to audio.</p>
+
+<h3>End-to-End Audio Flow</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+sequenceDiagram
+    participant U as 👤 User
+    participant R as 🖥️ Renderer
+    participant P as 🔒 Preload
+    participant M as ⚡ Main Process
+    participant MR as MediaResolver
+    participant PX as Proxy (:18938)
+    participant DD as 🐍 yt-dlp Daemon
+    participant CDN as 🌐 YouTube CDN
+
+    U->>R: Click track
+    R->>P: window.api.resolveTrack(videoId)
+    P->>M: ipcRenderer.invoke('resolve-track', videoId)
+    M->>MR: resolver.resolve(videoId)
+
+    rect rgb(30, 40, 60)
+        note right of MR: 🏎️ Instant Return Path
+        MR->>PX: getProxyUrl(videoId)
+        PX-->>MR: http://127.0.0.1:18938/stream?v=...
+        MR-->>M: ResolvedStream { audioUrl, title:'Loading...' }
+        M-->>P: Proxy URL
+        P-->>R: Proxy URL
+        R->>PX: GET /stream?v=... (audio element)
+        note over R,PX: ~10ms to localhost — audio starts loading
+    end
+
+    par 🏎️ Fast URL via Daemon
+        MR->>PX: triggerBackgroundResolve(videoId)
+        PX->>DD: getStreamUrl(videoId)
+        DD->>CDN: yt-dlp extract_info()
+        CDN-->>DD: Stream URL + metadata
+        DD-->>PX: CDN URL
+        PX->>PX: Cache stream URL
+        PX->>PX: 🔥 Start downloadAudioChunk(videoId, url)
+        PX->>CDN: HTTPS GET (Range: bytes=0-1048575)
+        CDN-->>PX: 1MB audio chunk
+        PX->>PX: Store in prewarmBuffer
+    and 🐢 Full Metadata via yt-dlp
+        PX->>YT: getVideoInfo(videoId, -j)
+        YT-->>PX: YTDlpInfo { title, duration, thumbnail, formats }
+        PX->>MR: Resolve complete
+        MR->>MR: Update resolveCache with real metadata
+    end
+
+    rect rgb(30, 50, 30)
+        note right of CDN: 🎵 Audio Streaming
+        PX-->>PX: PREWARM HIT — serve 1MB buffer
+        PX-->>R: HTTP 200 + audio/webm chunk
+        note over PX: Serves first 1MB instantly from RAM
+        PX->>CDN: HTTPS GET (Range: bytes=1048576-)
+        CDN-->>PX: CDN audio tail
+        PX-->>R: Pipe CDN tail to audio element
+        R->>R: 🔊 Audio plays through speakers
+    end
+</pre>
+<div class="caption">Complete audio pipeline: instant proxy return → background resolution → prewarm buffer serve → CDN tail streaming</div>
+</div>
+
+<h3>Resolver Architecture (MediaResolver)</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    subgraph resolve["resolve(videoId)"]
+        RC["resolveCache.get(videoId)"]
+        RC-- HIT -->RA["Return cached ResolvedStream<br/>0ms — instantaneous"]
+        RC-- MISS -->TBG["triggerBackgroundResolve(videoId)<br/>Fire-and-forget"]
+        TBG --> IG["Return proxy URL immediately<br/>title: 'Loading...'"]
+        IG --> AI["Audio connects to localhost proxy<br/>while URL resolves in background"]
+    end
+
+    subgraph bg["Background Resolution"]
+        FP["🏎️ Fast Path<br/>getDaemon().getStreamUrl()<br/>~250ms-2s"]
+        SP["🐢 Slow Path<br/>yt-dlp -j metadata<br/>~4-12s"]
+        FP --> SC["streamCache.set(videoId, url)"]
+        FP --> DC["downloadAudioChunk(videoId, url)<br/>Buffer 1MB into prewarmBuffer"]
+        SP --> MI["getVideoInfo() → YTDlpInfo"]
+        MI --> RUC["Update resolveCache<br/>with real metadata"]
+        SC --> RRC["Update resolveCache<br/>for subsequent calls"]
+    end
+
+    subgraph stream["Proxy Stream Handler"]
+        PB["prewarmBuffer.get(videoId)"]
+        PB -- HIT --> SH["Serve buffer instantly<br/>HTTP 200 + audio data"]
+        SH --> PF["Fetch CDN tail via Range request"]
+        PF --> PI["Pipe CDN tail to client"]
+        PB -- MISS --> RS["resolveStreamUrl(videoId)"]
+        RS --> PS["proxyStream(url, videoId)<br/>Follow redirects, handle 403"]
+        PS --> PI
+    end
+
+    resolve --> bg
+    bg --> stream
+</pre>
+<div class="caption">MediaResolver resolve flow showing the instant-return strategy, dual background resolve paths, and prewarm buffer serving</div>
+</div>
+
+<h3>Proxy Server Architecture</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart LR
+    subgraph Proxy["HTTP Proxy (port 18938)"]
+        direction TB
+        S["http.createServer()"]
+        H["GET /health → { ok, cached }"]
+        ST["GET /stream?v={videoId}"]
+        SC["Stream Cache<br/>Map&lt;videoId, StreamCache&gt;<br/>5h TTL"]
+        PB["Prewarm Buffer<br/>Map&lt;videoId, Buffer&gt;<br/>Max 5 entries, 1MB each"]
+        PR["Pending Resolves<br/>Map&lt;videoId, Promise&gt;<br/>Deduplication"]
+        RE["403/410 Recovery<br/>clearCache → re-resolve → retry"]
+        KE["Keep-Alive Agent<br/>https.Agent with reuse<br/>10 max sockets"]
+    end
+
+    CDN["YouTube CDN"]
+    AE["HTMLAudioElement"]
+    MR["MediaResolver"]
+
+    AE -- "GET /stream" --> S
+    S --> ST
+    ST --> PB
+    PB -- "MISS → resolve" --> SC
+    SC -- "MISS → trigger" --> PR
+    PR --> MR
+    SC --> CDN
+    PB -- "HIT → serve 1MB" --> AE
+    CDN -- "Pipe tail" --> AE
+    CDN -.-> RE
+    RE -.-> CDN
+    ST --> H
+</pre>
+<div class="caption">Internal architecture of the local HTTP proxy server showing cache hierarchy, prewarm buffer, and recovery mechanisms</div>
+</div>
+
+<h3>Performance Design</h3>
+<div class="two-col">
+<div>
+  <h4>Cold Click (no cache)</h4>
+  <pre>1. resolveTrack(videoId)        ~10ms   (instant return)
+2. Audio→proxy connect          ~1ms    (localhost)
+3. Proxy awaits daemon URL      ~800ms  (250ms daemon + 550ms CDN setup)
+4. First audio bytes            ~200ms  (CDN TTFB)
+────────────────────────────────────
+<b>Total: ~1,000ms</b>
+</pre>
+</div>
+<div>
+  <h4>Preloaded (prewarm buffer)</h4>
+  <pre>1. Background resolve          ~2s     (pre-triggered)
+2. Swap audio elements          ~0ms    (instant swap)
+3. Proxy serves 1MB buffer      ~1ms    (from RAM)
+4. CDN tail fetches in bg       ~200ms  (parallel)
+────────────────────────────────────
+<b>Total: ~1ms (instant swap)</b>
+</pre>
+</div>
+</div>
+</section>
+
+<!-- ═══════════ 4. APPLICATION LAYER ═══════════ -->
+<section id="application-layer">
+<h2><span class="section-num">4</span> Application Layer (Engines)</h2>
+<p class="lede">Four pure-TypeScript engines live in <code class="inline-code">src/application/</code> — no Electron imports, no DOM access. They contain the entire business logic and are fully testable in isolation.</p>
+
+<h3>Engine Architecture Overview</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    subgraph Application["src/application/ — Pure TypeScript Layer"]
+        QE["QueueEngine<br/>Queue State Machine<br/>348 lines"]
+        TE["TrackIdentityEngine<br/>Confidence Scoring<br/>331 lines"]
+        SE["SearchEngine<br/>Normalization<br/>200 lines"]
+        PE["PlaylistEngine<br/>CRUD + Hydration<br/>139 lines"]
+    end
+
+    subgraph Tests["Tests"]
+        UT["application-layer.test.ts<br/>Unit Tests"]
+        IT["import-test-full.ts<br/>Integration Test"]
+        IT2["import-test.ts<br/>Smoke Test"]
+    end
+
+    SE --> TE
+    TE -.-> SE
+
+    IPC["IPC Handlers"] --> QE
+    IPC --> PE
+    IPC --> SE
+
+    SI["Spotify Importer"] --> TE
+
+    UT --> QE
+    UT --> TE
+    UT --> SE
+    UT --> PE
+    IT --> TE
+    IT --> SE
+    IT2 --> TE
+    IT2 --> SE
+
+    QE --> PE
+</pre>
+<div class="caption">Application Layer engines and their relationships — all are singletons with pure function design</div>
+</div>
+
+<h3>QueueEngine — Queue State Machine</h3>
+<div class="file-ref"><code>src/application/QueueEngine.ts</code> — 348 lines</div>
+
+<p>A complete queue state machine managing track list, playback index, navigation history, shuffle order, and repeat modes. All state is held in a module-level mutable object — no class instances needed.</p>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+stateDiagram-v2
+    direction LR
+    state "QueueEngine State" as S {
+        list: QueueTrack[]
+        index: number
+        history: string[]
+        shuffleActive: boolean
+        shuffleOrder: number[]
+        shufflePos: number
+        repeatMode: 'none' | 'all' | 'one'
+    }
+
+    [*] --> Idle: clear()
+    Idle --> Populated: setQueue(tracks, startIndex)
+    Populated --> Populated: appendTracks(tracks)
+    Populated --> Populated: removeTrack(index)
+    Populated --> Populated: reorder(from, to)
+
+    state next_decision <<choice>>
+    Populated --> next_decision: next()
+    next_decision --> Populated: repeat='one' → same index
+    next_decision --> Populated: shuffle → advance shuffleOrder
+    next_decision --> Populated: linear → index++
+    next_decision --> Populated: repeat='all' → wrap to 0
+    next_decision --> Idle: end of queue (repeat='none')
+
+    Populated --> Shuffled: setShuffleActive(true)
+    Shuffled --> Populated: setShuffleActive(false)
+    Shuffled --> Shuffled: toggleShuffle()
+</pre>
+<div class="caption">QueueEngine state machine showing all states, transitions, and next-track decision logic</div>
+</div>
+
+<table>
+  <thead><tr><th>Method</th><th>Description</th><th>Side Effects</th></tr></thead>
+  <tbody>
+    <tr><td><code>clear()</code></td><td>Reset all state to defaults</td><td>List emptied, index = -1</td></tr>
+    <tr><td><code>setQueue(tracks, startIdx)</code></td><td>Replace entire queue, set start index</td><td>Builds shuffle order, resets history</td></tr>
+    <tr><td><code>appendTracks(tracks)</code></td><td>Add tracks to end of queue</td><td>Extends shuffle order if shuffle active</td></tr>
+    <tr><td><code>removeTrack(index)</code></td><td>Remove by index, adjust all state</td><td>Rebuilds shuffle order, adjusts current index</td></tr>
+    <tr><td><code>next()</code></td><td>Advance to next track</td><td>Pushes to history, advances shufflePos or index</td></tr>
+    <tr><td><code>previous()</code></td><td>Go back in history</td><td>Pops from history stack, finds original index</td></tr>
+    <tr><td><code>reorder(from, to)</code></td><td>Drag-to-reorder support</td><td>Splice + index adjustment + rebuild shuffle</td></tr>
+    <tr><td><code>peekNext()</code></td><td>Predict next without advancing</td><td>Read-only — no state mutation</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <strong>🔀 Fisher-Yates Shuffle:</strong> When shuffle activates, a pre-computed Fisher-Yates shuffled index array is built from the remaining tracks (after current index). The shuffle position advances through this array on each <code>next()</code>. When exhausted with Repeat All, a fresh shuffle is regenerated. This design keeps shuffle deterministic and distributable for testing.
+</div>
+
+<h3>TrackIdentityEngine — Weighted Matching</h3>
+<div class="file-ref"><code>src/application/TrackIdentityEngine.ts</code> — 331 lines</div>
+
+<p>The most sophisticated engine in the app — uses multi-strategy search query generation and weighted confidence scoring to match Spotify tracks to YouTube uploads with high precision.</p>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    subgraph resolveIdentity["resolveIdentity(track, threshold=0.65)"]
+        GQ["generateSearchQueries(track)<br/>Up to 9 strategies"]
+        GQ --> S1["1. 'Artist CleanTitle'"]
+        S1 --> S2["2. 'Artist CleanTitle official'"]
+        S2 --> S3["3. 'Artist CleanTitle explicit'<br/>(if explicit)"]
+        S3 --> S4["4. 'Artist OriginalTitle'<br/>(if title != clean)"]
+        S4 --> S5["5. 'Artist CleanTitle remix audio'<br/>(if remix marker)"]
+        S5 --> S6["6. 'Artist CleanTitle (parenContent)'<br/>(if parenthetical)"]
+        S6 --> S7["7. 'Artist CleanTitle topic'"]
+        S7 --> S8["8. cleanTitle (if >3 chars)"]
+        S8 --> S9["9. 'Artist RawTitle'"]
+    end
+
+    subgraph scoring["Scoring Loop"]
+        LOOP["For each query:"]
+        LOOP --> SR["SearchEngine.search(query)"]
+        SR --> SCORE["CalculateConfidence(target, candidate)"]
+        SCORE --> EVAL["Best ≥ 0.65?"]
+        EVAL -- Yes --> RETURN["✅ Return matched Track"]
+        EVAL -- No --> NEXT["Next query"]
+        NEXT --> LOOP
+    end
+
+    subgraph fallback["Fallback"]
+        ALL["All queries exhausted"]
+        ALL --> CHECK["Best ≥ 0.35?"]
+        CHECK -- Yes --> ACCEPT["✅ Accept as remix/version match"]
+        CHECK -- No --> REJECT["❌ No match — throw Error"]
+    end
+
+    resolveIdentity --> scoring
+    scoring --> fallback
+</pre>
+<div class="caption">TrackIdentityEngine.resolveIdentity() — multi-query search + confidence scoring with fallback</div>
+</div>
+
+<h4>Confidence Scoring Algorithm</h4>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+pie title Scoring Weights (Max 1.0)
+    "Duration Match (gatekeeper)" : 60
+    "Title Match (confirmatory)" : 20
+    "Artist/Channel Match" : 20
+</pre>
+<div class="caption">Scoring breakdown: duration is the gatekeeper at 60% of max score</div>
+</div>
+
+<table>
+  <thead><tr><th>Signal</th><th>Max Score</th><th>Criteria</th></tr></thead>
+  <tbody>
+    <tr><td>Duration Match</td><td>0.6</td><td>±2s → 0.6 (exact), ±5s → 0.2 (weak), &gt;5s → 0 (reject)</td></tr>
+    <tr><td>Title Match</td><td>0.2</td><td>Exact cleaned → 0.2, normalized Unicode → 0.18, substring → 0.15, word overlap → 0.1×ratio</td></tr>
+    <tr><td>Artist/Channel</td><td>0.2</td><td><code>verified_topic</code> channel → 0.2, artist name in title → 0.15, partial word → 0.1×ratio</td></tr>
+  </tbody>
+</table>
+
+<h4>Title Normalization (SearchEngine)</h4>
+<div class="file-ref"><code>src/application/SearchEngine.ts</code> — 200 lines</div>
+
+<div class="two-col">
+<div>
+  <strong><code>cleanTitle(rawTitle)</code> — for YouTube results:</strong>
+  <pre>"Linkin Park - Numb (Official Video) [HD]"
+→ Strips artist prefix
+→ Strips "(Official Video)"
+→ Strips "[HD]"
+→ <b>"Numb"</b>
+</pre>
+</div>
+<div>
+  <strong><code>cleanTrackTitle(rawTitle)</code> — for Spotify targets:</strong>
+  <pre>"In The End (Remix)"
+→ Strips "(Remix)"
+→ Keeps artist (not in title)
+→ <b>"In The End"</b>
+</pre>
+</div>
+</div>
+
+<div class="callout">
+  <strong>🎯 Annotation Patterns:</strong> 15 regex patterns strip YouTube annotations: <code>(Official Video)</code>, <code>[HD]</code>, <code>- Topic</code>, <code>(ft. ...)</code>, <code>- Remix</code>, <code>(Live in ...)</code>, and more. The patterns are shared between SearchEngine and TrackIdentityEngine.
+</div>
+
+<h3>PlaylistEngine — In-Memory Playlist CRUD</h3>
+<div class="file-ref"><code>src/application/PlaylistEngine.ts</code> — 139 lines</div>
+
+<p>Currently in-memory (SQLite backend planned). Stores playlists as arrays and maps, provides full CRUD plus session hydration for cold-boot restore.</p>
+
+<table>
+  <thead><tr><th>Method</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>createPlaylist(name)</code></td><td>Creates with <code>pl_{timestamp}_{random}</code> ID</td></tr>
+    <tr><td><code>addTrackToPlaylist(id, track)</code></td><td>Append track to playlist's track array</td></tr>
+    <tr><td><code>removeTrackFromPlaylist(id, trackId)</code></td><td>Remove track by ID from playlist</td></tr>
+    <tr><td><code>setPlaylistTracks(id, tracks)</code></td><td>Bulk replace (used for re-matching)</td></tr>
+    <tr><td><code>setPlaylistSource(id, source)</code></td><td>Store Spotify source data for re-matching</td></tr>
+    <tr><td><code>hydrateSession(state)</code></td><td>Restore queue/index/volume from previous session</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════ 5. IPC LAYER ═══════════ -->
+<section id="ipc">
+<h2><span class="section-num">5</span> IPC Communication Layer</h2>
+<p class="lede">Electron's IPC mechanism connects the renderer (React UI) to the main process (services + engines). All communication happens through a typed bridge defined in the preload script.</p>
+
+<h3>IPC Architecture Overview</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TB
+    subgraph Renderer["Renderer (Chromium)"]
+        APP["App.tsx<br/>window.api.search()<br/>window.api.resolveTrack()<br/>window.api.getQueue()"]
+        AP["useAudioPlayer<br/>Loads proxy URLs<br/>Manages audio elements"]
+    end
+
+    subgraph Preload["Preload — contextBridge"]
+        API["window.api = {<br/>  search,<br/>  resolveTrack,<br/>  resolveTrackInfo,<br/>  prefetchQueue,<br/>  getQueue,<br/>  addToQueue,<br/>  setShuffle,<br/>  setRepeat,<br/>  importSpotifyPlaylist,<br/>  getPlaylists,<br/>  loadPlaylistIntoQueue,<br/>  ...<br/>}"]
+        API --> |"ipcRenderer.invoke(channel, ...args)"| IPC
+    end
+
+    subgraph Main["Main Process"]
+        IPC["ipcMain.handle()"]
+        HND["handlers.ts<br/>19 handler registrations"]
+        HND --> MR["MediaResolver<br/>resolve-track, resolve-track-info<br/>prefetch-queue"]
+        HND --> QE["QueueEngine<br/>get-queue, add-to-queue<br/>remove-from-queue, reorder-queue<br/>clear-queue, set-shuffle, set-repeat"]
+        HND --> PE["PlaylistEngine<br/>get-playlists, get-playlist-tracks<br/>load-playlist-into-queue<br/>add-playlist-to-queue"]
+        HND --> IN["Innertube<br/>music-search"]
+        HND --> SI["Spotify Importer<br/>import-spotify-playlist<br/>cancel-spotify-import"]
+        HND --> TEST["Test/Debug<br/>test-corrupt-cache<br/>test-pending-count"]
+    end
+
+    subgraph Events["Main → Renderer Events"]
+        PROG["SPOTIFY_IMPORT_PROGRESS<br/>sender.send() → ipcRenderer.on()"]
+    end
+
+    SI --> PROG
+    PROG -.->|"onSpotifyImportProgress(cb)"| APP
+</pre>
+<div class="caption">Complete IPC layer showing all channels, handlers, and the typed preload bridge</div>
+</div>
+
+<h3>All IPC Channels</h3>
+<div class="file-ref"><code>src/shared/constants.ts</code> — all channel names defined as a const object</div>
+
+<table>
+  <thead><tr><th>Channel</th><th>Direction</th><th>Args</th><th>Returns</th><th>Handler</th></tr></thead>
+  <tbody>
+    <tr><td><code>resolve-track</code></td><td>→</td><td>videoId, opts?</td><td>ResolvedStream</td><td>MediaResolver.resolve()</td></tr>
+    <tr><td><code>resolve-track-info</code></td><td>→</td><td>videoId</td><td>ResolvedStream</td><td>MediaResolver.resolveTrackInfo()</td></tr>
+    <tr><td><code>music-search</code></td><td>→</td><td>query</td><td>InnertubeSearchResult[]</td><td>searchYouTube()</td></tr>
+    <tr><td><code>get-queue</code></td><td>→</td><td>—</td><td>{ list, index, shuffleActive, repeatMode }</td><td>QueueEngine.getList/getCurrentIndex()</td></tr>
+    <tr><td><code>add-to-queue</code></td><td>→</td><td>Track | Track[]</td><td>QueueTrackRef[]</td><td>QueueEngine.appendTracks()</td></tr>
+    <tr><td><code>remove-from-queue</code></td><td>→</td><td>index</td><td>QueueTrackRef[]</td><td>QueueEngine.removeTrack()</td></tr>
+    <tr><td><code>reorder-queue</code></td><td>→</td><td>fromIndex, toIndex</td><td>QueueTrackRef[]</td><td>QueueEngine.reorder()</td></tr>
+    <tr><td><code>clear-queue</code></td><td>→</td><td>—</td><td>true</td><td>QueueEngine.clear()</td></tr>
+    <tr><td><code>set-shuffle</code></td><td>→</td><td>active?</td><td>{ shuffleActive, list, index }</td><td>QueueEngine.toggleShuffle()</td></tr>
+    <tr><td><code>set-repeat</code></td><td>→</td><td>mode</td><td>RepeatMode</td><td>QueueEngine.setRepeatMode()</td></tr>
+    <tr><td><code>prefetch-queue</code></td><td>→</td><td>videoIds[]</td><td>boolean</td><td>MediaResolver.prefetchQueue()</td></tr>
+    <tr><td><code>import-spotify-playlist</code></td><td>→</td><td>{ url, spDc? }</td><td>SpotifyImportResult</td><td>importSpotifyPlaylist()</td></tr>
+    <tr><td><code>cancel-spotify-import</code></td><td>→</td><td>—</td><td>boolean</td><td>AbortController.abort()</td></tr>
+    <tr><td><code>get-playlists</code></td><td>→</td><td>—</td><td>Playlist[]</td><td>PlaylistEngine.getUserPlaylists()</td></tr>
+    <tr><td><code>get-playlist-tracks</code></td><td>→</td><td>playlistId</td><td>Track[]</td><td>PlaylistEngine.getPlaylistTracks()</td></tr>
+    <tr><td><code>load-playlist-into-queue</code></td><td>→</td><td>playlistId</td><td>Track[]</td><td>QueueEngine.setQueue() + CDN prewarm</td></tr>
+    <tr><td><code>add-playlist-to-queue</code></td><td>→</td><td>playlistId</td><td>QueueTrackRef[]</td><td>QueueEngine.appendTracks()</td></tr>
+    <tr><td><code>test-corrupt-cache</code></td><td>→</td><td>videoId</td><td>boolean</td><td>MediaResolver.corruptCache()</td></tr>
+    <tr><td><code>test-pending-count</code></td><td>→</td><td>—</td><td>number</td><td>MediaResolver.getPendingResolveCount()</td></tr>
+    <tr><td><code>spotify-import-progress</code></td><td>←</td><td>SpotifyImportProgress</td><td>—</td><td>sender.send() → renderer listens</td></tr>
+  </tbody>
+</table>
+
+<h3>Preload Bridge Signature</h3>
+<div class="file-ref"><code>src/preload/index.ts</code> (163 lines) + <code>src/preload/index.d.ts</code> (114 lines)</div>
+
+<pre><code>interface Window {
+  api: {
+    // Search
+    search(query: string): Promise&lt;SearchResult[]&gt;
+
+    // Stream Resolution
+    resolveTrack(videoId: string, opts?: { forceRefresh?: boolean }): Promise&lt;ResolvedStream&gt;
+    resolveTrackInfo(videoId: string): Promise&lt;ResolvedStream&gt;
+    prefetchQueue(upcomingVideoIds: string[]): Promise&lt;boolean&gt;
+
+    // Debug
+    testCorruptCache(videoId: string): Promise&lt;boolean&gt;
+    testPendingCount(): Promise&lt;number&gt;
+
+    // Spotify Import
+    importSpotifyPlaylist(url: string, spDc?: string): Promise&lt;SpotifyImportResult&gt;
+    cancelSpotifyImport(): Promise&lt;boolean&gt;
+    onSpotifyImportProgress(callback): () => void  // returns cleanup function
+
+    // Playlist Browsing
+    getPlaylists(): Promise&lt;Playlist[]&gt;
+    getPlaylistTracks(playlistId: string): Promise&lt;Track[]&gt;
+    loadPlaylistIntoQueue(playlistId: string): Promise&lt;Track[]&gt;
+    addPlaylistToQueue(playlistId: string): Promise&lt;QueueTrackRef[]&gt;
+
+    // Queue Management
+    getQueue(): Promise&lt;QueueState&gt;
+    addToQueue(tracks: Track | Track[]): Promise&lt;QueueTrackRef[]&gt;
+    removeFromQueue(index: number): Promise&lt;QueueTrackRef[]&gt;
+    setShuffle(active?: boolean): Promise&lt;{ shuffleActive, list, index }&gt;
+    setRepeat(mode: string): Promise&lt;string&gt;
+  }
+}</code></pre>
+
+<div class="callout">
+  <strong>🔒 Security:</strong> The preload script uses <code>contextBridge.exposeInMainWorld()</code> with context isolation enabled. The renderer process cannot access Node.js APIs directly — only the typed <code>window.api</code> surface is available.
+</div>
+</section>
+
+<!-- ═══════════ 6. SERVICES LAYER ═══════════ -->
+<section id="services">
+<h2><span class="section-num">6</span> Services Layer</h2>
+<p class="lede">Seven services in <code class="inline-code">src/main/services/</code> handle all external system interactions: YouTube search, audio extraction, streaming proxy, and Spotify playlist fetching.</p>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+graph TB
+    subgraph Services["src/main/services/ — External Interface Layer"]
+        IN["innertube.ts<br/>YouTube Search + Resolve<br/>366 lines"]
+        MR["media-resolver.ts<br/>Bridge: Track → Audio<br/>304 lines"]
+        PX["proxy.ts<br/>Local HTTP Stream Proxy<br/>651 lines"]
+        YT["yt-dlp.ts<br/>Subprocess Wrapper<br/>395 lines"]
+        DD["yt-dlp-daemon.ts<br/>Python Daemon Manager<br/>287 lines"]
+        SP["spotify.ts<br/>Playlist Fetcher<br/>475 lines"]
+        SI["spotify-importer.ts<br/>Import Orchestrator<br/>292 lines"]
+    end
+
+    IN --> MR
+    MR --> PX
+    MR --> YT
+    PX --> DD
+    DD --> YT
+    SI --> SP
+    SI --> TE["TrackIdentityEngine (app layer)"]
+    SI --> PE["PlaylistEngine (app layer)"]
+
+    style IN fill:#1f3a5f,stroke:#58a6ff
+    style MR fill:#1f3a5f,stroke:#58a6ff
+    style PX fill:#1f3a5f,stroke:#58a6ff
+    style YT fill:#1f3a5f,stroke:#58a6ff
+    style DD fill:#1f3a5f,stroke:#58a6ff
+    style SP fill:#1f3a5f,stroke:#58a6ff
+    style SI fill:#1f3a5f,stroke:#58a6ff
+</pre>
+<div class="caption">All seven services, their file sizes, and their dependency relationships</div>
+</div>
+
+<h3>innertube.ts — YouTube InnerTube Integration</h3>
+<div class="file-ref"><code>src/main/services/innertube.ts</code> — 366 lines</div>
+
+<p>Uses <code class="inline-code">youtubei.js</code> (pure JavaScript — no Python boot overhead). Provides search with result filtering + ranking, and video resolution with audio format selection.</p>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    subgraph Innertube["Innertube Service"]
+        INST["Singleton Instance<br/>Innertube.create()"]
+        WARM["warmInnerTube()<br/>Pre-warm at startup"]
+        SEARCH["searchYouTube(query)<br/>→ Filter + Rank"]
+        RESOLVE["resolveViaInnerTube(videoId)<br/>→ getBasicInfo + chooseFormat"]
+        SUGGEST["getSearchSuggestions(query)<br/>→ Autocomplete"]
+    end
+
+    subgraph Filtering["Search Result Filtering"]
+        FS["Filter non-song patterns<br/>37 regex patterns"]
+        FC["Duration filter<br/>30s-900s window"]
+        DC["Duration clustering<br/>±3s window, boost cluster size"]
+        SC["Scoring (0-100)"]
+        SC1["Cluster proximity: 0-50 pts"]
+        SC2["Title structure: 0-25 pts<br/>'Artist - Title' pattern"]
+        SC3["Artist presence: 0-15 pts"]
+        SC4["Length bonus: 0-10 pts<br/>120-420s = 10pts"]
+    end
+
+    WARM --> INST
+    SEARCH --> INST
+    SEARCH --> FS
+    FS --> FC
+    FC --> DC
+    DC --> SC
+    SC --> SC1
+    SC --> SC2
+    SC --> SC3
+    SC --> SC4
+    RESOLVE --> INST
+    SUGGEST --> INST
+
+    classDef search fill:#1a3a2a,stroke:#3fb950
+    class SEARCH,FS,FC,DC,SC,SC1,SC2,SC3,SC4 search
+</pre>
+<div class="caption">Innertube service — pure-JS YouTube client with smart search result filtering and scoring</div>
+</div>
+
+<h4>Non-Song Filter Patterns (37 regexes)</h4>
+<div class="two-col">
+<div>
+  <strong>Live/Concert:</strong><br/>
+  <code>(live)</code>, <code>(Live in/at/from)</code>,<br/>
+  <code>live @</code>, <code>concert</code>, <code>tour</code>, <code>performance</code>
+</div>
+<div>
+  <strong>Cover/Effect:</strong><br/>
+  <code>cover</code>, <code>instrumental</code>, <code>karaoke</code>,<br/>
+  <code>nightcore</code>, <code>bass boosted</code>, <code>8d audio</code>, <code>mashup</code>
+</div>
+<div>
+  <strong>TV/Shows:</strong><br/>
+  <code>tonight show</code>, <code>the voice</code>, <code>talent show</code>,<br/>
+  <code>halftime</code>, <code>super bowl</code>, <code>bbc</code>
+</div>
+<div>
+  <strong>Tutorial/Other:</strong><br/>
+  <code>tutorial</code>, <code>how to play</code>, <code>reaction</code>,<br/>
+  <code>tribute</code>, <code>audition</code>, <code>clean version</code>
+</div>
+</div>
+
+<h3>yt-dlp.ts — Subprocess Wrapper</h3>
+<div class="file-ref"><code>src/main/services/yt-dlp.ts</code> — 395 lines</div>
+
+<p>Manages yt-dlp subprocess lifecycle: binary detection, argument construction, output parsing, error classification, and abort support.</p>
+
+<div class="two-col">
+<div>
+  <strong>Binary Detection:</strong>
+  <pre>1. /Library/.../3.12/bin/yt-dlp
+2. /Library/.../3.11/bin/yt-dlp
+3. /opt/homebrew/bin/yt-dlp
+4. /usr/local/bin/yt-dlp
+5. /usr/bin/yt-dlp
+6. yt-dlp (bare — PATH fallback)
+→ Caches result on first success
+</pre>
+</div>
+<div>
+  <strong>Two Extraction Modes:</strong>
+  <pre>--get-url (fast):
+  --get-url --no-playlist
+  --skip-download
+  --extractor-args youtube:
+    player_client=android,web;
+    player_skip=webpage,js,configs
+  Output: single CDN URL line
+
+-j (full metadata):
+  -j --no-playlist
+  --skip-download
+  Output: full JSON (~50KB)
+</pre>
+</div>
+</div>
+
+<h4>Error Classification</h4>
+<table>
+  <thead><tr><th>Error Code</th><th>When</th><th>Handling</th></tr></thead>
+  <tbody>
+    <tr><td><code>NOT_FOUND</code></td><td>yt-dlp binary not on PATH</td><td>Tells user to <code>pip install yt-dlp</code></td></tr>
+    <tr><td><code>TIMEOUT</code></td><td>Process killed by timeout</td><td>Retry with backoff in proxy</td></tr>
+    <tr><td><code>INVALID_VIDEO</code></td><td>Video unavailable/private/removed</td><td>404 to renderer</td></tr>
+    <tr><td><code>PARSE_ERROR</code></td><td>Output not parseable</td><td>Log + return error</td></tr>
+    <tr><td><code>ABORTED</code></td><td>User cancelled operation</td><td>Silent</td></tr>
+    <tr><td><code>DAEMON_CRASH</code></td><td>Python process exited</td><td>Auto-restart daemon</td></tr>
+  </tbody>
+</table>
+
+<h3>spotify.ts — Spotify Playlist Fetcher</h3>
+<div class="file-ref"><code>src/main/services/spotify.ts</code> — 475 lines</div>
+
+<p>Anonymous Spotify playlist import using the web player's internal APIs — no OAuth, no developer account needed.</p>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+sequenceDiagram
+    participant SI as Spotify Importer
+    participant SP as spotify.ts
+    participant SPA as Spotify API
+    participant YT as TrackIdentityEngine
+
+    SI->>SP: fetchSpotifyPlaylist(url, spDc?, signal)
+
+    alt No spDc → Anonymous TOTP
+        SP->>SPA: GET /api/server-time
+        SPA-->>SP: { serverTime: 1718000000 }
+        SP->>SP: generateTOTP(secret, serverTime)
+        SP->>SPA: GET /api/token?totp=XXXXXX
+        SPA-->>SP: { accessToken: "Bearer ..." }
+        SP->>SPA: GET spclient/playlist/v2/{id}
+        SPA-->>SP: { name, contents[].uri } — NO pagination
+        loop Batches of 50
+            SP->>SPA: POST pathfinder/v1/query (GraphQL)
+            SPA-->>SP: lookupEntities → { name, artist, duration }
+        end
+        SP-->>SI: { name, tracks[], totalCount }
+    else spDc provided → REST API
+        SP->>SPA: GET /v1/playlists/{id}
+        SPA-->>SP: { name, tracks.total }
+        loop Pagination (offset += 100)
+            SP->>SPA: GET /v1/playlists/{id}/tracks
+            SPA-->>SP: items[].track
+        end
+        SP-->>SI: { name, tracks[], totalCount }
+    end
+
+    SI->>YT: TrackIdentityEngine.resolveIdentity() for each track
+</pre>
+<div class="caption">Spotify playlist fetch flow: anonymous TOTP auth (primary) vs sp_dc cookie (fallback)</div>
+</div>
+
+<h4>TOTP Authentication Details</h4>
+<div class="callout">
+  <strong>🔐 No OAuth Required:</strong> The app extracts TOTP secrets from the Spotify web player's JS bundle (<code>web-player.*.js</code>) and uses them to generate anonymous access tokens — the same flow as <code>open.spotify.com</code>. When Spotify rotates secrets, they must be re-extracted.
+</div>
+
+<pre><code>TOKEN_SECRETS = [
+  { secret: ',7/*F("rLJ2oxaKL^f+E1xvP@N', version: 61 },
+  { secret: 'OmE{ZA.J^":0FG\\Uz?[@WW',      version: 60 },
+  { secret: '{iOFn;4}<1PFYKPV?5{%u14]M>...', version: 59 },
+]
+
+transformSecret(secret):
+  XOR each char with (index % 33 + 9)
+  → join as decimal string
+  → hex encode
+  → Buffer for HMAC
+
+generateTOTP(secretBytes, timestamp):
+  counter = floor(timestamp / 30)
+  HMAC-SHA1(counterBuffer)
+  → dynamic truncation
+  → 6-digit code</code></pre>
+</section>
+
+<!-- ═══════════ 7. PROXY ═══════════ -->
+<section id="proxy">
+<h2><span class="section-num">7</span> Stream Proxy &amp; Caching</h2>
+<p class="lede">The local HTTP proxy server (<code class="inline-code">127.0.0.1:18938</code>) is the centerpiece of Muisc's audio pipeline — it bridges the YouTube CDN stream to the browser's <code>&lt;audio&gt;</code> element with sophisticated caching, prewarming, and error recovery.</p>
+
+<div class="file-ref"><code>src/main/services/proxy.ts</code> — 651 lines (largest file in the project)</div>
+
+<h3>Proxy Cache Hierarchy</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    subgraph ProxyCache["Local Proxy Cache Architecture"]
+        SC["Stream Cache<br/>Map&lt;videoId, StreamCache&gt;<br/>• CDN stream URL<br/>• cachedAt timestamp<br/>• content-type<br/>TTL: 5 hours"]
+        PB["Prewarm Buffer<br/>Map&lt;videoId, { data, contentType }&gt;<br/>• First 1MB of audio<br/>• Served instantly on hit<br/>Max: 5 entries"]
+        PR["Pending Resolves<br/>Map&lt;videoId, Promise&gt;<br/>• Deduplicates in-flight<br/>• Shared with MediaResolver"]
+        PI["Pending Info<br/>Map&lt;videoId, Promise&lt;YTDlpInfo&gt;&gt;<br/>• Tracks -j metadata resolves"]
+    end
+
+    AE["HTMLAudioElement<br/>renderer"]
+    PX["Proxy Server"]
+    DD["yt-dlp Daemon"]
+    YT["yt-dlp -j (metadata)"]
+    CDN["YouTube CDN"]
+    KA["Keep-Alive Agent<br/>https.Agent<br/>keepAlive: true<br/>maxSockets: 10"]
+
+    AE -->|"GET /stream?v=id"| PX
+    PX --> PB
+    PB -->|"HIT: serve buffer"| AE
+    PB -->|"MISS"| SC
+    SC -->|"HIT: serve URL"| PR
+    SC -->|"MISS"| PR
+    PR -->|"🏎️ Fast URL"| DD
+    PR -->|"🐢 Metadata"| YT
+    DD --> CDN
+    YT --> CDN
+    PX --> KA
+    KA --> CDN
+</pre>
+<div class="caption">Three-layer caching architecture: prewarm buffer (RAM) → stream URL cache (RAM, 5h TTL) → pending resolves (deduplication)</div>
+</div>
+
+<h3>Stream Request Handling</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+sequenceDiagram
+    participant AE as Audio Element
+    participant PX as Proxy Server
+    participant PB as Prewarm Buffer
+    participant DD as yt-dlp Daemon
+    participant CDN as CDN
+
+    AE->>PX: GET /stream?v=VIDEO_ID
+    PX->>PB: prewarmBuffer.get(videoId)
+
+    alt PREWARM HIT
+        PB-->>PX: Buffer (1MB audio)
+        PX-->>AE: HTTP 200 + chunked encoding
+        PX-->>AE: → write(1MB audio buffer)
+        note over AE: Browser starts decoding
+        note over PX: Immediately starts tail fetch
+        PX->>CDN: HTTPS GET (Range: bytes=1048576-)
+        CDN-->>PX: CDN audio tail (206 Partial)
+        PX-->>AE: pipe(tail)
+    else PREWARM MISS
+        PX->>DD: resolveStreamUrl(videoId)
+        DD-->>PX: CDN URL
+        PX->>CDN: proxyStream(url)
+        CDN-->>PX: 200/302/403
+        alt 403 Stale URL
+            PX->>PX: clearCache → re-resolve
+            PX->>DD: resolveStreamUrl(videoId) retry
+            DD-->>PX: Fresh CDN URL
+            PX->>CDN: retry request
+        end
+        PX-->>AE: Pipe CDN response
+    end
+
+    note over CDN: Follows redirects (up to 5)
+    note over PX: Uses keep-alive agent<br/>for CDN connections
+</pre>
+<div class="caption">Complete request lifecycle in the proxy: prewarm buffer hit (fast path) vs miss (resolve + stream)</div>
+</div>
+
+<h3>Background Resolve Pipeline</h3>
+<pre><code>triggerBackgroundResolve(videoId):
+  ┌────────────────────────────────────────────────┐
+  │  🏎️ Fast Path: getDaemon().getStreamUrl()       │
+  │     → yt-dlp --get-url via Python daemon        │
+  │     → ~250ms-2s, updates streamCache            │
+  │     → Then: downloadAudioChunk()                 │
+  │       → HTTPS GET first 1MB                     │
+  │       → Store in prewarmBuffer                   │
+  ├────────────────────────────────────────────────┤
+  │  🐢 Slow Path: getVideoInfo()                    │
+  │     → yt-dlp -j (full metadata JSON)            │
+  │     → ~4-12s, returns YTDlpInfo                  │
+  │     → Updates streamCache with best format URL   │
+  ├────────────────────────────────────────────────┤
+  │  pendingResolves resolves when FAST path done    │
+  │  (or falls through to slow path URL)             │
+  │  pendingInfoResolves resolves when SLOW done     │
+  └────────────────────────────────────────────────┘</code></pre>
+
+<h3>CDN Recovery (403/410 Handling)</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    REQ["GET CDN stream URL"]
+    RES["Response"]
+    RES --> OK["200 OK → Pipe to client"]
+    RES --> REDIR["301/302/303/307 → Follow<br/>up to 5 redirects"]
+    RES --> FORBIDDEN["403/410 Forbidden/Gone"]
+
+    FORBIDDEN --> DECIDE{"Retry left?"}
+    DECIDE -- Yes --> CLEAR["streamCache.delete(videoId)"]
+    CLEAR --> RESOLVE["resolveStreamUrl(videoId)<br/>fresh resolve"]
+    RESOLVE --> REQ
+    DECIDE -- No --> FAIL["502 Bad Gateway<br/>'Re-resolve failed'"]
+    FAIL --> END["Client receives error"]
+
+    OK --> DATA["on('data') pipe chunks"]
+    DATA --> DONE["on('end') — done"]
+</pre>
+<div class="caption">CDN error recovery: stale URLs are automatically re-resolved and retried</div>
+</div>
+
+<h3>Prewarm CDN (Startup Optimization)</h3>
+<p>When a playlist is loaded into the queue, the first track's CDN URL is pre-resolved and the entire audio file is downloaded into the prewarm buffer — making the first click instant:</p>
+
+<pre><code>prewarmCdn(videoId):
+  1. getDaemon().getStreamUrl(videoId) → CDN URL
+  2. streamCache.set(videoId, url) → cache for instant resolve
+  3. HTTPS GET full audio → store in prewarmBuffer
+     → Served instantly on first click</code></pre>
+</section>
+
+<!-- ═══════════ 8. DAEMON ═══════════ -->
+<section id="daemon">
+<h2><span class="section-num">8</span> yt-dlp Daemon</h2>
+<p class="lede">Muisc runs a persistent Python subprocess to avoid the ~945ms Python startup overhead on every stream URL extraction. The module import is paid once, and subsequent requests reuse the warm process.</p>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+sequenceDiagram
+    participant MR as MediaResolver
+    participant PX as Proxy
+    participant DD as YtdlpDaemon (TS)
+    participant PY as Python Daemon
+    participant YT as yt-dlp module
+
+    Note over DD,PY: App startup
+    DD->>PY: spawn python3 scripts/yt-dlp-daemon.py
+    PY->>YT: from yt_dlp import YoutubeDL
+    PY->>YT: ydl = YoutubeDL(YDL_OPTS)
+    PY->>YT: ydl.extract_info(process=False) ← warm API connection
+    PY-->>DD: stdout "READY\n"
+
+    Note over DD,PY: Stream request
+    MR->>PX: triggerBackgroundResolve(videoId)
+    PX->>DD: getStreamUrl(videoId, timeout=15000)
+    DD->>PY: stdin.write(videoId + "\n")
+    PY->>YT: ydl.extract_info("https://youtube.com/watch?v=...")
+    YT-->>PY: info dict
+    PY-->>DD: stdout.write(streamUrl + "\n")
+    DD-->>PX: URL string
+
+    Note over DD,PY: Error handling
+    PY-->>DD: stdout.write("\n") ← empty = FAILED
+    DD-->>PX: reject(YTDlpError('RESOLVE_FAILED'))
+
+    Note over DD,PY: Crash recovery
+    PY--xDD: close (exit code N)
+    DD->>DD: failAll(DAEMON_CRASH)
+    DD->>DD: this.start() ← auto-restart
+</pre>
+<div class="caption">yt-dlp daemon lifecycle: startup (module import + API warm), request/response cycle, and crash recovery</div>
+</div>
+
+<h3>TypeScript Daemon Manager</h3>
+<div class="file-ref"><code>src/main/services/yt-dlp-daemon.ts</code> — 287 lines</div>
+
+<table>
+  <thead><tr><th>Method</th><th>Behavior</th></tr></thead>
+  <tbody>
+    <tr><td><code>start(timeoutMs=15000)</code></td><td>Spawns Python, waits for "READY" signal on stdout, sets up readline interface for request routing</td></tr>
+    <tr><td><code>getStreamUrl(videoId, timeoutMs=20000)</code></td><td>Queues request (FIFO), returns Promise. Auto-starts daemon if not running.</td></tr>
+    <tr><td><code>stop()</code></td><td>SIGTERM → 2s grace → SIGKILL. Fails all pending requests.</td></tr>
+  </tbody>
+</table>
+
+<h3>Python Daemon Script</h3>
+<div class="file-ref"><code>scripts/yt-dlp-daemon.py</code> — 101 lines</div>
+
+<pre><code>YDL_OPTS = {
+    "format": "140/251/bestaudio/best",
+    # 140 = DASH m4a (AAC 128kbps) — web-optimized fMP4
+    # 251 = Opus webm fallback
+    # bestaudio = last resort
+
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android"],
+            "player_skip": ["webpage", "js", "configs", "initial_data"],
+        }
+    },
+    "no_cache_dir": True,
+    # Critical: prevents warm-up from poisoning cache
+}
+
+# Startup sequence:
+# 1. Import yt_dlp (this is the expensive ~945ms step)
+# 2. Pre-warm API connection pool (process=False)
+# 3. Write "READY\n" to stdout
+# 4. Loop: read videoId from stdin → extract_info → write URL to stdout
+
+# Request flow:
+# -> stdin: "dQw4w9WgXcQ\n"
+# <- stdout: "https://r5---sn-...googlevideo.com/videoplayback?...\n"
+#    or empty line on failure</code></pre>
+
+<div class="callout warn">
+  <strong>⚠️ Critical:</strong> <code>no_cache_dir: True</code> prevents the warm-up extraction from poisoning the cache with metadata that lacks format URLs. Without this, the first real extraction would return cached data without playable URLs.
+</div>
+</section>
+
+<!-- ═══════════ 9. FRONTEND ═══════════ -->
+<section id="frontend">
+<h2><span class="section-num">9</span> Frontend Architecture</h2>
+<p class="lede">The renderer is a React 19 application with a single root component and a custom audio hook. The UI is currently a functional debug interface — the glassmorphism production UI is planned for Phase 4.</p>
+
+<h3>Component Structure</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+graph TB
+    subgraph Renderer["Renderer — React 19"]
+        MAIN["main.tsx<br/>ReactDOM.createRoot()"]
+        APP["App.tsx<br/>Root Component (726 lines)"]
+
+        subgraph State["App State"]
+            PLAYER["useAudioPlayer()<br/>→ playerState + playerControls"]
+            SEARCH["searchQuery, searchResults<br/>searching — debounced 400ms"]
+            QUEUE["queueList, queueIndex<br/>shuffleActive, repeatMode"]
+            PLAYLIST["playlists<br/>loadPlaylist, addPlaylistToQueue"]
+            SPOTIFY["spotifyUrl, importing<br/>importProgress, importResult"]
+            LOGS["logs[] — event log<br/>last 50 entries"]
+        end
+
+        subgraph Audio["useAudioPlayer Hook (221 lines)"]
+            ELA["&lt;audio&gt; A (ACTIVE)"]
+            ELB["&lt;audio&gt; B (STANDBY)"]
+            ACTIVE["activeIsA.current<br/>flip on swapToNext()"]
+            EVENTS["timeupdate, loadedmetadata<br/>play, pause, error, ended<br/>waiting, canplay, loadstart"]
+        end
+
+        APP --> PLAYER
+    end
+
+    subgraph Preload["Preload Bridge"]
+        API["window.api"]
+    end
+
+    APP -- "window.api.search()" --> API
+    APP -- "window.api.resolveTrack()" --> API
+    APP -- "window.api.getQueue()" --> API
+    APP -- "window.api.importSpotifyPlaylist()" --> API
+
+    subgraph Proxy["Local Proxy :18938"]
+        STREAM["/stream?v=..."]
+    end
+
+    AUDIO_A["&lt;audio&gt; A"] --> STREAM
+    AUDIO_B["&lt;audio&gt; B"] --> STREAM
+</pre>
+<div class="caption">Frontend architecture: React 19 with dual-element audio hook, all state in the root component</div>
+</div>
+
+<h3>Dual-Element Audio Player</h3>
+<div class="file-ref"><code>src/renderer/src/hooks/useAudioPlayer.ts</code> — 221 lines</div>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+sequenceDiagram
+    participant APP as App.tsx
+    participant H as useAudioPlayer
+    participant EL_A as &lt;audio&gt; A
+    participant EL_B as &lt;audio&gt; B
+    participant PX as Proxy
+
+    Note over H: Initial state: A = ACTIVE, B = STANDBY
+
+    APP->>H: loadAndPlay(url) — first track
+    H->>EL_A: src = url, load(), play()
+    EL_A->>PX: GET /stream?v=... (via proxy URL)
+    PX-->>EL_A: Audio stream
+    Note over EL_A: 🔴 ACTIVE — playing
+
+    APP->>H: preloadNext(nextUrl)
+    H->>EL_B: src = nextUrl, load()
+    EL_B->>PX: GET /stream?v=...
+    PX-->>EL_B: Audio stream
+    Note over EL_B: 🟡 STANDBY — buffered, ready
+
+    APP->>H: swapToNext() — go to next track
+    H->>EL_A: pause(), src = '', load()
+    Note over EL_A: Cleared → becomes STANDBY
+    H->>H: activeIsA.current = false
+    Note over EL_B: 🔴 Now ACTIVE
+    H->>EL_B: play()
+    EL_B-->>APP: Starts playing instantly
+
+    APP->>H: preloadNext(nextNextUrl)
+    H->>EL_A: src = nextNextUrl, load()
+    Note over EL_A: 🟡 Now STANDBY for next transition
+</pre>
+<div class="caption">Dual-element audio player lifecycle: instant zero-latency track transitions</div>
+</div>
+
+<h4>Key Optimizations</h4>
+<div class="card-grid">
+  <div class="card">
+    <h4>⚡ Instant Swap</h4>
+    <p>Track transitions between elements in <strong>0ms</strong> — no buffering, no loading state. The preloaded element plays immediately when swapped.</p>
+  </div>
+  <div class="card">
+    <h4>🔇 No Conflict</h4>
+    <p>When <code>loadAndPlay()</code> is called, the standby element is explicitly cleared (<code>pause() + src = '' + load()</code>) to prevent accidental playback.</p>
+  </div>
+  <div class="card">
+    <h4>📡 Event-Driven State</h4>
+    <p>10 event listeners per element track <code>timeupdate</code>, <code>loadedmetadata</code>, <code>play</code>, <code>pause</code>, <code>error</code>, <code>ended</code>, <code>waiting</code>, <code>canplay</code>, <code>canplaythrough</code>, <code>loadstart</code>.</p>
+  </div>
+  <div class="card">
+    <h4>✅ Cleanup</h4>
+    <p>On unmount: removes all listeners, pauses, clears src, removes elements from DOM.</p>
+  </div>
+</div>
+
+<h3>App.tsx — Root Component Capabilities</h3>
+<table>
+  <thead><tr><th>Feature</th><th>Implementation</th></tr></thead>
+  <tbody>
+    <tr><td>Debounced Search</td><td>400ms debounce timer on input change, Enter key also triggers</td></tr>
+    <tr><td>Play from Queue</td><td>Checks if preloaded → instant swap; otherwise resolve + load + play</td></tr>
+    <tr><td>Auto-Advance</td><td>Detects <code>playerState.ended</code> flag → calls <code>goNext()</code> with anti-reentry guard</td></tr>
+    <tr><td>Next-Track Preload</td><td>After playback starts, preloads next queue track into standby element</td></tr>
+    <tr><td>Queue Prefetcher</td><td>Fetches upcoming N track IDs → calls <code>window.api.prefetchQueue(ids)</code> for LRU cache warming</td></tr>
+    <tr><td>Spotify Import</td><td>Full UI: URL input, sp_dc optional, progress bar, error display, result summary</td></tr>
+    <tr><td>Playlist Management</td><td>Load Queue (full replace) and + Queue (append) buttons per playlist</td></tr>
+    <tr><td>Rapid Skip Guard</td><td><code>latestReq</code> ref tracks request index — stale responses are discarded</td></tr>
+    <tr><td>Event Log</td><td>Last 50 events in a console-like panel, color-coded for errors</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════ 10. SEARCH ═══════════ -->
+<section id="search">
+<h2><span class="section-num">10</span> Search &amp; Discovery</h2>
+<p class="lede">Muisc uses the Innertube API (via <code class="inline-code">youtubei.js</code>) for YouTube search. Results are processed through a multi-stage pipeline: raw API response → normalization → filtering → ranking.</p>
+
+<h3>Search Pipeline</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart LR
+    subgraph Renderer["Renderer"]
+        INPUT["Search input<br/>debounced 400ms"]
+        RESULTS["Result list<br/>click → play"]
+    end
+
+    subgraph Main["Main Process"]
+        SEARCH["searchYouTube(query)"]
+        NORM["Normalize raw Innertube JSON"]
+        FILTER["Filter non-song<br/>37 regex patterns"]
+        RANK["Score + Rank<br/>4 criteria, 0-100 pts"]
+    end
+
+    subgraph External["External"]
+        YTAPI["Innertube API<br/>youtubei.js"]
+    end
+
+    INPUT -->|"window.api.search()"| SEARCH
+    SEARCH --> YTAPI
+    YTAPI --> SEARCH
+    SEARCH --> NORM
+    NORM --> FILTER
+    FILTER --> RANK
+    RANK -->|"SearchResult[]"| RESULTS
+    RESULTS -->|"click → resolveTrack()"| PLAY["Play Audio"]
+
+    style INPUT fill:#1a3a2a,stroke:#3fb950
+    style RESULTS fill:#1a3a2a,stroke:#3fb950
+</pre>
+<div class="caption">Search pipeline from user input to playable result</div>
+</div>
+
+<h3>SearchEngine Normalization</h3>
+<div class="file-ref"><code>src/application/SearchEngine.ts</code> — 200 lines</div>
+
+<p>The <code>normalizeRow()</code> function converts a raw Innertube videoRenderer JSON object into a clean <code>Track</code>:</p>
+
+<pre><code>Raw Innertube JSON:
+{
+  videoRenderer: {
+    videoId: "dQw4w9WgXcQ",
+    title: { runs: [{ text: "Linkin Park - Numb (Official Video) [HD]" }] },
+    lengthText: { simpleText: "3:07" },
+    thumbnail: { thumbnails: [{ url: "https://img.yt.com/1.jpg" }] },
+    ownerBadges: [{ metadataBadgeRenderer: { style: "BADGE_STYLE_TYPE_VERIFIED_ARTIST" } }]
+  }
+}
+                            │
+                            ▼
+Normalized Track:
+{
+  id: "dQw4w9WgXcQ",
+  title: "Numb",                          // cleanTitle() stripped annotations
+  artist: "Linkin Park",                  // extracted from "Artist - Title" pattern
+  duration: 187,                          // 3:07 → 187 seconds
+  thumbnailUrl: "https://img.yt.com/1.jpg",
+  source: "youtube",
+  sourceId: "dQw4w9WgXcQ",
+  channelType: "verified_artist"          // from ownerBadges
+}</code></pre>
+
+<h3>Search Result Scoring</h3>
+<table>
+  <thead><tr><th>Criteria</th><th>Weight</th><th>Logic</th></tr></thead>
+  <tbody>
+    <tr><td>Duration Cluster</td><td>0–50 pts</td><td>Count results within ±3s of each duration. The largest cluster = the real song length.</td></tr>
+    <tr><td>Title Structure</td><td>0–25 pts</td><td>"Artist — Title" pattern using <code>/^.+?\s*[-–—]\s*/</code></td></tr>
+    <tr><td>Artist Presence</td><td>0–15 pts</td><td>Artist name or first word appears in the title</td></tr>
+    <tr><td>Song Length</td><td>0–10 pts</td><td>120–420s = 10pts, &lt;60s = 3pts, other = 6pts</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════ 11. SPOTIFY IMPORT ═══════════ -->
+<section id="spotify">
+<h2><span class="section-num">11</span> Spotify Import Pipeline</h2>
+<p class="lede">The Spotify import feature allows users to paste a Spotify playlist URL and have it matched to YouTube tracks automatically. The pipeline is fully parallelized with progress reporting.</p>
+
+<h3>Import Pipeline Overview</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    subgraph Renderer["Renderer"]
+        URL["Paste Spotify URL"]
+        IMPORT["Import button"]
+        PROGRESS["Progress bar<br/>matching N/M"]
+        RESULT["Result: X/Y matched<br/>Skipped list"]
+    end
+
+    subgraph Main["Main Process"]
+        SI["spotify-importer.ts"]
+        SP["spotify.ts"]
+        TE["TrackIdentityEngine"]
+        PE["PlaylistEngine"]
+    end
+
+    URL --> IMPORT
+    IMPORT -->|"window.api.importSpotifyPlaylist(url)"| SI
+
+    SI -->|"1. Fetch"| SP
+    SP -->|"TOTP auth → spclient → GraphQL"| SPAPI["Spotify API"]
+    SP -->|"tracks[]"| SI
+
+    SI -->|"2. Match (parallel × 8)"| TE
+    TE --> SEARCH["SearchEngine.search()"]
+    SEARCH --> IN["innertube.ts → YouTube"]
+    TE -->|"matched Track[]"| SI
+
+    SI -->|"3. Save"| PE
+    PE -->|"playlist created/updated"| SI
+
+    SI -->|"progress events"| PROGRESS
+    SI -->|"result"| RESULT
+
+    SP -->|"AbortController"| CANCEL["Cancel"]
+    CANCEL --> SI
+</pre>
+<div class="caption">Full Spotify import pipeline: fetch → parallel match → save with progress reporting</div>
+</div>
+
+<h3>Import Sequence</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant R as Renderer
+    participant M as Main Process
+    participant SP as spotify.ts
+    participant TE as TrackIdentityEngine
+    participant PE as PlaylistEngine
+
+    U->>R: Paste URL, click Import
+    R->>M: importSpotifyPlaylist(url, spDc?)
+    M->>SP: fetchSpotifyPlaylist(url, spDc)
+    SP-->>M: { name, tracks[], totalCount }
+
+    M-->>R: [progress] { current:0, total:N, status:'matching' }
+
+    par Match 8 tracks in parallel
+        M->>TE: resolveIdentity(track_0, threshold=0.65)
+        M->>TE: resolveIdentity(track_1, threshold=0.65)
+        M->>TE: resolveIdentity(track_2, threshold=0.65)
+        M->>TE: resolveIdentity(track_3, threshold=0.65)
+        M->>TE: resolveIdentity(track_4, threshold=0.65)
+        M->>TE: resolveIdentity(track_5, threshold=0.65)
+        M->>TE: resolveIdentity(track_6, threshold=0.65)
+        M->>TE: resolveIdentity(track_7, threshold=0.65)
+    end
+
+    loop Every track
+        M-->>R: [progress] current++, status:'matching'
+    end
+
+    M-->>R: [progress] { status:'saving' }
+
+    M->>PE: createPlaylist / findPlaylistByName
+    M->>PE: setPlaylistSource(id, spotifySource)
+    M->>PE: setPlaylistTracks(id, matchedTracks)
+
+    M-->>R: { playlistId, playlistName, matchedCount, totalCount, skipped }
+</pre>
+<div class="caption">Complete Spotify import sequence with parallel batch matching and progress events</div>
+</div>
+
+<h3>Parallel Batch Processing</h3>
+<pre><code>CONCURRENCY = 8   // 8 parallel YouTube searches at once
+MAX_TRACKS = 1000 // Hard cap on imported track count
+
+parallelMap(tracks, matchFn, CONCURRENCY):
+  results = new Array(tracks.length)
+  nextIndex = 0
+
+  worker():
+    while nextIndex < tracks.length:
+      idx = nextIndex++
+      results[idx] = await matchFn(tracks[idx], idx)
+
+  // Spawn CONCURRENCY workers, await all
+  await Promise.all(workers)
+  return results
+
+// Performance: 300-track import ≈ 15-20s
+// Without parallelism: ≈ 5 minutes
+</code></pre>
+
+<h3>Rematch Support</h3>
+<div class="callout ok">
+  <strong>🔄 Re-Matching:</strong> Imported playlists store their <code>spotifySource</code> data (original Spotify track metadata). When the playlist is loaded, <code>rematchPlaylist()</code> re-runs the matching pipeline — so improvements to search filtering or confidence scoring automatically upgrade existing playlists.
+</div>
+
+<pre><code>rematchPlaylist(playlistId):
+  1. PlaylistEngine.getUserPlaylists() → find matching playlist
+  2. pl.spotifySource.tracks → original Spotify track metadata
+  3. parallelMap(tracks, resolveIdentity, CONCURRENCY=8)
+  4. PlaylistEngine.setPlaylistTracks(playlistId, matchedTracks)
+  5. Return { matchedCount, skipped }</code></pre>
+</section>
+
+<!-- ═══════════ 12. MATCHING ═══════════ -->
+<section id="matching">
+<h2><span class="section-num">12</span> Track Identity &amp; Matching</h2>
+<p class="lede">Muisc's most sophisticated subsystem — the TrackIdentityEngine converts Spotify tracks to YouTube matches using multi-strategy search, weighted confidence scoring, and Unicode-aware normalization.</p>
+
+<h3>Confidence Scoring Flow</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+flowchart TD
+    subgraph calculateConfidence["calculateConfidence(target, candidate)"]
+        TITLE_IN["target: { title, artist, duration }<br/>candidate: { title, duration, channelType }"]
+        TITLE_IN --> DURATION
+
+        DURATION["1. Duration Score (0-0.6)"]
+        DURATION --> DUR_CMP{"|Δ| ≤ 2s?"}
+        DUR_CMP -- Yes --> DUR_60["+0.6 — exact recording"]
+        DUR_CMP -- "≤ 5s" --> DUR_20["+0.2 — weak, needs strong other signals"]
+        DUR_CMP -- "&gt; 5s" --> DUR_0["+0 — candidate won't pass threshold"]
+
+        DUR_60 --> TITLE
+        DUR_20 --> TITLE
+        DUR_0 --> TITLE
+
+        TITLE["2. Title Score (0-0.2)"]
+        TITLE --> T_CMP{"Match type?"}
+        T_CMP -- "cleanTitle exact" --> T_20["+0.2"]
+        T_CMP -- "normalized (Unicode)" --> T_18["+0.18"]
+        T_CMP -- "substring" --> T_15["+0.15"]
+        T_CMP -- "word overlap" --> T_10["+0.1 × ratio"]
+
+        T_20 --> ARTIST
+        T_18 --> ARTIST
+        T_15 --> ARTIST
+        T_10 --> ARTIST
+
+        ARTIST["3. Artist/Channel Score (0-0.2)"]
+        ARTIST --> A_CMP{"Channel type?"}
+        A_CMP -- "verified_topic" --> A_20["+0.2<br/>YouTube Music auto-generated"]
+        A_CMP -- "artist name in title" --> A_15["+0.15"]
+        A_CMP -- "partial word match" --> A_10["+0.1 × ratio"]
+        A_CMP -- "no match" --> A_0["+0"]
+
+        A_20 --> FINAL
+        A_15 --> FINAL
+        A_10 --> FINAL
+        A_0 --> FINAL
+
+        FINAL["Final Score: 0.0 - 1.0<br/>Clamped to [0, 1]"]
+    end
+
+    DURATION --> DUR_GATE["🎯 Duration is the gatekeeper"]
+    DUR_GATE -->|"&gt;5s difference = <br/>wrong recording"| DUR_0
+</pre>
+<div class="caption">Confidence scoring decision tree — duration is the primary gatekeeper</div>
+</div>
+
+<h3>Multi-Query Search Strategy</h3>
+<pre><code>generateSearchQueries(track):
+  ┌────────────────────────────────────────────┐
+  │ 1. "Artist CleanTitle"                      │ ← Standard — most common match
+  │ 2. "Artist CleanTitle official"              │ ← Official uploads
+  │ 3. "Artist CleanTitle explicit"              │ ← Explicit version (if track.explicit)
+  │ 4. "Artist OriginalTitle"                    │ ← If title has version markers
+  │ 5. "Artist CleanTitle remix audio"           │ ← If original has remix marker
+  │ 6. "Artist CleanTitle (parenContent)"        │ ← Parenthetical version keywords
+  │ 7. "Artist CleanTitle topic"                 │ ← YouTube Music auto-generated
+  │ 8. cleanTitle (alone)                        │ ← For titles YouTube mis-indexes
+  │ 9. "Artist RawTitle"                         │ ← No cleanup, last resort
+  └────────────────────────────────────────────┘
+  → Deduplicated, preserving order
+  → Each query tried until score ≥ 0.65</code></pre>
+
+<h3>Unicode Normalization</h3>
+<p>The <code>normalizeForMatch()</code> function enables fuzzy matching across Unicode representations:</p>
+
+<pre><code>normalizeForMatch("JAŸ-Z")  → "jay-z"  (NFD + strip combining marks)
+normalizeForMatch("Beyoncé") → "beyonce"
+normalizeForMatch("Mötley Crüe") → "motley crue"
+
+Implementation:
+1. toLowerCase()
+2. normalize('NFD') — splits "é" into "e" + combining accent
+3. replace /[\u0300-\u036f]/g — strips combining marks
+4. replace /[^a-z0-9\s\-'._]/g — keep only safe characters
+5. trim()</code></pre>
+
+<h3>Matching Example</h3>
+<table>
+  <thead><tr><th>Step</th><th>Spotify Target</th><th>YouTube Candidate</th><th>Score</th></tr></thead>
+  <tbody>
+    <tr><td>Duration</td><td>216s</td><td>216s</td><td>+0.6 (exact)</td></tr>
+    <tr><td>Title</td><td>clean: "In The End"</td><td>clean: "In The End"</td><td>+0.2 (exact)</td></tr>
+    <tr><td>Artist</td><td>"Linkin Park"</td><td>verified_topic</td><td>+0.2 (topic channel)</td></tr>
+    <tr><td><strong>Total</strong></td><td></td><td></td><td><strong>1.0 — Perfect match</strong></td></tr>
+  </tbody>
+</table>
+
+<div class="callout warn">
+  <strong>🧪 Test Results:</strong> The full integration test (<code>import-test-full.ts</code>) runs against a 332-track Spotify playlist. The multi-query + threshold system achieves near-100% match rates, with strict matches (≥0.65) for most tracks and fallback matches (≥0.35) catching remix/version variants.
+</div>
+</section>
+
+<!-- ═══════════ 13. DATA FLOW ═══════════ -->
+<section id="data-flow">
+<h2><span class="section-num">13</span> Data Flow Diagrams</h2>
+<p class="lede">Complete end-to-end data flows for the three primary user actions: search → play, queue navigation, and Spotify import.</p>
+
+<h3>Search → Click → Play Flow</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">
+sequenceDiagram
+    participant U as User
+    participant R as App.tsx
+    participant P as Preload
+    participant M as Main Process
+    participant IN as Innertube
+    participant MR as MediaResolver
+    participant PX as Proxy
+    participant DD as Daemon
+    participant AE as Audio Element
+
+    U->>R: Type "Numb" in search
+    R->>R: debounce 400ms
+    R->>P: window.api.search("Numb")
+    P->>M: ipcMain 'music-search'
+    M->>IN: searchYouTube("Numb")
+    IN-->>M: SearchResult[]
+    M-->>R: Results rendered
+
+    U->>R: Click result "Numb"
+    R->>P: window.api.resolveTrack("dQw4w9WgXcQ")
+    P->>M: ipcMain 'resolve-track'
+    M->>MR: resolver.resolve("dQw4w9WgXcQ")
+
+    rect rgba(30, 60, 30)
+        note right of MR: INSTANT RETURN
+        MR->>PX: getProxyUrl(videoId)
+        PX-->>MR: http://127.0.0.1:18938/stream?v=...
+        MR-->>M: { audioUrl, title:'Loading...' }
+        M-->>P: ResolvedStream
+        P-->>R: { audioUrl }
+        R->>AE: playerControls.loadAndPlay(proxyUrl)
+        AE->>PX: GET /stream?v=dQw4w9WgXcQ
+        note over AE: Audio starts loading (~10ms to localhost)
+    end
+
+    par Background Resolve
+        PX->>DD: getStreamUrl(videoId)
+        DD-->>PX: CDN URL
+        PX->>PX: downloadAudioChunk() — buffer 1MB
+        PX-->>AE: Serve prewarm buffer / pipe CDN tail
+    and Resolve Metadata
+        PX->>PX: getVideoInfo(videoId)
+        PX-->>MR: YTDlpInfo
+        MR->>MR: Update resolveCache with real metadata
+        R->>P: window.api.resolveTrackInfo(videoId)
+        P->>M: ipcMain 'resolve-track-info'
+        M-->>R: Real title/duration/thumbnail
+        R->>R: setTrackTitle(realTitle)
+    end
+
+    note over AE: 🔊 Audio playing
+    R->>P: window.api.addToQueue(track)
+    R->>R: preloadNextTrack() — start background preload
+</pre>
+<div class="caption">Complete search → click → play data flow with instant proxy return and background resolution</div>
+</div>
+
+<h3>Queue Navigation Flow (Next Track)</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">sequenceDiagram
+    participant R as App.tsx
+    participant H as useAudioPlayer
+    participant EL_A as &lt;audio&gt; A
+    participant EL_B as &lt;audio&gt; B
+    participant P as Preload
+    participant PX as Proxy
+
+    Note over H: State: A = ACTIVE (playing track 1), B = STANDBY (preloaded track 2)
+
+    R->>R: goNext()
+    R->>R: Check: isNextReady? preloadedQueueIndex?
+
+    alt INSTANT SWAP PATH
+        R->>H: swapToNext()
+        H->>H: activeIsA.current = !activeIsA.current
+        H->>EL_A: pause(), src='', load() ← becomes STANDBY
+        H->>EL_B: play() ← becomes ACTIVE
+        Note over EL_B: 🔊 Track 2 plays INSTANTLY (no latency)
+        H-->>R: true (swap succeeded)
+        R->>R: setQueueIndex(nextIdx)
+        R->>R: preloadNextTrack() → preload track 3 into EL_A
+    else NORMAL PATH (not preloaded)
+        R->>R: playFromQueue(nextIdx)
+        R->>P: resolveTrack(videoId_2)
+        P-->>R: proxy URL
+        R->>H: loadAndPlay(proxyUrl_2)
+        H->>EL_B: src=proxyUrl_2, load(), play()
+        note over EL_B: 🔊 Track 2 plays (normal latency)
+    end
+</pre>
+<div class="caption">Queue navigation: instant swap when preloaded vs normal path fallback</div>
+</div>
+
+<h3>Startup Flow</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">sequenceDiagram
+    participant EL as Electron
+    participant MI as main/index.ts
+    participant MR as MediaResolver
+    participant PX as Proxy
+    participant DD as Daemon
+    participant IN as Innertube
+    participant IPC as handlers.ts
+    participant R as Renderer
+
+    EL->>MI: app.whenReady()
+    MI->>MR: createMediaResolver()
+    MI->>PX: mediaResolver.start()
+    PX->>PX: http.createServer()
+    PX-->>MI: Proxy listening on :18938
+
+    MI->>IPC: registerHandlers(resolver)
+    IPC->>IPC: 19 ipcMain.handle() registrations
+
+    MI->>MI: createWindow()
+    MI->>R: BrowserWindow created, loads renderer
+    R-->>MI: Window shown
+
+    MI->>IN: warmInnerTube() — fire-and-forget
+    IN->>IN: Innertube.create() — pure JS, no subprocess
+
+    MI->>MI: setSearchFunction(searchYouTube)
+    Note over MI: SearchEngine wired to production Innertube
+
+    MI->>DD: getDaemon().start() — lazy, on first request
+    Note over DD: Python daemon starts when first stream URL is requested
+</pre>
+<div class="caption">Application startup sequence — proxy starts first, then renderer loads, warm-ups run in background</div>
+</div>
+</section>
+
+<!-- ═══════════ 14. CONFIG ═══════════ -->
+<section id="config">
+<h2><span class="section-num">14</span> Configuration &amp; Build</h2>
+<p class="lede">Muisc uses electron-vite for building, electron-builder for packaging, and a project-references-based TypeScript configuration.</p>
+
+<h3>Build Pipeline</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">flowchart LR
+    subgraph Dev["Development"]
+        DEV_CMD["npm run dev"]
+        EV_DEV["electron-vite dev"]
+        HMR["HMR for renderer<br/>Vite hot module reload"]
+    end
+
+    subgraph Build["Build"]
+        BUILD_CMD["npm run build"]
+        EV_BUILD["electron-vite build"]
+        OUT["out/ directory<br/>main + preload + renderer"]
+    end
+
+    subgraph Package["Package"]
+        BUILD_MAC["npm run build:mac"]
+        BUILD_WIN["npm run build:win"]
+        EB["electron-builder"]
+        DMG["macOS .dmg + .zip"]
+        NSIS["Windows .exe (NSIS)"]
+        APPIMAGE["Linux AppImage (CI)"]
+    end
+
+    subgraph TypeCheck["Type Check"]
+        TC_NODE["tsc -p tsconfig.node.json"]
+        TC_WEB["tsc -p tsconfig.web.json"]
+    end
+
+    subgraph Test["Test"]
+        VITEST["vitest run"]
+    end
+
+    DEV_CMD --> EV_DEV
+    BUILD_CMD --> EV_BUILD
+    BUILD_MAC --> EV_BUILD
+    BUILD_MAC --> EB
+    BUILD_WIN --> EV_BUILD
+    BUILD_WIN --> EB
+    EB --> DMG
+    EB --> NSIS
+    EB --> APPIMAGE
+
+    TC_NODE -.-> BUILD_CMD
+    TC_WEB -.-> BUILD_CMD
+    VITEST -.-> BUILD_CMD
+</pre>
+<div class="caption">Build and development pipeline</div>
+</div>
+
+<h3>Key Configuration Files</h3>
+<table>
+  <thead><tr><th>File</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><code>electron.vite.config.ts</code></td><td>3-part config: main (externalize deps), preload (externalize deps), renderer (React plugin + @renderer alias)</td></tr>
+    <tr><td><code>electron-builder.yml</code></td><td>appId: <code>com.muisc.app</code>, macOS (dmg+zip), Linux (AppImage), Windows (NSIS), GitHub Releases publish</td></tr>
+    <tr><td><code>tsconfig.json</code></td><td>Root — project references only (node + web)</td></tr>
+    <tr><td><code>tsconfig.node.json</code></td><td>Main + preload + application + shared — extends <code>@electron-toolkit/tsconfig</code></td></tr>
+    <tr><td><code>tsconfig.web.json</code></td><td>Renderer + shared — JSX transform, @renderer path alias</td></tr>
+    <tr><td><code>dev-app-update.yml</code></td><td>Local auto-update testing — points to <code>rommel-exe/muisc</code></td></tr>
+    <tr><td><code>build/entitlements.mac.plist</code></td><td>JIT + unsigned-exec-memory + dyld-env-vars — sandbox NOT enabled</td></tr>
+    <tr><td><code>.vscode/launch.json</code></td><td>Debug Main Process (Node) + Debug Renderer Process (Chrome)</td></tr>
+  </tbody>
+</table>
+
+<pre><code>electron.vite.config.ts structure:
+┌──────────┬──────────────────────┬────────────────────────┐
+│  Entry   │  Build Target         │  Vite Plugins          │
+├──────────┼──────────────────────┼────────────────────────┤
+│  main    │  Node.js (Electron)   │  externalizeDepsPlugin │
+│  preload │  Node.js (isolated)   │  externalizeDepsPlugin │
+│  renderer│  Browser (Chromium)   │  @vitejs/plugin-react  │
+└──────────┴──────────────────────┴────────────────────────┘</code></pre>
+
+<h3>NPM Scripts Reference</h3>
+<table>
+  <thead><tr><th>Script</th><th>Command</th><th>Use Case</th></tr></thead>
+  <tbody>
+    <tr><td><code>dev</code></td><td><code>electron-vite dev</code></td><td>Development with HMR</td></tr>
+    <tr><td><code>build</code></td><td><code>electron-vite build</code></td><td>Production build</td></tr>
+    <tr><td><code>build:mac</code></td><td><code>electron-vite build && electron-builder --mac</code></td><td>macOS DMG + zip</td></tr>
+    <tr><td><code>build:win</code></td><td><code>electron-vite build && electron-builder --win</code></td><td>Windows NSIS installer</td></tr>
+    <tr><td><code>typecheck</code></td><td><code>tsc --noEmit (node + web)</code></td><td>Full type checking</td></tr>
+    <tr><td><code>test</code></td><td><code>vitest run</code></td><td>Unit + integration tests</td></tr>
+    <tr><td><code>postinstall</code></td><td><code>electron-builder install-app-deps</code></td><td>Rebuild native modules for Electron</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ═══════════ 15. CI/CD ═══════════ -->
+<section id="ci-cd">
+<h2><span class="section-num">15</span> CI/CD Pipeline</h2>
+<p class="lede">GitHub Actions handles type-checking, building, and publishing. The pipeline is designed for efficient matrix builds and sequential release publishing.</p>
+
+<div class="file-ref"><code>.github/workflows/release.yml</code> — 158 lines</div>
+
+<div class="mermaid-wrapper">
+<pre class="mermaid">flowchart TD
+    subgraph Triggers["Triggers"]
+        PUSH["Push to main"]
+        PR["PR to main"]
+        TAG["v* tag push"]
+    end
+
+    subgraph Check["check (ubuntu)"]
+        TC["Type-Check<br/>tsc --noEmit<br/>~10 min"]
+    end
+
+    subgraph Build["build (matrix, push to main only)"]
+        MAC["macOS build<br/>electron-builder<br/>~30 min"]
+        LIN["Ubuntu build<br/>electron-builder<br/>~30 min"]
+        WIN["Windows build<br/>electron-builder<br/>~30 min"]
+    end
+
+    subgraph ReleasePublish["Publish (v* tag only, sequential)"]
+        PL["publish-linux ⭐<br/>1. Build<br/>2. gh release create<br/>3. Upload .AppImage"]
+        PM["publish-macos ⬆<br/>needs: publish-linux<br/>Upload .dmg + .zip"]
+        PW["publish-windows ⬆<br/>needs: publish-linux<br/>Upload .exe"]
+    end
+
+    PUSH --> TC
+    PR --> TC
+    TAG --> TC
+
+    TC --> PUSH --> Build
+    TC --> TAG --> PL
+    PL --> PM
+    PL --> PW
+</pre>
+<div class="caption">GitHub Actions CI/CD workflow — type-check, build matrix, and sequential release publishing</div>
+</div>
+
+<h3>Key CI/CD Details</h3>
+<table>
+  <thead><tr><th>Aspect</th><th>Detail</th></tr></thead>
+  <tbody>
+    <tr><td>Type-Check</td><td>Runs on ALL triggers (push, PR, tag) — fast test before anything else</td></tr>
+    <tr><td>Build Matrix</td><td>macOS + Linux + Windows — runs only on push to main (not PRs)</td></tr>
+    <tr><td>Publish Order</td><td>Linux creates the GitHub release → macOS uploads → Windows uploads (sequential via <code>needs:</code>)</td></tr>
+    <tr><td>Publish Method</td><td>Uses <code>gh release create</code> and <code>gh release upload</code> — electron-builder's built-in publisher is noted as "broken for this repo"</td></tr>
+    <tr><td>Node Version</td><td>22 across all platforms</td></tr>
+    <tr><td>Dependency Install</td><td><code>npm ci --ignore-scripts</code> — avoids postinstall (native rebuild not needed in CI)</td></tr>
+    <tr><td>Artifacts</td><td>Uploaded with <code>actions/upload-artifact@v4</code>, 7-day retention</td></tr>
+  </tbody>
+</table>
+
+<h3>Auto-Update Flow</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">sequenceDiagram
+    participant App as Muisc App
+    participant GH as GitHub Releases
+    participant EU as electron-updater
+
+    App->>EU: On launch
+    EU->>GH: Check latest-mac.yml / latest.yml
+    GH-->>EU: Version + download URL
+    EU-->>App: Update available?
+    alt Update available
+        EU->>GH: Download new DMG/EXE
+        GH-->>EU: Installer file
+        EU->>App: Install + restart
+    else Up to date
+        EU-->>App: No update needed
+    end
+</pre>
+<div class="caption">Auto-update lifecycle via electron-updater + GitHub Releases</div>
+</div>
+</section>
+
+<!-- ═══════════ 16. TESTING ═══════════ -->
+<section id="testing">
+<h2><span class="section-num">16</span> Testing Strategy</h2>
+<p class="lede">Muisc uses a three-tier testing approach: unit tests for application logic, integration tests for the full import pipeline, and standalone scripts for end-to-end verification.</p>
+
+<h3>Test Architecture</h3>
+<div class="mermaid-wrapper">
+<pre class="mermaid">flowchart TD
+    subgraph Unit["Unit Tests (vitest)"]
+        AL["tests/application-layer.test.ts<br/>4 tests"]
+        AL_T1["TrackIdentityEngine accuracy<br/>→ studio master selection"]
+        AL_T2["TrackIdentityEngine perf<br/>→ &lt;50ms confidence calc"]
+        AL_T3["SearchEngine normalization<br/>→ clean Track schema"]
+        AL_T4["PlaylistEngine hydration<br/>→ session restore &lt;100ms"]
+    end
+
+    subgraph Integration["Integration Tests (vitest)"]
+        MR["src/main/__tests__/media-resolver.test.ts<br/>418 lines"]
+        MR_T1["yt-dlp binary detection"]
+        MR_T2["Metadata extraction"]
+        MR_T3["Proxy health + range requests (206)"]
+        MR_T4["MediaResolver instant-return"]
+        MR_T5["Background metadata population"]
+        MR_T6["Cache hit validation"]
+        MR_T7["Force refresh"]
+        MR_T8["Concurrent resolves"]
+    end
+
+    subgraph E2E["End-to-End Scripts (tsx)"]
+        ITF["tests/import-test-full.ts<br/>Full 332-track multi-query test"]
+        IT["tests/import-test.ts<br/>Quick smoke test (single pass)"]
+    end
+
+    subgraph Pipeline["Pipeline Scripts"]
+        TP["src/main/__tests__/test-pipeline.ts"]
+        VP["src/main/__tests__/verify-pipeline.ts"]
+    end
+
+    AL --> AL_T1
+    AL --> AL_T2
+    AL --> AL_T3
+    AL --> AL_T4
+
+    MR --> MR_T1
+    MR --> MR_T2
+    MR --> MR_T3
+    MR --> MR_T4
+    MR --> MR_T5
+    MR --> MR_T6
+    MR --> MR_T7
+    MR --> MR_T8
+
+    ITF -->|"npx tsx tests/import-test-full.ts"| R1["332-track playlist<br/>multi-query matching"]
+    IT -->|"npx tsx tests/import-test.ts"| R2["Single-pass<br/>quick verification"]
+</pre>
+<div class="caption">Testing strategy: unit tests (vitest) → integration tests (vitest) → E2E scripts (tsx)</div>
+</div>
+
+<h3>Test Coverage Map</h3>
+<table>
+  <thead><tr><th>Test File</th><th>Type</th><th>What It Tests</th><th>Runner</th></tr></thead>
+  <tbody>
+    <tr><td><code>tests/application-layer.test.ts</code></td><td>Unit</td><td>TrackIdentityEngine accuracy + perf, SearchEngine normalization, session hydration</td><td><code>vitest</code></td></tr>
+    <tr><td><code>src/main/__tests__/media-resolver.test.ts</code></td><td>Integration</td><td>yt-dlp binary, metadata extraction, proxy health, MediaResolver instant-return, cache, concurrent resolves</td><td><code>vitest</code></td></tr>
+    <tr><td><code>tests/import-test-full.ts</code></td><td>E2E</td><td>Full Spotify→YouTube multi-query matching on 332-track playlist</td><td><code>npx tsx</code></td></tr>
+    <tr><td><code>tests/import-test.ts</code></td><td>E2E</td><td>Single-pass Spotify import smoke test</td><td><code>npx tsx</code></td></tr>
+    <tr><td><code>src/main/__tests__/test-pipeline.ts</code></td><td>Integration</td><td>Full resolve pipeline verification</td><td><code>tsx</code></td></tr>
+    <tr><td><code>src/main/__tests__/verify-pipeline.ts</code></td><td>Integration</td><td>Streaming buffer + queue window verification</td><td><code>tsx</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Key Test Specifications</h3>
+<div class="two-col">
+<div>
+  <strong>TrackIdentityEngine Accuracy Test:</strong>
+  <pre>Given: 3 candidates (live, studio, cover)
+Target: { title: "In The End",
+          artist: "Linkin Park",
+          duration: 216 }
+
+Expected:
+✅ "yt_studio_perfect" selected
+❌ "yt_live_999" rejected
+❌ "yt_cover_777" rejected
+📊 confidenceScore ≥ 0.98
+⏱ processingTime < 50ms</pre>
+</div>
+<div>
+  <strong>Search Normalization Test:</strong>
+  <pre>Input: Raw Innertube JSON
+  videoId: "dQw4w9WgXcQ"
+  title: "Linkin Park - Numb
+         (Official Video) [HD]"
+  lengthText: "3:07"
+
+Expected:
+  id: "dQw4w9WgXcQ"
+  title: "Numb"  ← clean
+  duration: 187  ← 3m7s
+  source: "youtube"</pre>
+</div>
+</div>
+
+<h3>Running Tests</h3>
+<pre><code># Unit tests (vitest)
+npm test                    # vitest run
+npm run test:watch          # vitest (watch mode)
+
+# Integration tests (vitest, needs main process setup)
+npx vitest run src/main/__tests__/
+
+# E2E import tests (standalone, fetches real Spotify playlist)
+npx tsx tests/import-test.ts           # Quick smoke
+npx tsx tests/import-test-full.ts      # Full 332-track suite</code></pre>
+</section>
+
+<!-- ═══════════ 17. FILE INVENTORY ═══════════ -->
+<section>
+<h2><span class="section-num">17</span> Complete File Inventory</h2>
+<p class="lede">Every source file in the project, its size, purpose, and key exports.</p>
+
+<table>
+  <thead><tr><th>File</th><th>Lines</th><th>Layer</th><th>Purpose</th><th>Key Exports</th></tr></thead>
+  <tbody>
+    <tr><td><code>src/shared/types.ts</code></td><td>98</td><td>Shared</td><td>All shared interfaces and types</td><td>Track, Playlist, QueueItem, PlaybackState, SearchResult, ResolvedStream, SpotifyImport*</td></tr>
+    <tr><td><code>src/shared/constants.ts</code></td><td>58</td><td>Shared</td><td>IPC channel names, config defaults</td><td>IPC_CHANNELS, DEFAULT_VOLUME, PROXY_PORT, DB_FILENAME</td></tr>
+    <tr><td><code>src/main/index.ts</code></td><td>135</td><td>Main</td><td>App lifecycle, BrowserWindow, startup wiring</td><td>— (app entry point)</td></tr>
+    <tr><td><code>src/main/ipc/handlers.ts</code></td><td>317</td><td>Main</td><td>All IPC handler registrations + cleanup</td><td>registerHandlers, unregisterHandlers</td></tr>
+    <tr><td><code>src/main/services/innertube.ts</code></td><td>366</td><td>Service</td><td>YouTube InnerTube search + resolve</td><td>warmInnerTube, searchYouTube, resolveViaInnerTube, getSearchSuggestions</td></tr>
+    <tr><td><code>src/main/services/media-resolver.ts</code></td><td>304</td><td>Service</td><td>Bridge: track identity → playable audio</td><td>createMediaResolver, MediaResolver type</td></tr>
+    <tr><td><code>src/main/services/proxy.ts</code></td><td>651</td><td>Service</td><td>Local HTTP proxy server</td><td>createProxy, ProxyError, StreamCache</td></tr>
+    <tr><td><code>src/main/services/yt-dlp.ts</code></td><td>395</td><td>Service</td><td>yt-dlp subprocess wrapper</td><td>findYTDlp, getStreamUrl, getVideoInfo, warmYtdlp, YTDlpError, YTDlpInfo</td></tr>
+    <tr><td><code>src/main/services/yt-dlp-daemon.ts</code></td><td>287</td><td>Service</td><td>Persistent Python daemon manager</td><td>YtdlpDaemon, getDaemon, warmDaemon</td></tr>
+    <tr><td><code>src/main/services/spotify.ts</code></td><td>475</td><td>Service</td><td>Spotify playlist fetcher</td><td>fetchSpotifyPlaylist, SpotifyPlaylistResult</td></tr>
+    <tr><td><code>src/main/services/spotify-importer.ts</code></td><td>292</td><td>Service</td><td>Spotify→YouTube import orchestrator</td><td>importSpotifyPlaylist, rematchPlaylist</td></tr>
+    <tr><td><code>src/preload/index.ts</code></td><td>163</td><td>Preload</td><td>contextBridge: exposes api to renderer</td><td>— (registers window.api)</td></tr>
+    <tr><td><code>src/preload/index.d.ts</code></td><td>114</td><td>Preload</td><td>Type declarations for window.api</td><td>Window interface augmentation</td></tr>
+    <tr><td><code>src/application/QueueEngine.ts</code></td><td>348</td><td>Engine</td><td>Queue state machine</td><td>QueueEngine singleton</td></tr>
+    <tr><td><code>src/application/TrackIdentityEngine.ts</code></td><td>331</td><td>Engine</td><td>Weighted matching &amp; confidence scoring</td><td>TrackIdentityEngine singleton, generateSearchQueries, calculateConfidence</td></tr>
+    <tr><td><code>src/application/SearchEngine.ts</code></td><td>200</td><td>Engine</td><td>Search normalization</td><td>SearchEngine singleton, cleanTitle, cleanTrackTitle, ANNOTATION_PATTERNS</td></tr>
+    <tr><td><code>src/application/PlaylistEngine.ts</code></td><td>139</td><td>Engine</td><td>Playlist CRUD</td><td>PlaylistEngine singleton</td></tr>
+    <tr><td><code>src/renderer/src/main.tsx</code></td><td>9</td><td>Renderer</td><td>ReactDOM.createRoot mount</td><td>— (app mount)</td></tr>
+    <tr><td><code>src/renderer/src/App.tsx</code></td><td>726</td><td>Renderer</td><td>Root React component</td><td>App (default export)</td></tr>
+    <tr><td><code>src/renderer/src/hooks/useAudioPlayer.ts</code></td><td>221</td><td>Renderer</td><td>Dual-element audio player hook</td><td>useAudioPlayer, AudioPlayerState, AudioPlayerControls</td></tr>
+    <tr><td><code>scripts/yt-dlp-daemon.py</code></td><td>101</td><td>Python</td><td>Python daemon script</td><td>— (stdin→stdout service)</td></tr>
+    <tr><td><code>tests/application-layer.test.ts</code></td><td>132</td><td>Test</td><td>Engine unit tests</td><td>— (vitest test suite)</td></tr>
+    <tr><td><code>tests/import-test-full.ts</code></td><td>—</td><td>Test</td><td>Full import integration test</td><td>— (tsx script)</td></tr>
+    <tr><td><code>tests/import-test.ts</code></td><td>—</td><td>Test</td><td>Quick import smoke test</td><td>— (tsx script)</td></tr>
+  </tbody>
+</table>
+</section>
+
+</div>
+
+<footer>
+  Muisc Architecture Report &mdash; Generated from source code analysis<br/>
+  <span style="font-size: 11px">1672 lines of Markdown • 24 source files • 5 engines • 7 services • 19 IPC channels • 3 platforms</span>
+</footer>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#58a6ff',
+      primaryTextColor: '#e6edf3',
+      primaryBorderColor: '#30363d',
+      lineColor: '#58a6ff',
+      secondaryColor: '#1f3a5f',
+      tertiaryColor: '#161b22',
+      clusterBkg: '#161b22',
+      clusterBorder: '#30363d',
+      nodeBorder: '#30363d',
+      nodeTextColor: '#e6edf3',
+      edgeLabelBackground: '#161b22',
+      actorBkg: '#1f3a5f',
+      actorBorder: '#58a6ff',
+      actorTextColor: '#e6edf3',
+      signalColor: '#58a6ff',
+      signalTextColor: '#e6edf3',
+    },
+    sequence: {
+      showSequenceNumbers: false,
+      actorFontSize: 13,
+      noteFontSize: 12,
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+    },
+  });
+</script>
+</body>
+</html>

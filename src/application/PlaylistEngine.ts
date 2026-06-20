@@ -75,7 +75,7 @@ interface SessionState {
 
 /**
  * Hydrate application state from a saved session.
- * Restores QueueEngine state and MediaEngine volume.
+ * Restores QueueEngine state from a saved session.
  */
 function hydrateSession(sessionState: SessionState): void {
   const { queue, currentIndex, volume } = sessionState
