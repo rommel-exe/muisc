@@ -221,15 +221,11 @@ function App() {
       addLog(`resolve: ${t1 - t0}ms — ${resolved.title}`)
       setTrackTitle(resolved.title)
 
-      playerControls.load(resolved.audioUrl)
+      await playerControls.loadAndPlay(resolved.audioUrl)
       const t2 = Date.now()
-      addLog(`load: ${t2 - t1}ms`)
-
-      await playerControls.play()
-      const t3 = Date.now()
       if (latestReq.current !== idx) return
 
-      addLog(`play: ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+      addLog(`load+play: ${t2 - t1}ms  |  TOTAL: ${t2 - t0}ms`)
 
       // Get real title from metadata (background)
       window.api.resolveTrackInfo(videoId).then((info) => {
@@ -306,13 +302,9 @@ function App() {
       addLog(`resolve: ${t1 - t0}ms — ${resolved.title}`)
       setTrackTitle(resolved.title)
 
-      playerControls.load(resolved.audioUrl)
+      await playerControls.loadAndPlay(resolved.audioUrl)
       const t2 = Date.now()
-      addLog(`load: ${t2 - t1}ms`)
-
-      await playerControls.play()
-      const t3 = Date.now()
-      addLog(`play: ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+      addLog(`play: ${t2 - t1}ms  |  TOTAL: ${t2 - t0}ms`)
 
       // Add to queue
       await window.api.addToQueue(result as any)
@@ -349,12 +341,9 @@ function App() {
       addLog(`resolve: ${t1 - t0}ms`)
       setTrackTitle(resolved.title)
 
-      playerControls.load(resolved.audioUrl)
+      await playerControls.loadAndPlay(resolved.audioUrl)
       const t2 = Date.now()
-
-      await playerControls.play()
-      const t3 = Date.now()
-      addLog(`play: ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+      addLog(`play: ${t2 - t1}ms  |  TOTAL: ${t2 - t0}ms`)
 
       window.api.resolveTrackInfo(trimmed).then((info) => {
         if (latestReq.current !== -3) return
@@ -387,6 +376,7 @@ function App() {
         addLog('next: INSTANT swap (<1ms)')
         const track = queueList[preloadedQueueIndex.current]?.track
         if (track) setTrackTitle(track.title)
+        setQueueIndex(nextInfo.idx)
         // Preload the next one
         currentVideoIdRef.current = preloadedVideoId.current ?? ''
         preloadedVideoId.current = null

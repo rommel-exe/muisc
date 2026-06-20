@@ -12,11 +12,11 @@ export interface AudioPlayerState {
 }
 
 export interface AudioPlayerControls {
-  load: (url: string) => void
-  preload: (url: string) => void
-  /** Preload a URL into the secondary audio element for instant swap */
+  /** Load and play a URL in the active element */
+  loadAndPlay: (url: string) => Promise<void>
+  /** Preload a URL into the INACTIVE (standby) element */
   preloadNext: (url: string) => void
-  /** Swap to the preloaded secondary element and play. Returns false if not ready. */
+  /** Swap active/standby and play the preloaded element. Returns false if nothing loaded */
   swapToNext: () => Promise<boolean>
   play: () => Promise<void>
   pause: () => void
@@ -26,13 +26,16 @@ export interface AudioPlayerControls {
 
 const INITIAL_VOLUME = 0.8
 
+/**
+ * Dual-element audio player.
+ *
+ * Two <audio> elements: one is ACTIVE (playing), one is STANDBY (preloading next).
+ * On transition, they swap roles — the preloaded element becomes active instantly.
+ */
 export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
-  // Primary audio element — actively playing
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  // Secondary audio element — pre-buffers the next track
-  const nextAudioRef = useRef<HTMLAudioElement | null>(null)
-  // Which element is "current" (actively playing). Toggled on swap.
-  const isNextActive = useRef(false)
+  const elA = useRef<HTMLAudioElement | null>(null)
+  const elB = useRef<HTMLAudioElement | null>(null)
+  const activeIsA = useRef(true) // true = elA is active, false = elB is active
 
   const [state, setState] = useState<AudioPlayerState>({
     isPlaying: false,
@@ -45,238 +48,171 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     nextUrl: null,
   })
 
-  // ── Create both audio elements on mount ──
+  // ── Create both elements on mount ──
 
   useEffect(() => {
-    const audio = new Audio()
-    audio.preload = 'auto'
-    audio.style.display = 'none'
-    audio.volume = INITIAL_VOLUME
-    document.body.appendChild(audio)
-    audioRef.current = audio
+    const a = new Audio()
+    a.preload = 'auto'
+    a.style.display = 'none'
+    a.volume = INITIAL_VOLUME
+    document.body.appendChild(a)
+    elA.current = a
 
-    const next = new Audio()
-    next.preload = 'auto'
-    next.style.display = 'none'
-    next.volume = INITIAL_VOLUME
-    document.body.appendChild(next)
-    nextAudioRef.current = next
+    const b = new Audio()
+    b.preload = 'auto'
+    b.style.display = 'none'
+    b.volume = INITIAL_VOLUME
+    document.body.appendChild(b)
+    elB.current = b
 
-    // ── Event handlers for primary element ──
-
-    const getActive = () => isNextActive.current ? next : audio
-
+    // Shared state updater
     const onTimeUpdate = () => {
-      const el = getActive()
-      setState((prev) => ({ ...prev, currentTime: el.currentTime }))
+      const el = activeIsA.current ? elA.current : elB.current
+      if (el) setState((prev) => ({ ...prev, currentTime: el.currentTime }))
     }
-
     const onLoadedMetadata = () => {
-      const el = getActive()
-      setState((prev) => ({
-        ...prev,
-        duration: el.duration,
-        loading: false,
-      }))
+      const el = activeIsA.current ? elA.current : elB.current
+      if (el) setState((prev) => ({ ...prev, duration: el.duration, loading: false }))
     }
-
-    const onPlay = () => {
-      setState((prev) => ({ ...prev, isPlaying: true }))
-    }
-
-    const onPause = () => {
-      setState((prev) => ({ ...prev, isPlaying: false }))
-    }
-
+    const onPlay = () => setState((prev) => ({ ...prev, isPlaying: true }))
+    const onPause = () => setState((prev) => ({ ...prev, isPlaying: false }))
     const onError = () => {
-      const el = getActive()
-      const error = el.error?.message ?? 'Unknown playback error'
-      setState((prev) => ({ ...prev, error, loading: false, isPlaying: false }))
+      const el = activeIsA.current ? elA.current : elB.current
+      setState((prev) => ({ ...prev, error: el?.error?.message ?? 'Unknown error', loading: false, isPlaying: false }))
     }
+    const onEnded = () => setState((prev) => ({ ...prev, isPlaying: false, currentTime: 0 }))
+    const onWaiting = () => setState((prev) => ({ ...prev, loading: true }))
+    const onCanPlay = () => setState((prev) => ({ ...prev, loading: false }))
 
-    const onEnded = () => {
-      setState((prev) => ({ ...prev, isPlaying: false, currentTime: 0 }))
+    // Standby element ready events
+    const onStandbyCanPlay = () => setState((prev) => ({ ...prev, isNextReady: true }))
+    const onStandbyLoadStart = () => setState((prev) => ({ ...prev, isNextReady: false }))
+
+    for (const el of [a, b]) {
+      el.addEventListener('timeupdate', onTimeUpdate)
+      el.addEventListener('loadedmetadata', onLoadedMetadata)
+      el.addEventListener('play', onPlay)
+      el.addEventListener('pause', onPause)
+      el.addEventListener('error', onError)
+      el.addEventListener('ended', onEnded)
+      el.addEventListener('waiting', onWaiting)
+      el.addEventListener('canplay', onCanPlay)
+      el.addEventListener('canplaythrough', onStandbyCanPlay)
+      el.addEventListener('canplay', onStandbyCanPlay)
+      el.addEventListener('loadstart', onStandbyLoadStart)
     }
-
-    const onWaiting = () => {
-      setState((prev) => ({ ...prev, loading: true }))
-    }
-
-    const onCanPlay = () => {
-      setState((prev) => ({ ...prev, loading: false }))
-    }
-
-    // Events on primary
-    audio.addEventListener('timeupdate', onTimeUpdate)
-    audio.addEventListener('loadedmetadata', onLoadedMetadata)
-    audio.addEventListener('play', onPlay)
-    audio.addEventListener('pause', onPause)
-    audio.addEventListener('error', onError)
-    audio.addEventListener('ended', onEnded)
-    audio.addEventListener('waiting', onWaiting)
-    audio.addEventListener('canplay', onCanPlay)
-
-    // Events on secondary (mirrored — keeps state consistent whichever is active)
-    next.addEventListener('timeupdate', onTimeUpdate)
-    next.addEventListener('loadedmetadata', onLoadedMetadata)
-    next.addEventListener('play', onPlay)
-    next.addEventListener('pause', onPause)
-    next.addEventListener('error', onError)
-    next.addEventListener('ended', onEnded)
-    next.addEventListener('waiting', onWaiting)
-    next.addEventListener('canplay', onCanPlay)
-
-    // Track when secondary is ready to play
-    const onNextReady = () => {
-      setState((prev) => ({ ...prev, isNextReady: true }))
-    }
-    const onNextLoadStart = () => {
-      setState((prev) => ({ ...prev, isNextReady: false }))
-    }
-    next.addEventListener('canplaythrough', onNextReady)
-    next.addEventListener('canplay', onNextReady)
-    next.addEventListener('loadstart', onNextLoadStart)
 
     return () => {
-      audio.removeEventListener('timeupdate', onTimeUpdate)
-      audio.removeEventListener('loadedmetadata', onLoadedMetadata)
-      audio.removeEventListener('play', onPlay)
-      audio.removeEventListener('pause', onPause)
-      audio.removeEventListener('error', onError)
-      audio.removeEventListener('ended', onEnded)
-      audio.removeEventListener('waiting', onWaiting)
-      audio.removeEventListener('canplay', onCanPlay)
-
-      next.removeEventListener('timeupdate', onTimeUpdate)
-      next.removeEventListener('loadedmetadata', onLoadedMetadata)
-      next.removeEventListener('play', onPlay)
-      next.removeEventListener('pause', onPause)
-      next.removeEventListener('error', onError)
-      next.removeEventListener('ended', onEnded)
-      next.removeEventListener('waiting', onWaiting)
-      next.removeEventListener('canplay', onCanPlay)
-      next.removeEventListener('canplaythrough', onNextReady)
-      next.removeEventListener('canplay', onNextReady)
-      next.removeEventListener('loadstart', onNextLoadStart)
-
-      audio.pause()
-      audio.src = ''
-      audio.remove()
-      next.pause()
-      next.src = ''
-      next.remove()
-      audioRef.current = null
-      nextAudioRef.current = null
+      for (const el of [a, b]) {
+        el.removeEventListener('timeupdate', onTimeUpdate)
+        el.removeEventListener('loadedmetadata', onLoadedMetadata)
+        el.removeEventListener('play', onPlay)
+        el.removeEventListener('pause', onPause)
+        el.removeEventListener('error', onError)
+        el.removeEventListener('ended', onEnded)
+        el.removeEventListener('waiting', onWaiting)
+        el.removeEventListener('canplay', onCanPlay)
+        el.removeEventListener('canplaythrough', onStandbyCanPlay)
+        el.removeEventListener('canplay', onStandbyCanPlay)
+        el.removeEventListener('loadstart', onStandbyLoadStart)
+        el.pause()
+        el.src = ''
+        el.remove()
+      }
+      elA.current = null
+      elB.current = null
     }
   }, [])
+
+  // ── Helpers ──
+
+  const getActive = (): HTMLAudioElement | null => activeIsA.current ? elA.current : elB.current
+  const getStandby = (): HTMLAudioElement | null => activeIsA.current ? elB.current : elA.current
 
   // ── Controls ──
 
-  /** Load a URL into the ACTIVE element and play */
-  const load = useCallback((url: string) => {
-    const audio = audioRef.current
-    if (!audio) return
-    // Ensure primary is the active element
-    isNextActive.current = false
-    // Stop secondary from interfering
-    const next = nextAudioRef.current
-    if (next && next.src === url) {
-      next.pause()
-      next.src = ''
-      next.load()
-    }
-    loadElement(audio, url)
+  /** Load a URL into the ACTIVE element and play. Used for initial / cold play. */
+  const loadAndPlay = useCallback(async (url: string): Promise<void> => {
+    const el = getActive()
+    if (!el) return
+
+    // Clear standby to avoid conflict
+    const standby = getStandby()
+    if (standby) { standby.pause(); standby.src = ''; standby.load() }
+
+    setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null }))
+
+    el.src = url
+    el.load()
+
+    return el.play().catch((err) => {
+      if (err.name === 'AbortError') return
+      setState((prev) => ({ ...prev, error: err.message }))
+    })
   }, [])
 
-  /** Preload a URL into the primary element for future playback */
-  const preload = useCallback((url: string) => {
-    const audio = audioRef.current
-    if (!audio || audio.src === url) return
-    audio.src = url
-    audio.load()
-  }, [])
+  /** Preload a URL into the STANDBY element. Safe to call while active is playing. */
+  const preloadNext = useCallback((url: string): void => {
+    const standby = getStandby()
+    if (!standby) return
 
-  /** Preload a URL into the SECONDARY element for instant swap-to-next */
-  const preloadNext = useCallback((url: string) => {
-    const next = nextAudioRef.current
-    if (!next) return
     setState((prev) => ({ ...prev, nextUrl: url, isNextReady: false }))
-    next.src = url
-    next.load()
+    standby.src = url
+    standby.load()
   }, [])
 
-  /** Swap to the preloaded secondary element and play */
+  /**
+   * Swap active ↔ standby and play the preloaded standby element.
+   * The old active element is cleared and becomes the new standby (ready for next preload).
+   * Returns true if swap succeeded.
+   */
   const swapToNext = useCallback(async (): Promise<boolean> => {
-    const next = nextAudioRef.current
-    const current = audioRef.current
-    if (!next || !current) return false
+    const standby = getStandby()
+    const active = getActive()
+    if (!standby || !active) return false
 
-    // If secondary isn't loaded yet, return false
-    if (!next.src || next.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      return false
-    }
+    // Old active → cleared, becomes new standby
+    active.pause()
+    active.src = ''
+    active.load()
 
-    // Pause and clear primary
-    current.pause()
-    current.src = ''
-    current.load()
+    // Swap the roles
+    activeIsA.current = !activeIsA.current
 
-    // Swap: secondary becomes the active element
-    isNextActive.current = true
-    setState((prev) => ({
-      ...prev,
-      isNextReady: false,
-      nextUrl: null,
-    }))
+    setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null }))
 
+    // Play the preloaded element
     try {
-      await next.play()
+      await standby.play()
       return true
-    } catch {
-      // If play fails, fall through
+    } catch (err: any) {
+      if (err.name === 'AbortError') return false
+      setState((prev) => ({ ...prev, error: err.message }))
       return false
     }
   }, [])
 
   const play = useCallback(async () => {
-    const el = isNextActive.current ? nextAudioRef.current : audioRef.current
+    const el = getActive()
     if (!el) return
-
-    try {
-      await el.play()
-    } catch (err: any) {
-      if (err.name === 'AbortError') return
-      setState((prev) => ({ ...prev, error: err.message }))
-    }
+    try { await el.play() } catch (err: any) { if (err.name !== 'AbortError') setState((prev) => ({ ...prev, error: err.message })) }
   }, [])
 
-  const pause = useCallback(() => {
-    const el = isNextActive.current ? nextAudioRef.current : audioRef.current
-    el?.pause()
-  }, [])
+  const pause = useCallback(() => { getActive()?.pause() }, [])
 
   const seek = useCallback((time: number) => {
-    const el = isNextActive.current ? nextAudioRef.current : audioRef.current
-    if (!el) return
-    el.currentTime = time
+    const el = getActive()
+    if (el) el.currentTime = time
   }, [])
 
   const setVolume = useCallback((volume: number) => {
-    if (audioRef.current) audioRef.current.volume = volume
-    if (nextAudioRef.current) nextAudioRef.current.volume = volume
+    if (elA.current) elA.current.volume = volume
+    if (elB.current) elB.current.volume = volume
     setState((prev) => ({ ...prev, volume }))
   }, [])
 
   return [
     state,
-    { load, preload, preloadNext, swapToNext, play, pause, seek, setVolume },
+    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume },
   ]
-}
-
-function loadElement(audio: HTMLAudioElement, url: string): void {
-  if (audio.src === url && audio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-    return
-  }
-  audio.src = url
-  audio.load()
 }
