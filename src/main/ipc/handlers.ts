@@ -256,6 +256,13 @@ export function registerHandlers(resolver: MediaResolver): void {
       throw new Error('Playlist is empty')
     }
     QueueEngine.setQueue(tracks, 0)
+
+    // Fire-and-forget: prewarm CDN for the first track so cold play is faster
+    if (tracks.length > 0) {
+      const firstId = tracks[0].id || tracks[0].sourceId
+      resolver.prewarmCdn(firstId).catch(() => {})
+    }
+
     return tracks
   })
 

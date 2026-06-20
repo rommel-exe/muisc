@@ -90,6 +90,8 @@ app.whenReady().then(async () => {
   // Warm InnerTube session (pure JS, no subprocesses — safe to run).
   warmInnerTube().catch(() => {})
 
+  // Pre-warm is done dynamically when playlists are loaded (see load-playlist-into-queue handler).
+
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
