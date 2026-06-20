@@ -106,38 +106,81 @@ export function createProxy(options: ProxyOptions = {}) {
           prewarmBuffer.delete(videoId)
           if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm HIT ${videoId}: ${pb.data.length} bytes`)
 
-          const streamUrl = await resolveStreamUrl(videoId)
-          const parsedUrl = new URL(streamUrl)
-          const transport = parsedUrl.protocol === 'https:' ? https : http
-
           const tPre = Date.now()
+          const prewarmContentType = pb.contentType
+          const prewarmData = pb.data
+          const prewarmDataLen = pb.data.length
 
           // Write headers + 1MB buffer IMMEDIATELY — browser starts parsing
           // while CDN tail is fetched in parallel
           res.writeHead(200, {
-            'Content-Type': pb.contentType,
+            'Content-Type': prewarmContentType,
             'Access-Control-Allow-Origin': '*',
             'Transfer-Encoding': 'chunked',
           })
-          res.write(pb.data)
-          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${pb.data.length}b in ${Date.now()-tPre}ms`)
+          res.write(prewarmData)
+          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${prewarmDataLen}b in ${Date.now()-tPre}ms`)
 
-          // Fetch CDN tail in parallel (Range from buffer end)
-          const tailReq = transport.get(streamUrl, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-              'Referer': 'https://www.youtube.com/',
-              'Range': `bytes=${pb.data.length}-`,
-            },
-            agent: parsedUrl.protocol === 'https:' ? cdnAgent : undefined,
-          }, (tailRes) => {
-            if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN TTFB=${Date.now()-tPre}ms status=${tailRes.statusCode}`)
-            tailRes.pipe(res)
-          })
-          tailReq.on('error', () => {
-            // CDN tail failed — end response gracefully
-            res.end()
-          })
+          // Fetch CDN tail in parallel (Range from buffer end).
+          // Handles 403/410 stale URLs via re-resolve & retry.
+          // Handles connection errors with one retry attempt.
+          const MAX_TAIL_RETRIES = 1
+          const initialStreamUrl = await resolveStreamUrl(videoId)
+
+          const doTailFetch = (tailUrl: string, tailAttempt = 0): void => {
+            const parsedTailUrl = new URL(tailUrl)
+            const tailTransport = parsedTailUrl.protocol === 'https:' ? https : http
+            const tailReq = tailTransport.get(tailUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+                'Referer': 'https://www.youtube.com/',
+                'Range': `bytes=${prewarmDataLen}-`,
+              },
+              agent: parsedTailUrl.protocol === 'https:' ? cdnAgent : undefined,
+            }, (tailRes) => {
+              if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN TTFB=${Date.now()-tPre}ms status=${tailRes.statusCode}`)
+
+              // 403/410 — stale CDN URL, re-resolve and retry fresh
+              if (tailRes.statusCode === 403 || tailRes.statusCode === 410) {
+                console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN returned ${tailRes.statusCode}, re-resolving...`)
+                tailRes.destroy()
+                if (tailAttempt < MAX_TAIL_RETRIES) {
+                  streamCache.delete(videoId)
+                  const resolveFn = onReResolve ?? resolveStreamUrl
+                  resolveFn(videoId)
+                    .then((newUrl) => doTailFetch(newUrl, tailAttempt + 1))
+                    .catch((err) => {
+                      console.error(`[Proxy] Prewarm TAIL re-resolve failed for ${videoId}:`, err.message)
+                      res.end()
+                    })
+                } else {
+                  res.end()
+                }
+                return
+              }
+
+              // Pipe the CDN tail — audio resumes from the prewarm buffer's end
+              tailRes.pipe(res)
+            })
+
+            tailReq.on('error', (err) => {
+              if (tailAttempt < MAX_TAIL_RETRIES) {
+                console.warn(`[Proxy] Prewarm TAIL ${videoId} failed (attempt ${tailAttempt + 1}), retrying...`)
+                streamCache.delete(videoId)
+                resolveStreamUrl(videoId)
+                  .then((newUrl) => doTailFetch(newUrl, tailAttempt + 1))
+                  .catch(() => {
+                    console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
+                    res.end()
+                  })
+              } else {
+                console.error(`[Proxy] Prewarm TAIL ${videoId} failed after retry:`, err.message)
+                res.end()
+              }
+            })
+          }
+
+          doTailFetch(initialStreamUrl)
           return
         }
         console.log(`[Proxy] Prewarm MISS ${videoId} — buffer has ${prewarmBuffer.size} entries`)
@@ -554,7 +597,7 @@ export function createProxy(options: ProxyOptions = {}) {
         }
       })
     })
-    req.on('error', () => {})
+    req.on('error', (err) => { if (!done) console.warn(`[Proxy] Chunk download error for ${videoId}:`, err.message) })
     req.setTimeout(8000, () => { if (!done) req.destroy() })
   }
 
@@ -587,9 +630,9 @@ export function createProxy(options: ProxyOptions = {}) {
           }
         })
       })
-      req.on('error', () => {})
-    } catch {
-      // Best-effort
+      req.on('error', (err) => { console.warn(`[Proxy] Prewarm CDN error for ${videoId}:`, err.message) })
+    } catch (err: any) {
+      console.warn(`[Proxy] Prewarm CDN failed for ${videoId}:`, err?.message ?? err)
     }
   }
 
