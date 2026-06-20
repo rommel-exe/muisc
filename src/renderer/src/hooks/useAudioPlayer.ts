@@ -9,6 +9,7 @@ export interface AudioPlayerState {
   loading: boolean
   isNextReady: boolean
   nextUrl: string | null
+  ended: boolean
 }
 
 export interface AudioPlayerControls {
@@ -46,6 +47,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     loading: false,
     isNextReady: false,
     nextUrl: null,
+    ended: false,
   })
 
   // ── Create both elements on mount ──
@@ -80,7 +82,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       const el = activeIsA.current ? elA.current : elB.current
       setState((prev) => ({ ...prev, error: el?.error?.message ?? 'Unknown error', loading: false, isPlaying: false }))
     }
-    const onEnded = () => setState((prev) => ({ ...prev, isPlaying: false, currentTime: 0 }))
+    const onEnded = () => setState((prev) => ({ ...prev, isPlaying: false, currentTime: 0, ended: true }))
     const onWaiting = () => setState((prev) => ({ ...prev, loading: true }))
     const onCanPlay = () => setState((prev) => ({ ...prev, loading: false }))
 
@@ -140,7 +142,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const standby = getStandby()
     if (standby) { standby.pause(); standby.src = ''; standby.load() }
 
-    setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null }))
+    setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 
     el.src = url
     el.load()
@@ -179,7 +181,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // Swap the roles
     activeIsA.current = !activeIsA.current
 
-    setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null }))
+    setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 
     // Play the preloaded element
     try {
@@ -195,6 +197,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   const play = useCallback(async () => {
     const el = getActive()
     if (!el) return
+    setState((prev) => ({ ...prev, ended: false }))
     try { await el.play() } catch (err: any) { if (err.name !== 'AbortError') setState((prev) => ({ ...prev, error: err.message })) }
   }, [])
 
