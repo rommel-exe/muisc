@@ -75,6 +75,15 @@ export function generateSearchQueries(track: SpotifyTrack): string[] {
   // 7. Topic channel fallback — auto-generated YouTube Music uploads
   queries.push(`${artist} ${clean} topic`)
 
+  // 8. Last-resort: just the raw title alone (for titles that Innertube search
+  //    sometimes misses with artist prefix, like "Castle on the Hill")
+  if (clean.length > 3) {
+    queries.push(clean)
+  }
+
+  // 9. Raw artist + raw title (no cleanup)
+  queries.push(`${artist} ${title}`)
+
   // Deduplicate while preserving order
   return [...new Set(queries)]
 }

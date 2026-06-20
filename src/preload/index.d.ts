@@ -55,6 +55,18 @@ interface Playlist {
   updatedAt: number
 }
 
+interface QueueTrackRef {
+  queueId: string
+  track: Track
+}
+
+interface QueueState {
+  list: QueueTrackRef[]
+  index: number
+  shuffleActive: boolean
+  repeatMode: string
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -89,6 +101,14 @@ declare global {
       getPlaylists: () => Promise<Playlist[]>
       getPlaylistTracks: (playlistId: string) => Promise<Track[]>
       loadPlaylistIntoQueue: (playlistId: string) => Promise<Track[]>
+      addPlaylistToQueue: (playlistId: string) => Promise<QueueTrackRef[]>
+
+      // Queue Management
+      getQueue: () => Promise<QueueState>
+      addToQueue: (tracks: Track | Track[]) => Promise<QueueTrackRef[]>
+      removeFromQueue: (index: number) => Promise<QueueTrackRef[]>
+      setShuffle: (active?: boolean) => Promise<{ shuffleActive: boolean; list: QueueTrackRef[]; index: number }>
+      setRepeat: (mode: string) => Promise<string>
     }
   }
 }

@@ -6,6 +6,7 @@ import { IPC_CHANNELS } from '../../shared/constants'
 import { importSpotifyPlaylist, rematchPlaylist } from '../services/spotify-importer'
 import { PlaylistEngine } from '../../application/PlaylistEngine'
 import { QueueEngine } from '../../application/QueueEngine'
+import type { Track } from '../../shared/types'
 
 /**
  * Register all IPC handlers for the media resolver pipeline.
@@ -85,6 +86,87 @@ export function registerHandlers(resolver: MediaResolver): void {
     }
   )
 
+  // ── Queue Management ──
+
+  /**
+   * Get the current queue state for UI rendering.
+   * Returns { list: QueueTrack[], index: number, shuffleActive: boolean, repeatMode: string }
+   */
+  ipcMain.handle(IPC_CHANNELS.GET_QUEUE, () => {
+    return {
+      list: QueueEngine.getList(),
+      index: QueueEngine.getCurrentIndex(),
+      shuffleActive: QueueEngine.isShuffleActive(),
+      repeatMode: QueueEngine.getRepeatMode(),
+    }
+  })
+
+  /**
+   * Add tracks to the end of the current queue.
+   * Accepts a single Track or an array of Tracks.
+   */
+  ipcMain.handle(IPC_CHANNELS.ADD_TO_QUEUE, (_event, tracks: Track | Track[]) => {
+    const arr = Array.isArray(tracks) ? tracks : [tracks]
+    if (arr.length === 0) throw new Error('No tracks to add')
+    QueueEngine.appendTracks(arr)
+    return QueueEngine.getList()
+  })
+
+  /**
+   * Remove a track from the queue by its index.
+   */
+  ipcMain.handle(IPC_CHANNELS.REMOVE_FROM_QUEUE, (_event, index: number) => {
+    if (typeof index !== 'number' || index < 0) {
+      throw new Error('Invalid index')
+    }
+    QueueEngine.removeTrack(index)
+    return QueueEngine.getList()
+  })
+
+  /**
+   * Reorder a track in the queue.
+   */
+  ipcMain.handle(IPC_CHANNELS.REORDER_QUEUE, (_event, fromIndex: number, toIndex: number) => {
+    QueueEngine.reorder(fromIndex, toIndex)
+    return QueueEngine.getList()
+  })
+
+  /**
+   * Clear the entire queue.
+   */
+  ipcMain.handle(IPC_CHANNELS.CLEAR_QUEUE, () => {
+    QueueEngine.clear()
+    return true
+  })
+
+  /**
+   * Toggle shuffle on/off.
+   * Returns the new shuffle state.
+   */
+  ipcMain.handle(IPC_CHANNELS.SET_SHUFFLE, (_event, active?: boolean) => {
+    if (typeof active === 'boolean') {
+      QueueEngine.setShuffleActive(active)
+    } else {
+      QueueEngine.toggleShuffle()
+    }
+    return {
+      shuffleActive: QueueEngine.isShuffleActive(),
+      list: QueueEngine.getList(),
+      index: QueueEngine.getCurrentIndex(),
+    }
+  })
+
+  /**
+   * Set repeat mode.
+   */
+  ipcMain.handle(IPC_CHANNELS.SET_REPEAT, (_event, mode: string) => {
+    if (mode !== 'none' && mode !== 'all' && mode !== 'one') {
+      throw new Error('Invalid repeat mode')
+    }
+    QueueEngine.setRepeatMode(mode)
+    return QueueEngine.getRepeatMode()
+  })
+
   // ── Spotify Import ──
 
   /**
@@ -156,18 +238,14 @@ export function registerHandlers(resolver: MediaResolver): void {
   })
 
   /**
-   * Load a playlist's tracks into the queue and return them.
-   *
-   * If the playlist has stored Spotify source data (was imported), re-matches
-   * it automatically first — so improvements like disabling safety mode apply
-   * to playlists imported before the fix.
+   * Load a playlist's tracks into the queue (FULL REPLACE) and return them.
+   * If the playlist has stored Spotify source data, re-matches it first.
    */
   ipcMain.handle('load-playlist-into-queue', async (_event, playlistId: string) => {
     if (typeof playlistId !== 'string' || !playlistId) {
       throw new Error('Invalid playlistId: expected a non-empty string')
     }
 
-    // Auto-rematch if this is a Spotify-imported playlist
     const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
     if (pl?.spotifySource) {
       await rematchPlaylist(playlistId)
@@ -179,6 +257,28 @@ export function registerHandlers(resolver: MediaResolver): void {
     }
     QueueEngine.setQueue(tracks, 0)
     return tracks
+  })
+
+  /**
+   * Append a playlist's tracks to the end of the current queue (APPEND).
+   * If the playlist has stored Spotify source data, re-matches it first.
+   */
+  ipcMain.handle('add-playlist-to-queue', async (_event, playlistId: string) => {
+    if (typeof playlistId !== 'string' || !playlistId) {
+      throw new Error('Invalid playlistId: expected a non-empty string')
+    }
+
+    const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
+    if (pl?.spotifySource) {
+      await rematchPlaylist(playlistId)
+    }
+
+    const tracks = PlaylistEngine.getPlaylistTracks(playlistId)
+    if (tracks.length === 0) {
+      throw new Error('Playlist is empty')
+    }
+    QueueEngine.appendTracks(tracks)
+    return QueueEngine.getList()
   })
 
   console.log('[IPC] Handlers registered')
@@ -193,8 +293,16 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('test-corrupt-cache')
   ipcMain.removeAllListeners('test-pending-count')
   ipcMain.removeAllListeners(IPC_CHANNELS.MUSIC_SEARCH)
-  ipcMain.removeAllListeners(IPC_CHANNELS.PREFETCH_QUEUE)
   ipcMain.removeAllListeners(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST)
   ipcMain.removeAllListeners(IPC_CHANNELS.CANCEL_SPOTIFY_IMPORT)
+  ipcMain.removeAllListeners(IPC_CHANNELS.GET_QUEUE)
+  ipcMain.removeAllListeners(IPC_CHANNELS.ADD_TO_QUEUE)
+  ipcMain.removeAllListeners(IPC_CHANNELS.REMOVE_FROM_QUEUE)
+  ipcMain.removeAllListeners(IPC_CHANNELS.REORDER_QUEUE)
+  ipcMain.removeAllListeners(IPC_CHANNELS.CLEAR_QUEUE)
+  ipcMain.removeAllListeners(IPC_CHANNELS.SET_SHUFFLE)
+  ipcMain.removeAllListeners(IPC_CHANNELS.SET_REPEAT)
+  ipcMain.removeAllListeners(IPC_CHANNELS.GET_PLAYLISTS)
+  ipcMain.removeAllListeners(IPC_CHANNELS.GET_PLAYLIST_TRACKS)
   console.log('[IPC] Handlers unregistered')
 }

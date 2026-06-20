@@ -3,6 +3,15 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type { ResolvedStream, SpotifyImportProgress, SpotifyImportResult, Track, Playlist } from '../shared/types'
 import { IPC_CHANNELS } from '../shared/constants'
 
+// ── Types ──
+
+interface QueueState {
+  list: Array<{ queueId: string; track: Track }>
+  index: number
+  shuffleActive: boolean
+  repeatMode: string
+}
+
 // Custom APIs for renderer
 const api = {
   /**
@@ -92,10 +101,48 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.GET_PLAYLIST_TRACKS, playlistId),
 
   /**
-   * Load a playlist's tracks into the queue for playback.
+   * Load a playlist's tracks into the queue for playback (FULL REPLACE).
    */
   loadPlaylistIntoQueue: (playlistId: string): Promise<Track[]> =>
     ipcRenderer.invoke('load-playlist-into-queue', playlistId),
+
+  /**
+   * Append a playlist's tracks to the end of the current queue (APPEND).
+   */
+  addPlaylistToQueue: (playlistId: string): Promise<Array<{ queueId: string; track: Track }>> =>
+    ipcRenderer.invoke('add-playlist-to-queue', playlistId),
+
+  // ── Queue Management ──
+
+  /**
+   * Get the current queue state.
+   */
+  getQueue: (): Promise<QueueState> =>
+    ipcRenderer.invoke(IPC_CHANNELS.GET_QUEUE),
+
+  /**
+   * Add one or more tracks to the end of the queue.
+   */
+  addToQueue: (tracks: Track | Track[]): Promise<Array<{ queueId: string; track: Track }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.ADD_TO_QUEUE, tracks),
+
+  /**
+   * Remove a track from the queue by its index.
+   */
+  removeFromQueue: (index: number): Promise<Array<{ queueId: string; track: Track }>> =>
+    ipcRenderer.invoke(IPC_CHANNELS.REMOVE_FROM_QUEUE, index),
+
+  /**
+   * Toggle shuffle on/off. Pass a boolean to set explicitly, omit to toggle.
+   */
+  setShuffle: (active?: boolean): Promise<{ shuffleActive: boolean; list: Array<{ queueId: string; track: Track }>; index: number }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SET_SHUFFLE, active),
+
+  /**
+   * Set repeat mode: 'none' | 'all' | 'one'
+   */
+  setRepeat: (mode: string): Promise<string> =>
+    ipcRenderer.invoke(IPC_CHANNELS.SET_REPEAT, mode),
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

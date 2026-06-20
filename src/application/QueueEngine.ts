@@ -15,6 +15,8 @@ export interface QueueEngineState {
   index: number
   history: string[]
   shuffleActive: boolean
+  shuffleOrder: number[]  // Fisher-Yates shuffled indices
+  shufflePos: number      // current position in shuffle order
   repeatMode: RepeatMode
 }
 
@@ -26,6 +28,8 @@ const state: QueueEngineState = {
   index: -1,
   history: [],
   shuffleActive: false,
+  shuffleOrder: [],
+  shufflePos: 0,
   repeatMode: 'all',
 }
 
@@ -39,20 +43,121 @@ function wrapTrack(track: Track): QueueTrack {
   return { queueId: nextQueueId(), track }
 }
 
+/**
+ * Fisher-Yates shuffle of an array of indices.
+ * Returns a new array shuffled in place.
+ */
+function fisherYatesShuffle(arr: number[]): number[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
+
+/**
+ * Build a fresh shuffle order for the remaining portion of the queue
+ * starting from the current index.
+ */
+function buildShuffleOrder(): void {
+  if (state.list.length === 0) {
+    state.shuffleOrder = []
+    state.shufflePos = 0
+    return
+  }
+
+  // Start after current index — remaining tracks
+  const remaining: number[] = []
+  for (let i = state.index + 1; i < state.list.length; i++) {
+    remaining.push(i)
+  }
+  // Only shuffle if there are tracks beyond current
+  if (remaining.length > 0) {
+    state.shuffleOrder = fisherYatesShuffle(remaining)
+    state.shufflePos = 0
+  } else {
+    state.shuffleOrder = []
+    state.shufflePos = 0
+  }
+}
+
 // ── Core Methods ──
 
 function clear(): void {
   state.list = []
   state.index = -1
   state.history = []
+  state.shuffleOrder = []
+  state.shufflePos = 0
 }
 
 function setQueue(tracks: Track[], startIndex: number): void {
   state.list = tracks.map(wrapTrack)
   state.index = startIndex >= 0 && startIndex < state.list.length ? startIndex : 0
   state.history = []
-  // Reset to 'all' so the queue loops by default (infinite play)
   state.repeatMode = 'all'
+  buildShuffleOrder()
+}
+
+/**
+ * Append tracks to the end of the queue.
+ * Does NOT change the current playback index.
+ */
+function appendTracks(tracks: Track[]): void {
+  if (tracks.length === 0) return
+  const wrapped = tracks.map(wrapTrack)
+  state.list.push(...wrapped)
+  // If shuffle is active, extend shuffle order with a shuffled block of new indices
+  if (state.shuffleActive && state.list.length > 0) {
+    const startIdx = state.list.length - wrapped.length
+    const newIndices: number[] = []
+    for (let i = startIdx; i < state.list.length; i++) {
+      newIndices.push(i)
+    }
+    state.shuffleOrder.push(...fisherYatesShuffle(newIndices))
+  }
+}
+
+/**
+ * Remove a track from the queue by index.
+ * Adjusts current index and shuffle state accordingly.
+ */
+function removeTrack(index: number): void {
+  if (index < 0 || index >= state.list.length) return
+
+  const wasCurrent = index === state.index
+
+  // Remove from list
+  state.list.splice(index, 1)
+
+  // Adjust shuffle order
+  state.shuffleOrder = state.shuffleOrder
+    .filter(i => i !== index)
+    .map(i => i > index ? i - 1 : i)
+
+  // Adjust current index
+  if (wasCurrent) {
+    // If we removed the current track, stay at same logical position
+    // (the next track slides into this index)
+    if (state.list.length === 0) {
+      state.index = -1
+    } else if (state.index >= state.list.length) {
+      state.index = state.list.length - 1
+    }
+  } else if (index < state.index) {
+    state.index--
+  }
+}
+
+/**
+ * Get a shallow copy of the current queue list (for UI rendering).
+ */
+function getList(): QueueTrack[] {
+  return [...state.list]
+}
+
+function getCurrentIndex(): number {
+  return state.index
 }
 
 function next(): QueueTrack | null {
@@ -70,9 +175,23 @@ function next(): QueueTrack | null {
   }
 
   if (state.shuffleActive) {
-    const nextIndex = Math.floor(Math.random() * state.list.length)
-    state.index = nextIndex
-    return state.list[nextIndex]
+    // Advance through pre-built Fisher-Yates shuffle order
+    if (state.shufflePos < state.shuffleOrder.length) {
+      state.index = state.shuffleOrder[state.shufflePos]
+      state.shufflePos++
+      return state.list[state.index]
+    }
+    // End of shuffle order
+    if (state.repeatMode === 'all') {
+      // Re-shuffle and restart
+      buildShuffleOrder()
+      state.index = state.shuffleOrder[0] ?? 0
+      state.shufflePos = 1
+      return state.list[state.index] ?? null
+    }
+    // No repeat — stop
+    state.index = state.list.length
+    return null
   }
 
   if (state.index < state.list.length - 1) {
@@ -87,7 +206,7 @@ function next(): QueueTrack | null {
   }
 
   // 'NONE' — stop at end
-  state.index = state.list.length // beyond last
+  state.index = state.list.length
   return null
 }
 
@@ -132,6 +251,11 @@ function reorder(fromIndex: number, toIndex: number): void {
   } else if (fromIndex > state.index && toIndex <= state.index) {
     state.index++
   }
+
+  // Rebuild shuffle order since indices changed
+  if (state.shuffleActive) {
+    buildShuffleOrder()
+  }
 }
 
 function getCurrentTrack(): Track | null {
@@ -147,12 +271,13 @@ function peekNext(): Track | null {
   }
 
   if (state.shuffleActive) {
-    // Pick a random track different from current
-    let idx: number
-    do {
-      idx = Math.floor(Math.random() * state.list.length)
-    } while (idx === state.index && state.list.length > 1)
-    return state.list[idx]?.track ?? null
+    if (state.shufflePos < state.shuffleOrder.length) {
+      return state.list[state.shuffleOrder[state.shufflePos]]?.track ?? null
+    }
+    if (state.repeatMode === 'all') {
+      return state.list[0]?.track ?? null // will reshuffle
+    }
+    return null
   }
 
   const nextIdx = state.index + 1
@@ -165,10 +290,6 @@ function peekNext(): Track | null {
   }
 
   return null
-}
-
-function getCurrentIndex(): number {
-  return state.index
 }
 
 function getRepeatMode(): RepeatMode {
@@ -184,11 +305,23 @@ function isShuffleActive(): boolean {
 }
 
 function setShuffleActive(active: boolean): void {
+  if (state.shuffleActive === active) return
   state.shuffleActive = active
+  if (active) {
+    buildShuffleOrder()
+  } else {
+    state.shuffleOrder = []
+    state.shufflePos = 0
+  }
+}
+
+function toggleShuffle(): boolean {
+  setShuffleActive(!state.shuffleActive)
+  return state.shuffleActive
 }
 
 function getStateForTest(): QueueEngineState {
-  return { ...state, list: [...state.list], history: [...state.history] }
+  return { ...state, list: [...state.list], history: [...state.history], shuffleOrder: [...state.shuffleOrder] }
 }
 
 // ── Exported Singleton ──
@@ -196,6 +329,9 @@ function getStateForTest(): QueueEngineState {
 export const QueueEngine = {
   clear,
   setQueue,
+  appendTracks,
+  removeTrack,
+  getList,
   next,
   previous,
   reorder,
@@ -206,6 +342,7 @@ export const QueueEngine = {
   setRepeatMode,
   isShuffleActive,
   setShuffleActive,
+  toggleShuffle,
   /** Exposed for testing only */
   _getState: getStateForTest,
 }

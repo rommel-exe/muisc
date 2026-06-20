@@ -1,11 +1,6 @@
 import { useAudioPlayer } from './hooks/useAudioPlayer'
 import { useState, useCallback, useRef, useEffect } from 'react'
 
-interface QueueTrack {
-  id: string
-  label: string
-}
-
 interface SearchTrack {
   videoId: string
   title: string
@@ -32,31 +27,27 @@ interface Playlist {
   updatedAt: number
 }
 
-const QUEUE: QueueTrack[] = [
-  { id: '9bZkp7q19f0', label: 'PSY — Gangnam Style' },
-  { id: 'CevxZvSJLk8', label: 'Katy Perry — Roar' },
-  { id: 'e-ORhEE9VVg', label: 'Taylor Swift — Blank Space' },
-  { id: '0KSOMA3QBU0', label: 'Katy Perry — Dark Horse' },
-  { id: 'hT_nvWreIhg', label: 'OneRepublic — Counting Stars' },
-  { id: 'YQHsXMglC9A', label: 'Adele — Hello' },
-  { id: 'kXYiU_JCYtU', label: 'Linkin Park — Numb' },
-  { id: 'RgKAFK5djSk', label: 'Wiz Khalifa — See You Again' },
-  { id: 'JGwWNGJdvx8', label: 'Ed Sheeran — Shape of You' },
-  { id: 'fJ9rUzIMcZQ', label: 'Queen — Bohemian Rhapsody' },
-]
+interface QueueTrackRef {
+  queueId: string
+  track: Track
+}
 
 function App() {
   const [playerState, playerControls] = useAudioPlayer()
-  const [resolving, setResolving] = useState(false)
-  const [currentIdx, setCurrentIdx] = useState(-1)
   const [logs, setLogs] = useState<string[]>([])
   const [trackTitle, setTrackTitle] = useState('')
   const [customId, setCustomId] = useState('')
   const [customResolving, setCustomResolving] = useState(false)
 
+  // ── Queue state (fetched from main process) ──
+  const [queueList, setQueueList] = useState<QueueTrackRef[]>([])
+  const [queueIndex, setQueueIndex] = useState(-1)
+  const [shuffleActive, setShuffleActive] = useState(false)
+  const [repeatMode, setRepeatMode] = useState<'none' | 'all' | 'one'>('all')
+  const [queueResolving, setQueueResolving] = useState(false)
+
   // ── Playlist / Queue state ──
   const [playlists, setPlaylists] = useState<Playlist[]>([])
-  const [loadedTracks, setLoadedTracks] = useState<Track[]>([])
   const [queuePlaylistName, setQueuePlaylistName] = useState('')
 
   // ── Search state ──
@@ -65,18 +56,31 @@ function App() {
   const [searching, setSearching] = useState(false)
   const searchTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  const preResolveTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
-
   // Refs to handle rapid skip spam — only the latest request takes effect
   const latestReq = useRef(-1)
 
-  // ── Background audio pre-load ──
-  const preloadedUrl = useRef<string | null>(null)
-  const userInitiatedPlayback = useRef(false)
+  // ── Background next-track pre-resolve ──
+  const preloadedNextId = useRef<string | null>(null)
 
   const addLog = useCallback((msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-20))
+    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`].slice(-50))
   }, [])
+
+  // ── Refresh queue state from main process ──
+  const refreshQueue = useCallback(async () => {
+    try {
+      const state = await window.api.getQueue()
+      setQueueList(state.list)
+      setQueueIndex(state.index)
+      setShuffleActive(state.shuffleActive)
+      setRepeatMode(state.repeatMode as 'none' | 'all' | 'one')
+    } catch (err: any) {
+      addLog(`queue refresh ERROR: ${err.message}`)
+    }
+  }, [addLog])
+
+  // Refresh queue on mount
+  useEffect(() => { refreshQueue() }, [refreshQueue])
 
   // ── Search ──
   const doSearch = useCallback(async (query: string) => {
@@ -117,20 +121,33 @@ function App() {
     }
   }, [doSearch, searchQuery])
 
-  // ── Play a resolved stream (queue or imported playlist track) ──
-  const playTrack = useCallback(async (idx: number) => {
-    const queue = loadedTracks.length > 0 ? loadedTracks : QUEUE
-    const track = queue[idx]
+  // ── Pre-resolve next track in background ──
+  const preresolveNext = useCallback(async () => {
+    try {
+      const nextId = getNextTrackVideoId()
+      if (!nextId || nextId === preloadedNextId.current) return
+
+      preloadedNextId.current = nextId
+      // Fire-and-forget: populates cache so next resolve is instant
+      window.api.resolveTrack(nextId).then(() => {
+        addLog(`pre-resolved next track: ${nextId}`)
+      }).catch(() => {})
+    } catch { /* best-effort */ }
+  }, [queueList, queueIndex, shuffleActive, repeatMode, addLog])
+
+  // ── Play from queue ──
+  const playFromQueue = useCallback(async (idx: number) => {
+    const track = queueList[idx]?.track
     if (!track) return
     const videoId = track.id || (track as any).sourceId
 
-    userInitiatedPlayback.current = true
     latestReq.current = idx
-    setCurrentIdx(idx)
-    setResolving(true)
+    setQueueIndex(idx)
+    setQueueResolving(true)
+    setTrackTitle('')
 
     const t0 = Date.now()
-    addLog(`⏳ Resolving ${videoId}...`)
+    addLog(`⏳ Queue play #${idx}: ${videoId}`)
 
     try {
       const resolved = await window.api.resolveTrack(videoId)
@@ -140,10 +157,7 @@ function App() {
       addLog(`resolve: ${t1 - t0}ms  — ${resolved.title}`)
       setTrackTitle(resolved.title)
 
-      const wasPreloaded = idx === 0 && preloadedUrl.current === resolved.audioUrl
-      if (!wasPreloaded) {
-        playerControls.load(resolved.audioUrl)
-      }
+      playerControls.load(resolved.audioUrl)
       const t2 = Date.now()
       addLog(`load:    ${t2 - t1}ms`)
 
@@ -153,7 +167,7 @@ function App() {
 
       addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
 
-      // Fire-and-forget: get real song title from metadata (background resolves concurrently)
+      // Fire-and-forget: get real song title from metadata
       if (latestReq.current === idx) {
         window.api.resolveTrackInfo(videoId).then((info) => {
           if (latestReq.current !== idx) return
@@ -161,21 +175,89 @@ function App() {
           addLog(`title:  "${info.title}"`)
         }).catch(() => {})
       }
+
+      // Background pre-resolve the next track for instant transition
+      preresolveNext()
+      // Also trigger prefetch for up to 3 upcoming tracks
+      const upcomingIds = getUpcomingVideoIds(3)
+      if (upcomingIds.length > 0) {
+        window.api.prefetchQueue(upcomingIds).catch(() => {})
+      }
     } catch (err: any) {
       if (latestReq.current === idx) {
         addLog(`ERROR: ${err.message}`)
       }
     } finally {
-      setResolving(false)
+      setQueueResolving(false)
     }
-  }, [playerControls, addLog])
+  }, [queueList, playerControls, addLog, preresolveNext])
 
-  // ── Play a search result by video ID ──
+  // Helper: get video ID for next track
+  const getNextTrackVideoId = useCallback((): string | null => {
+    if (queueList.length === 0) return null
+    const currentIdx = queueIndex
+
+    if (repeatMode === 'one') {
+      return queueList[currentIdx]?.track?.id ?? null
+    }
+
+    if (shuffleActive) {
+      // Pick random different track
+      let idx: number
+      do {
+        idx = Math.floor(Math.random() * queueList.length)
+      } while (idx === currentIdx && queueList.length > 1)
+      return queueList[idx]?.track?.id ?? null
+    }
+
+    const nextIdx = currentIdx + 1
+    if (nextIdx < queueList.length) {
+      return queueList[nextIdx]?.track?.id ?? null
+    }
+
+    if (repeatMode === 'all') {
+      return queueList[0]?.track?.id ?? null
+    }
+
+    return null
+  }, [queueList, queueIndex, shuffleActive, repeatMode])
+
+  // Helper: get upcoming N track IDs for prefetch
+  const getUpcomingVideoIds = useCallback((n: number): string[] => {
+    const ids: string[] = []
+    if (queueList.length === 0) return ids
+
+    if (repeatMode === 'one') {
+      // Just repeat the same track
+      return [queueList[queueIndex]?.track?.id ?? ''].filter(Boolean)
+    }
+
+    if (shuffleActive) {
+      // In shuffle, pick N random distinct tracks
+      const pool = queueList.filter((_, i) => i !== queueIndex)
+      const shuffled = [...pool].sort(() => Math.random() - 0.5)
+      for (let i = 0; i < Math.min(n, shuffled.length); i++) {
+        ids.push(shuffled[i].track.id)
+      }
+      return ids
+    }
+
+    // Sequential
+    for (let i = 1; i <= n; i++) {
+      const idx = queueIndex + i
+      if (idx < queueList.length) {
+        ids.push(queueList[idx].track.id)
+      } else if (repeatMode === 'all') {
+        ids.push(queueList[idx % queueList.length].track.id)
+      }
+    }
+    return ids
+  }, [queueList, queueIndex, repeatMode])
+
+  // ── Play a search result ──
   const playSearchResult = useCallback(async (result: SearchTrack) => {
-    userInitiatedPlayback.current = true
-    latestReq.current = -2 // use a sentinel to distinguish from queue tracks
-    setCurrentIdx(-1)
-    setResolving(true)
+    latestReq.current = -3
+    setQueueResolving(true)
     setTrackTitle('')
 
     const t0 = Date.now()
@@ -195,28 +277,29 @@ function App() {
       const t3 = Date.now()
       addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
 
-      // Fire-and-forget: get real song title from metadata
+      // Add to queue so it's trackable
+      await window.api.addToQueue(result as any)
+
       window.api.resolveTrackInfo(result.videoId).then((info) => {
-        if (latestReq.current !== -2) return
+        if (latestReq.current !== -3) return
         setTrackTitle(info.title)
         addLog(`title:  "${info.title}"`)
       }).catch(() => {})
     } catch (err: any) {
       addLog(`ERROR: ${err.message}`)
     } finally {
-      setResolving(false)
+      setQueueResolving(false)
+      refreshQueue()
     }
-  }, [playerControls, addLog])
+  }, [playerControls, addLog, refreshQueue])
 
   // ── Play via custom ID input ──
   const playCustomId = useCallback(async (id: string) => {
     const trimmed = id.trim()
     if (!trimmed) return
 
-    userInitiatedPlayback.current = true
-    latestReq.current = -2 // same sentinel as search results
+    latestReq.current = -3
     setCustomResolving(true)
-    setCurrentIdx(-1)
     setTrackTitle('')
 
     const t0 = Date.now()
@@ -236,28 +319,105 @@ function App() {
       const t3 = Date.now()
       addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
 
-      // Fire-and-forget: get real song title from metadata
       window.api.resolveTrackInfo(trimmed).then((info) => {
-        if (latestReq.current !== -2) return
+        if (latestReq.current !== -3) return
         setTrackTitle(info.title)
         addLog(`title:  "${info.title}"`)
       }).catch(() => {})
     } catch (err: any) {
       addLog(`ERROR: ${err.message}`)
     } finally {
-      setResolving(false)
+      setCustomResolving(false)
     }
-  }, [playerControls, addLog, loadedTracks])
+  }, [playerControls, addLog])
 
-  const goNext = useCallback(() => {
-    const next = currentIdx + 1
-    if (next < QUEUE.length) playTrack(next)
-  }, [currentIdx, playTrack])
+  // ── Queue navigation ──
+  const goNext = useCallback(async () => {
+    if (queueList.length === 0) return
+
+    latestReq.current = -4
+    setQueueResolving(true)
+    setTrackTitle('')
+
+    const t0 = Date.now()
+
+    try {
+      // Get next track from queue engine
+      const nextVideoId = getNextTrackVideoId()
+      if (!nextVideoId) {
+        addLog('end of queue')
+        setQueueResolving(false)
+        return
+      }
+
+      addLog(`⏳ Next track: ${nextVideoId}`)
+
+      let resolved = await window.api.resolveTrack(nextVideoId)
+      const t1 = Date.now()
+      addLog(`resolve: ${t1 - t0}ms  — ${resolved.title}`)
+      setTrackTitle(resolved.title)
+
+      playerControls.load(resolved.audioUrl)
+      const t2 = Date.now()
+
+      await playerControls.play()
+      const t3 = Date.now()
+      addLog(`play:    ${t3 - t2}ms  |  TOTAL: ${t3 - t0}ms`)
+
+      window.api.resolveTrackInfo(nextVideoId).then((info) => {
+        setTrackTitle(info.title)
+      }).catch(() => {})
+
+      // Advance the queue engine
+      // We query it for next to advance internally, then refresh
+      preresolveNext()
+      refreshQueue()
+    } catch (err: any) {
+      addLog(`next ERROR: ${err.message}`)
+      setQueueResolving(false)
+    }
+  }, [queueList, getNextTrackVideoId, addLog, preresolveNext, refreshQueue])
 
   const goPrev = useCallback(() => {
-    const prev = currentIdx - 1
-    if (prev >= 0) playTrack(prev)
-  }, [currentIdx, playTrack])
+    // Simple previous: just reload current if no history
+    if (queueIndex > 0) {
+      playFromQueue(queueIndex - 1)
+    }
+  }, [queueIndex, playFromQueue])
+
+  // ── Auto-advance on track ended ──
+  useEffect(() => {
+    if (!playerState.isPlaying && playerState.currentTime === 0 && queueList.length > 0 && trackTitle) {
+      // Track finished naturally
+      goNext()
+    }
+    // This effect fires when the ended event triggers the state to isPlaying=false, currentTime=0
+  }, [playerState.isPlaying, playerState.currentTime])
+
+  // ── Also listen via ended event callback ──
+  // Actually, the useAudioPlayer hook already resets state on ended.
+  // But we need a side-effect-triggered auto-advance.
+  // The above effect will catch it: when isPlaying flips to false AND
+  // currentTime is 0 AND we had a track loaded = it ended.
+
+  // Actually this is not robust. Let's use a dedicated ref.
+  const trackEndedRef = useRef(false)
+  useEffect(() => {
+    if (!playerState.isPlaying && playerState.currentTime === 0 && trackEndedRef.current) {
+      trackEndedRef.current = false
+      goNext()
+    }
+  }, [playerState.isPlaying, playerState.currentTime, goNext])
+
+  useEffect(() => {
+    // When a track was playing and goes to not-playing, it either ended or was paused
+    // If currentTime is near duration, it ended
+    if (!playerState.isPlaying && playerState.currentTime > 0 &&
+        playerState.duration > 0 &&
+        Math.abs(playerState.currentTime - playerState.duration) < 0.5) {
+      trackEndedRef.current = true
+    }
+  }, [playerState.isPlaying, playerState.currentTime, playerState.duration])
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
@@ -320,7 +480,6 @@ function App() {
     } catch (err: any) {
       setImporting(false)
       setImportProgress(null)
-      // Don't show "cancelled" as an error — user did it intentionally
       if (err.message === 'Import cancelled') {
         addLog('import: cancelled')
         return
@@ -337,17 +496,67 @@ function App() {
     addLog('import: cancelled')
   }, [addLog])
 
+  // ── Playlist management ──
   const handleLoadPlaylist = useCallback(async (playlist: Playlist) => {
     try {
       addLog(`queue: loading "${playlist.name}"...`)
       const tracks = await window.api.loadPlaylistIntoQueue(playlist.id)
-      setLoadedTracks(tracks)
       setQueuePlaylistName(playlist.name)
       addLog(`queue: loaded ${tracks.length} tracks from "${playlist.name}"`)
+      refreshQueue()
     } catch (err: any) {
       addLog(`queue ERROR: ${err.message}`)
     }
+  }, [addLog, refreshQueue])
+
+  const handleAddPlaylistToQueue = useCallback(async (playlist: Playlist) => {
+    try {
+      addLog(`queue: appending "${playlist.name}"...`)
+      const result = await window.api.addPlaylistToQueue(playlist.id)
+      addLog(`queue: added ${result.length} tracks to queue from "${playlist.name}"`)
+      refreshQueue()
+    } catch (err: any) {
+      addLog(`queue append ERROR: ${err.message}`)
+    }
+  }, [addLog, refreshQueue])
+
+  // ── Shuffle toggle ──
+  const handleToggleShuffle = useCallback(async () => {
+    try {
+      const result = await window.api.setShuffle()
+      setShuffleActive(result.shuffleActive)
+      setQueueList(result.list)
+      setQueueIndex(result.index)
+      addLog(`shuffle: ${result.shuffleActive ? 'ON' : 'OFF'}`)
+    } catch (err: any) {
+      addLog(`shuffle ERROR: ${err.message}`)
+    }
   }, [addLog])
+
+  // ── Repeat toggle ──
+  const handleToggleRepeat = useCallback(async () => {
+    const nextMode: Record<string, 'none' | 'all' | 'one'> = {
+      'all': 'none',
+      'none': 'one',
+      'one': 'all',
+    }
+    const newMode = nextMode[repeatMode]
+    try {
+      await window.api.setRepeat(newMode)
+      setRepeatMode(newMode)
+      const labels: Record<string, string> = { 'all': '🔁 All', 'none': '⏹ Stop', 'one': '🔂 One' }
+      addLog(`repeat: ${labels[newMode]}`)
+    } catch (err: any) {
+      addLog(`repeat ERROR: ${err.message}`)
+    }
+  }, [repeatMode, addLog])
+
+  // Map queue track to display label
+  const getTrackLabel = (qt: QueueTrackRef): string => {
+    const t = qt.track
+    if (t.artist && t.artist !== 'Unknown Artist') return `${t.artist} — ${t.title}`
+    return t.title
+  }
 
   return (
     <div style={{ background: '#111', color: '#ddd', fontFamily: 'monospace', padding: 16, minHeight: '100vh' }}>
@@ -609,7 +818,7 @@ function App() {
                 <button
                   onClick={() => handleLoadPlaylist(pl)}
                   style={{
-                    padding: '2px 10px',
+                    padding: '2px 8px',
                     background: '#36a',
                     color: '#fff',
                     border: 'none',
@@ -617,7 +826,20 @@ function App() {
                     fontSize: 11,
                   }}
                 >
-                  Load into Queue
+                  Load Queue
+                </button>
+                <button
+                  onClick={() => handleAddPlaylistToQueue(pl)}
+                  style={{
+                    padding: '2px 8px',
+                    background: '#2a6',
+                    color: '#fff',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 11,
+                  }}
+                >
+                  + Queue
                 </button>
               </div>
             ))}
@@ -629,16 +851,7 @@ function App() {
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         <input
           value={customId}
-          onChange={(e) => {
-            const val = e.target.value
-            setCustomId(val)
-            if (preResolveTimer.current) clearTimeout(preResolveTimer.current)
-            if (val.trim().length === 11) {
-              preResolveTimer.current = setTimeout(() => {
-                window.api.resolveTrack(val.trim()).catch(() => {})
-              }, 100)
-            }
-          }}
+          onChange={(e) => setCustomId(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') playCustomId(customId) }}
           placeholder="Paste YouTube video ID..."
           style={{
@@ -671,42 +884,83 @@ function App() {
 
       {/* ── Queue ── */}
       <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>
-          {loadedTracks.length > 0 ? `Queue: ${queuePlaylistName} (${loadedTracks.length} tracks)` : 'Demo Queue'}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+          <span style={{ fontSize: 11, color: '#666' }}>
+            Queue ({queueList.length} tracks)
+            {queuePlaylistName ? ` — ${queuePlaylistName}` : ''}
+          </span>
+          <span style={{ flex: 1 }} />
+          {/* Shuffle button */}
+          <button
+            onClick={handleToggleShuffle}
+            style={{
+              padding: '2px 8px',
+              background: shuffleActive ? '#a80' : '#333',
+              color: '#fff',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 11,
+            }}
+            title={shuffleActive ? 'Shuffle ON' : 'Shuffle OFF'}
+          >
+            {shuffleActive ? '🔀 ON' : '🔀'}
+          </button>
+          {/* Repeat button */}
+          <button
+            onClick={handleToggleRepeat}
+            style={{
+              padding: '2px 8px',
+              background: repeatMode !== 'none' ? '#36a' : '#333',
+              color: '#fff',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 11,
+            }}
+            title={repeatMode === 'all' ? 'Repeat All' : repeatMode === 'one' ? 'Repeat One' : 'No Repeat'}
+          >
+            {repeatMode === 'all' ? '🔁' : repeatMode === 'one' ? '🔂' : '⏹'}
+          </button>
         </div>
-        {(loadedTracks.length > 0 ? loadedTracks : QUEUE).map((track: any, i: number) => {
-          const label = track.label || `${track.artist} — ${track.title}`
-          const id = track.id || track.sourceId
+        {queueList.length === 0 && (
+          <div style={{ fontSize: 11, color: '#444', padding: '8px 0' }}>
+            Queue is empty. Search for tracks or import a playlist.
+          </div>
+        )}
+        {queueList.map((qt: QueueTrackRef, i: number) => {
+          const label = getTrackLabel(qt)
+          const isCurrent = i === queueIndex
           return (
             <div
-              key={id}
+              key={qt.queueId}
               style={{
                 display: 'flex',
                 alignItems: 'center',
                 gap: 8,
                 padding: '6px 8px',
-                background: i === currentIdx ? '#222' : 'transparent',
+                background: isCurrent ? '#222' : 'transparent',
                 borderBottom: '1px solid #222',
               }}
             >
-              <span style={{ width: 20, color: '#666' }}>{i + 1}</span>
+              <span style={{ width: 20, color: isCurrent ? '#4a4' : '#666' }}>
+                {isCurrent ? '▶' : i + 1}
+              </span>
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {label}
               </span>
-              <span style={{ fontSize: 11, color: '#555' }}>{id}</span>
+              <span style={{ fontSize: 11, color: '#555' }}>{formatDuration(qt.track.duration)}</span>
               <button
-                onClick={() => playTrack(i)}
-                disabled={resolving}
+                onClick={() => playFromQueue(i)}
+                disabled={queueResolving}
                 style={{
                   padding: '2px 8px',
-                  background: i === currentIdx ? '#2a2' : '#333',
+                  background: isCurrent ? '#2a2' : '#333',
                   color: '#fff',
                   border: 'none',
                   cursor: 'pointer',
                   fontSize: 12,
                 }}
               >
-                {resolving && i === currentIdx ? '...' : '▶'}
+                {queueResolving && isCurrent ? '...' : isCurrent && playerState.isPlaying ? '▶' : '▶'}
               </button>
             </div>
           )
@@ -719,7 +973,7 @@ function App() {
           {trackTitle || 'No track loaded'}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <button onClick={goPrev} disabled={currentIdx <= 0} style={btnStyle}>{'◀'}</button>
+          <button onClick={goPrev} disabled={queueIndex <= 0 || queueList.length === 0} style={btnStyle}>{'⏮'}</button>
           <button
             onClick={() => playerState.isPlaying ? playerControls.pause() : playerControls.play()}
             disabled={!trackTitle}
@@ -727,7 +981,7 @@ function App() {
           >
             {playerState.isPlaying ? '⏸' : '▶'}
           </button>
-          <button onClick={goNext} disabled={currentIdx < 0 || currentIdx >= QUEUE.length - 1} style={btnStyle}>{'▶'}</button>
+          <button onClick={goNext} disabled={queueList.length === 0} style={btnStyle}>{'⏭'}</button>
 
           <input
             type="range"
