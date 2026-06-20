@@ -112,13 +112,7 @@ app.on('child-process-gone', (event, details) => {
   }
 })
 
-// Suppress quit-on-crash. The renderer keeps running fine without GPU
-// compositing for this test UI. The user can kill the process by pressing
-// Ctrl+C in the terminal that ran `npm run dev`.
-app.on('before-quit', (event) => {
-  console.warn('[App] before-quit — preventing cascade')
-  event.preventDefault()
-})
+// Normal quit — the child-process-gone handler already prevents crash cascades.
 
 // Clean shutdown on explicit quit
 app.on('will-quit', async () => {
