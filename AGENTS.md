@@ -130,6 +130,14 @@ Don't skip phases. Each builds on the previous:
 | **4: UI** | ⬜ Not started | Wireframes exist as design reference but **not wired** into App.tsx. Bare monospace debug UI in production |
 | **5: Polish** | 🟡 Partial | Spotify import (TOTP auth, 332/332 match rate), CI/CD release workflow, auto-update config. **Missing**: MediaSession API, tray icon, custom app icon, code signing |
 
+## Dev Server
+
+- A persistent `npm run dev` instance is running on PID 46911 (started 2026-06-20). **Never kill, restart, or touch this server.**
+- Logs live in `/tmp/muisc-dev.log`.
+- If a new dev server is needed for testing/debugging, start a **separate instance** using a different port or a separate clone/worktree.
+- When starting fresh dev servers, always check for existing ones first: `lsof -ti:5173`, `lsof -ti:18938`.
+- Never run `pkill`, `kill`, or any command that could touch the persistent dev server or its proxy (port 18938).
+
 ## Git Workflow
 
 - **Commit after every change.** Each file edit = one commit. No batching. No "one more thing" before committing.
