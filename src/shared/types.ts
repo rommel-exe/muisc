@@ -45,6 +45,11 @@ export interface QueueItem {
   position: number
 }
 
+export interface QueueTrackRef {
+  queueId: string
+  track: Track
+}
+
 export type RepeatMode = 'none' | 'all' | 'one'
 
 export type PlaybackStateType = 'IDLE' | 'BUFFERING' | 'PLAYING' | 'PAUSED' | 'ERRORED'
