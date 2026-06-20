@@ -343,23 +343,19 @@ function App() {
     playFromQueue(result.index)
   }, [addLog, playFromQueue])
 
-  // ── Auto-advance on track ended (via explicit ended flag) ──
+  // ── Auto-advance on track ended (fires directly from DOM ended event) ──
   const isAdvancing = useRef(false)
 
-  const detectTrackEnded = useCallback(() => {
-    if (isAdvancing.current) return
-    if (playerState.ended && currentVideoIdRef.current) {
+  useEffect(() => {
+    playerControls.setOnTrackEnd(() => {
+      if (isAdvancing.current) return
       isAdvancing.current = true
       addLog('auto-advance: track ended')
       goNext().finally(() => {
         isAdvancing.current = false
       })
-    }
-  }, [playerState.ended, addLog, goNext])
-
-  useEffect(() => {
-    detectTrackEnded()
-  }, [detectTrackEnded])
+    })
+  }, [playerControls, addLog, goNext])
 
   const formatTime = (s: number) =>
     `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`

@@ -23,6 +23,8 @@ export interface AudioPlayerControls {
   pause: () => void
   seek: (time: number) => void
   setVolume: (volume: number) => void
+  /** Register a callback fired directly from the DOM ended event (not through React state) */
+  setOnTrackEnd: (cb: () => void) => void
 }
 
 const INITIAL_VOLUME = 0.8
@@ -37,6 +39,10 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   const elA = useRef<HTMLAudioElement | null>(null)
   const elB = useRef<HTMLAudioElement | null>(null)
   const activeIsA = useRef(true) // true = elA is active, false = elB is active
+  /** Ref-based callback fired directly from the DOM ended event — no React state round-trip */
+  const onTrackEndRef = useRef<(() => void) | null>(null)
+  /** Guard ref to prevent duplicate track-end triggers (both ended event + polling fallback) */
+  const trackEndedFiredRef = useRef(false)
 
   const [state, setState] = useState<AudioPlayerState>({
     isPlaying: false,
@@ -82,7 +88,14 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       const el = activeIsA.current ? elA.current : elB.current
       setState((prev) => ({ ...prev, error: el?.error?.message ?? 'Unknown error', loading: false, isPlaying: false }))
     }
-    const onEnded = () => setState((prev) => ({ ...prev, isPlaying: false, currentTime: 0, ended: true }))
+    const fireTrackEnd = () => {
+      if (trackEndedFiredRef.current) return
+      trackEndedFiredRef.current = true
+      setState((prev) => ({ ...prev, isPlaying: false, currentTime: 0, ended: true }))
+      onTrackEndRef.current?.()
+    }
+
+    const onEnded = () => fireTrackEnd()
     const onWaiting = () => setState((prev) => ({ ...prev, loading: true }))
     const onCanPlay = () => setState((prev) => ({ ...prev, loading: false }))
 
@@ -104,7 +117,20 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       el.addEventListener('loadstart', onStandbyLoadStart)
     }
 
+    // ── Polling fallback: detect track end via currentTime/duration ──
+    // YouTube proxy streams often don't fire the DOM ended event.
+    // Check every 500ms if the active element has reached its end.
+    const pollEnded = setInterval(() => {
+      const el = activeIsA.current ? elA.current : elB.current
+      if (!el || el.duration <= 0 || el.currentTime <= 0) return
+      // Use el.ended (set by the UA) OR currentTime >= duration as a catch-all
+      if (el.ended || el.currentTime >= el.duration - 0.5) {
+        fireTrackEnd()
+      }
+    }, 500)
+
     return () => {
+      clearInterval(pollEnded)
       for (const el of [a, b]) {
         el.removeEventListener('timeupdate', onTimeUpdate)
         el.removeEventListener('loadedmetadata', onLoadedMetadata)
@@ -142,6 +168,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const standby = getStandby()
     if (standby) { standby.pause(); standby.src = ''; standby.load() }
 
+    trackEndedFiredRef.current = false
     setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 
     el.src = url
@@ -181,6 +208,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // Swap the roles
     activeIsA.current = !activeIsA.current
 
+    trackEndedFiredRef.current = false
     setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 
     // Play the preloaded element
@@ -197,6 +225,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   const play = useCallback(async () => {
     const el = getActive()
     if (!el) return
+    trackEndedFiredRef.current = false
     setState((prev) => ({ ...prev, ended: false }))
     try { await el.play() } catch (err: any) { if (err.name !== 'AbortError') setState((prev) => ({ ...prev, error: err.message })) }
   }, [])
@@ -214,8 +243,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     setState((prev) => ({ ...prev, volume }))
   }, [])
 
+  const setOnTrackEnd = useCallback((cb: () => void) => {
+    onTrackEndRef.current = cb
+  }, [])
+
   return [
     state,
-    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume },
+    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume, setOnTrackEnd },
   ]
 }
