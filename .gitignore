@@ -39,6 +39,9 @@ yarn-error.log*
 # Deepwork / dev progress
 .slim/
 
+# Generated architecture and audit reports
+muisc-*-report.html
+
 # SQLite (keep schema, ignore data files)
 *.db
 *.db-journal
