@@ -36,7 +36,7 @@ export interface ApiBridge {
     repeatMode: string
   }>
   addToQueue(tracks: Track | Track[]): Promise<QueueTrackRef[]>
-  prefetchUpcoming(count: number): Promise<boolean>
+  prefetchQueue(upcomingVideoIds: string[]): Promise<boolean>
   setShuffle(active?: boolean): Promise<{
     shuffleActive: boolean
     list: QueueTrackRef[]
