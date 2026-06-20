@@ -16,6 +16,7 @@ export interface MediaEngineControls {
   playCustomId: (id: string) => Promise<void>
   toggleShuffle: () => Promise<void>
   toggleRepeat: (nextMode: RepeatMode) => Promise<void>
+  refreshState: () => Promise<void>
 }
 
 const INITIAL_ENGINE_STATE: MediaEngineState = {
@@ -118,6 +119,7 @@ export function useMediaEngine(logger?: (msg: string) => void): {
     playCustomId: (id) => engineRef.current!.playCustomId(id),
     toggleShuffle: () => engineRef.current!.toggleShuffle(),
     toggleRepeat: (m) => engineRef.current!.toggleRepeat(m),
+    refreshState: () => engineRef.current!.refreshState(),
   }), [])
 
   return { engineState, controls }

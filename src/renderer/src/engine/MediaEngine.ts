@@ -355,7 +355,7 @@ export class MediaEngine {
     }).catch(() => {})
   }
 
-  private async refreshState(): Promise<void> {
+  async refreshState(): Promise<void> {
     try {
       const q = await this.api.getQueue()
       this._state.queueList = q.list
