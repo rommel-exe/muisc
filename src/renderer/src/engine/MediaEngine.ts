@@ -273,6 +273,14 @@ export class MediaEngine {
     this.emit()
   }
 
+  clearTrack(): void {
+    this._state.currentTrack = null
+    this._state.state = 'idle'
+    this._state.currentTime = 0
+    this._state.error = null
+    this.emit()
+  }
+
   seek(time: number): void {
     this.audio.seek(time)
   }

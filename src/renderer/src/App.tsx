@@ -126,6 +126,7 @@ function App() {
     try {
       addLog(`queue: loading "${playlist.name}"...`)
       controls.pause()
+      controls.clearTrack()
       await window.api.loadPlaylistIntoQueue(playlist.id)
       setQueuePlaylistName(playlist.name)
       await controls.refreshState()

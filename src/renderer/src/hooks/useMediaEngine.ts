@@ -17,6 +17,7 @@ export interface MediaEngineControls {
   toggleShuffle: () => Promise<void>
   toggleRepeat: (nextMode: RepeatMode) => Promise<void>
   refreshState: () => Promise<void>
+  clearTrack: () => void
 }
 
 const INITIAL_ENGINE_STATE: MediaEngineState = {
@@ -72,7 +73,8 @@ export function useMediaEngine(logger?: (msg: string) => void): {
     setOnTrackEnd: (cb) => playerControls.setOnTrackEnd(cb),
     isNextReady: () => playerStateRef.current.isNextReady,
     isPlaying: () => playerStateRef.current.isPlaying,
-  }), [playerControls])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }), [])
 
   // Create engine on mount, tear down on unmount
   useEffect(() => {
@@ -106,6 +108,16 @@ export function useMediaEngine(logger?: (msg: string) => void): {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioBridge, apiBridge])
 
+  // Sync real-time audio properties (currentTime, duration) from useAudioPlayer
+  // These update on every timeupdate event (~4Hz), same as old direct playerState access
+  useEffect(() => {
+    setEngineState((prev) => {
+      // Only update if values actually changed to avoid unnecessary re-renders
+      if (prev.currentTime === playerState.currentTime && prev.duration === playerState.duration) return prev
+      return { ...prev, currentTime: playerState.currentTime, duration: playerState.duration }
+    })
+  }, [playerState.currentTime, playerState.duration])
+
   // Stable controls object — engine ref is always up to date
   const controls = useMemo<MediaEngineControls>(() => ({
     next: () => engineRef.current!.next(),
@@ -120,6 +132,7 @@ export function useMediaEngine(logger?: (msg: string) => void): {
     toggleShuffle: () => engineRef.current!.toggleShuffle(),
     toggleRepeat: (m) => engineRef.current!.toggleRepeat(m),
     refreshState: () => engineRef.current!.refreshState(),
+    clearTrack: () => engineRef.current!.clearTrack(),
   }), [])
 
   return { engineState, controls }
