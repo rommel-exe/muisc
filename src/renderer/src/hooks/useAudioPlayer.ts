@@ -91,6 +91,15 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const onError = () => {
       const el = activeIsA.current ? elA.current : elB.current
       const mediaError = el?.error
+      // ⚠️ mediaError can be null even when the 'error' event fires.
+      // This happens when a previous load failed, the 'error' event
+      // was queued in the event loop, but by the time this handler
+      // runs, a new src was set (clearing the element's error state).
+      // In that case el.error is null — the error is stale, ignore it.
+      if (!mediaError) {
+        console.warn(`[audio] onError suppressed — element was reloaded (src=${el?.src?.substring(0, 60)})`)
+        return
+      }
       let msg = mediaError?.message
       if (!msg && mediaError?.code) {
         const codes: Record<number, string> = {
@@ -99,14 +108,10 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
           3: 'Audio decode error',
           4: 'Audio format not supported',
         }
-        msg = codes[mediaError.code] ?? 'Unknown audio error'
+        msg = codes[mediaError.code] ?? `Unknown audio error (code=${mediaError.code})`
         console.warn(`[audio] onError code=${mediaError.code} src=${el?.src?.substring(0,60)}`)
-      } else if (mediaError?.code) {
-        console.warn(`[audio] onError code=${mediaError.code} msg=${msg?.substring(0,60)}`)
-      } else {
-        console.warn(`[audio] onError no code, src=${el?.src?.substring(0,60)}`)
       }
-      msg ??= 'Unknown audio error'
+      msg ??= `Unknown audio error (code=${mediaError?.code ?? 'none'})`
       errorRef.current = msg
       setState((prev) => ({ ...prev, error: msg, loading: false, isPlaying: false }))
     }
@@ -205,14 +210,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     try {
       await el.play()
     } catch (err: any) {
-      if (err.name === 'AbortError') {
-        // AbortError means play() was interrupted by another play()
-        // or load() call. Don't silently swallow — set the error so
-        // the engine doesn't think play succeeded.
-        errorRef.current = 'Play was interrupted (AbortError)'
-        setState((prev) => ({ ...prev, error: 'Play interrupted', isPlaying: false, loading: false }))
-        throw err
-      }
+      if (err.name === 'AbortError') return
       errorRef.current = err.message
       setState((prev) => ({ ...prev, error: err.message, isPlaying: false, loading: false }))
       throw err // Re-throw so the engine knows playback failed
