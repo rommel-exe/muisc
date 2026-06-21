@@ -163,15 +163,15 @@ function getCurrentIndex(): number {
 function next(): QueueTrack | null {
   if (state.list.length === 0) return null
 
+  if (state.repeatMode === 'one') {
+    // Repeat current track — index stays the same, no history bloat
+    return state.list[state.index]
+  }
+
   // Record current position in history before moving
   const current = state.list[state.index]
   if (current) {
     state.history.push(current.queueId)
-  }
-
-  if (state.repeatMode === 'one') {
-    // Repeat current track — index stays the same
-    return state.list[state.index]
   }
 
   if (state.shuffleActive) {
