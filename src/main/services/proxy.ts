@@ -8,7 +8,7 @@ import { PROXY_PORT } from '../../shared/constants'
 import { getVideoInfo, getStreamUrl as subprocessGetUrl, type YTDlpInfo, YTDlpError } from './yt-dlp'
 import { getDaemon } from './yt-dlp-daemon'
 
-const PROXY_TIMING_LOGS = false
+const PROXY_TIMING_LOGS = true
 
 /** Shared HTTPS agent with keep-alive for CDN connections.
  *  Warms TCP+TLS so subsequent connections to the same CDN edge are faster. */
