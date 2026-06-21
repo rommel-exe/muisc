@@ -248,7 +248,7 @@ export class MediaEngine {
   }
 
   /** Internal next() implementation — NO mutex, called by next() and by error-recovery recursion. */
-  private async _nextImpl(): Promise<void> {
+  private async _nextImpl(errorSkipCount = 0): Promise<void> {
     this.log('next: requesting next track')
     try {
       const result = await this.api.queueNext()
@@ -291,10 +291,12 @@ export class MediaEngine {
       // When repeatMode is 'all' (the default), queueNext() wraps
       // around forever — without this guard we'd loop infinitely
       // across the entire queue.
+      // Repeat-one adds the same issue: next() never advances the index,
+      // so skipCount would never reach list.length without this guard.
       if (this._state.state === 'error') {
-        const skipCount = result.index + 1
-        this.log(`next: track at index ${result.index} failed, skipping ahead (skip ${skipCount}/${this._state.queueList.length})`)
-        if (skipCount >= this._state.queueList.length) {
+        const nextSkipCount = errorSkipCount + 1
+        this.log(`next: track at index ${result.index} failed, skipping ahead (skip ${nextSkipCount}/${this._state.queueList.length})`)
+        if (nextSkipCount >= this._state.queueList.length) {
           this.log('next: all tracks failed, stopping')
           this._state.state = 'idle'
           this._state.error = 'All tracks failed to play'
@@ -305,7 +307,7 @@ export class MediaEngine {
         this._state.error = null
         this.emit()
         // Use _nextImpl to avoid deadlocking on the mutex
-        await this._nextImpl()
+        await this._nextImpl(nextSkipCount)
       }
     } catch (err: any) {
       this.handleError(err)
