@@ -186,6 +186,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const el = getActive()
     if (!el) return
 
+    // ⚠️ Clear stale error from previous playback. errorRef is never
+    // reset elsewhere — without this, a prior onError sets it to
+    // "Unknown audio error" and every subsequent loadAndPlay that
+    // resolves (including AbortError) inherits the stale error.
+    errorRef.current = null
+
     // Clear standby to avoid conflict
     const standby = getStandby()
     if (standby) { standby.pause(); standby.src = ''; standby.load() }
@@ -199,7 +205,14 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     try {
       await el.play()
     } catch (err: any) {
-      if (err.name === 'AbortError') return
+      if (err.name === 'AbortError') {
+        // AbortError means play() was interrupted by another play()
+        // or load() call. Don't silently swallow — set the error so
+        // the engine doesn't think play succeeded.
+        errorRef.current = 'Play was interrupted (AbortError)'
+        setState((prev) => ({ ...prev, error: 'Play interrupted', isPlaying: false, loading: false }))
+        throw err
+      }
       errorRef.current = err.message
       setState((prev) => ({ ...prev, error: err.message, isPlaying: false, loading: false }))
       throw err // Re-throw so the engine knows playback failed
