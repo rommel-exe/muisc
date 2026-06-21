@@ -302,8 +302,10 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     // First track resolves immediately (highest priority)
     proxy.triggerBackgroundResolve(videoIds[0]).catch(() => {})
 
-    // Remaining tracks in staggered batches
-    for (let i = CONCURRENCY; i < videoIds.length; i += CONCURRENCY) {
+    // Remaining tracks in staggered batches starting from index 1.
+    // ⚠️ Original code started at i=CONCURRENCY (4), skipping indices 1,2,3!
+    // This caused early queue tracks to have cold CDN TTFB (~540ms).
+    for (let i = 1; i < videoIds.length; i += CONCURRENCY) {
       const batch = videoIds.slice(i, i + CONCURRENCY)
       batch.forEach((id) => {
         proxy.triggerBackgroundResolve(id).catch(() => {})

@@ -402,6 +402,8 @@ export function createProxy(options: ProxyOptions = {}) {
             cachedAt: Date.now(),
             contentType: `audio/${f.ext}`,
           })
+          // 🔥 Prewarm CDN connection — otherwise skip hits cold CDN TTFB (~540ms)
+          downloadAudioChunk(videoId, f.url)
           return f.url
         }
         return ''
