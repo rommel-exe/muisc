@@ -308,6 +308,7 @@ export async function getStreamUrl(
     '--extractor-args', 'youtube:player_client=android,web;player_skip=webpage,js,configs,initial_data',
     '--no-add-chapters',
     '--no-embed-metadata',
+    '--',
     videoId,
   ]
 
@@ -375,7 +376,7 @@ export async function getVideoInfo(
     // and don't apply to JSON-only (-j) extraction.
   }
 
-  args.push(videoId)
+  args.push('--', videoId)
 
   // Background payload includes richer metadata (larger JSON)
   const maxBuffer = mode === 'foreground' ? 1024 * 1024 : 10 * 1024 * 1024
