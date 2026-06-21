@@ -681,15 +681,25 @@ export function createProxy(options: ProxyOptions = {}) {
    * triggerResolve (daemon + subprocess fallback), cache it, then
    * pre-buffer the first chunk into RAM for instant serve.
    * Fire-and-forget — called at startup for the first queue track.
+   *
+   * If streamCache already has a URL (e.g. populated by Innertube from
+   * MediaResolver's resolve()), it uses that directly and skips the
+   * daemon entirely — critical for <1s cold play.
    */
   async function prewarmCdn(videoId: string): Promise<void> {
     try {
-      // Use triggerResolve which has daemon → subprocess fallback
+      // Fast path: URL already cached (e.g. from Innertube resolve) —
+      // downloadAudioChunk starts the 1MB prewarm buffer immediately.
+      const cached = streamCache.get(videoId)
+      if (cached?.streamUrl) {
+        downloadAudioChunk(videoId, cached.streamUrl)
+        return
+      }
+
+      // Slow path: resolve via daemon + subprocess fallback
       const url = await triggerResolve(videoId)
       if (!url) return
 
-      // streamCache is already populated by triggerResolve.
-      // downloadAudioChunk starts the 1MB prewarm buffer download.
       downloadAudioChunk(videoId, url)
     } catch (err: any) {
       console.warn(`[Proxy] Prewarm CDN failed for ${videoId}:`, err?.message ?? err)

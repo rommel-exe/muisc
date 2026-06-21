@@ -2,6 +2,7 @@ import { createProxy } from './proxy'
 import type { YTDlpInfo } from './yt-dlp'
 import type { ResolvedStream, Track } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
+import { resolveViaInnerTube } from './innertube'
 
 export interface ResolveOptions {
   /** Force re-resolution even if cached */
@@ -95,9 +96,52 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       }
     }
 
-    // Trigger background yt-dlp resolve — proxy caches the CDN URL when done.
-    // Fire-and-forget: the promise resolves the daemon URL (~250ms in Python)
-    // and updates resolveCache with real metadata when infoPromise settles.
+    // 🏎️ PRIMARY PATH: Innertube direct resolve via youtubei.js (~400-800ms).
+    // This is the critical path for COLD plays. youtubei.js returns a direct
+    // CDN URL WITHOUT waiting for the Python daemon or yt-dlp subprocess.
+    // The URL is inserted into the proxy's streamCache so the proxy handler
+    // finds it immediately when the renderer connects (~1ms handler time).
+    //
+    // If Innertube fails (age-restricted, geoblocked, etc.), we fall through
+    // to the daemon path below.
+    const innerResult = await resolveViaInnerTube(videoId)
+    if (innerResult?.streamingUrl) {
+      const resolved: ResolvedStream = {
+        videoId: innerResult.videoId,
+        audioUrl: getProxyUrl(videoId),
+        duration: innerResult.duration,
+        title: innerResult.title,
+        thumbnail: innerResult.thumbnail,
+      }
+      resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
+      evictIfNeeded()
+
+      // Populate proxy's streamCache so resolveStreamUrl returns immediately
+      // when the renderer connects to the proxy. Without this, the proxy
+      // handler blocks on the daemon for 5+ seconds on cold start.
+      proxy.setStreamCacheEntry(videoId, {
+        streamUrl: innerResult.streamingUrl,
+        cachedAt: Date.now(),
+        contentType: innerResult.contentType,
+      })
+
+      // Prewarm CDN connection (establishes TCP+TLS to YouTube CDN edge).
+      // Uses the cached URL — no daemon call needed.
+      proxy.prewarmCdn(videoId).catch(() => {})
+
+      // Fire daemon resolve in background — refreshes streamCache with a
+      // yt-dlp URL that may have better format negotiation. Also populates
+      // metadata cache for subsequent plays.
+      proxy.triggerBackgroundResolve(videoId).catch(() => {})
+
+      return resolved
+    }
+
+    // 🐢 FALLBACK: daemon + proxy path.
+    // The proxy handler will block until the daemon resolves the stream URL.
+    // This is slow (~5s on cold start) but works for edge cases where
+    // Innertube can't resolve (age-restricted, DRM-protected, etc.).
+    console.warn(`[MediaResolver] Innertube resolve failed for ${videoId}, falling back to daemon`)
     const infoPromise = proxy.triggerBackgroundResolve(videoId)
     pendingInfo.set(videoId, infoPromise)
 
@@ -117,10 +161,6 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       pendingInfo.delete(videoId)
     })
 
-    // Return proxy URL immediately. Audio connects to localhost proxy (~10ms)
-    // while the daemon resolves the CDN URL in parallel. The proxy then
-    // pipes the CDN stream — net effect: CDN connection and daemon run
-    // concurrently, not sequentially.
     return {
       videoId,
       audioUrl: getProxyUrl(videoId),
