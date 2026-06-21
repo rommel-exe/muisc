@@ -339,7 +339,7 @@ export function createProxy(options: ProxyOptions = {}) {
             cachedAt: Date.now(),
             contentType: 'audio/mp4',
           })
-          downloadAudioChunk(videoId, url)
+          await downloadAudioChunk(videoId, url)
         }
         return url
       } catch (subErr: any) {
@@ -356,8 +356,11 @@ export function createProxy(options: ProxyOptions = {}) {
           cachedAt: Date.now(),
           contentType: 'audio/webm',
         })
-        // 🔥 Download first PREWARM_CHUNK_SIZE bytes into prewarm buffer
-        downloadAudioChunk(videoId, url)
+        // 🔥 Download first PREWARM_CHUNK_SIZE bytes into prewarm buffer.
+        // AWAIT the chunk so pendingResolves waits for it — the handler
+        // will find the prewarm buffer HIT and send it instantly, then
+        // fetch the CDN tail in parallel.
+        await downloadAudioChunk(videoId, url)
         return url
       }
       // Daemon returned empty URL — fall back to subprocess
@@ -394,7 +397,7 @@ export function createProxy(options: ProxyOptions = {}) {
     const pendingResolve = urlPromise.then((url) => {
       if (url) return url
       // Fast path failed — wait for metadata path to get the URL
-      return infoPromise.then((info) => {
+      return infoPromise.then(async (info) => {
         const f = info.formats.find((ff) => ff.acodec !== 'none' && ff.url)
         if (f?.url) {
           streamCache.set(videoId, {
@@ -403,7 +406,7 @@ export function createProxy(options: ProxyOptions = {}) {
             contentType: `audio/${f.ext}`,
           })
           // 🔥 Prewarm CDN connection — otherwise skip hits cold CDN TTFB (~540ms)
-          downloadAudioChunk(videoId, f.url)
+          await downloadAudioChunk(videoId, f.url)
           return f.url
         }
         return ''
@@ -636,44 +639,55 @@ export function createProxy(options: ProxyOptions = {}) {
    * prewarm buffer. Also warms the CDN keep-alive connection.
    * Fire-and-forget, best-effort.
    */
-  function downloadAudioChunk(videoId: string, url: string): void {
-    const t0 = Date.now()
-    const hostname = new URL(url).hostname
-    try { dns.resolve(hostname, () => {}) } catch {}
+  function downloadAudioChunk(videoId: string, url: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const t0 = Date.now()
+      const hostname = new URL(url).hostname
+      try { dns.resolve(hostname, () => {}) } catch {}
 
-    const chunks: Buffer[] = []
-    let total = 0
-    let done = false
-    const req = https.get(url, {
-      agent: cdnAgent,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-        'Referer': 'https://www.youtube.com/',
-      },
-    }, (res) => {
-      const ct = res.headers['content-type'] ?? 'audio/mpeg'
-      res.on('data', (chunk: Buffer) => {
-        if (done) return
-        chunks.push(chunk)
-        total += chunk.length
-        if (total >= PREWARM_CHUNK_SIZE) {
-          done = true
-          req.destroy()
-          prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
-          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes in ${Date.now()-t0}ms`)
-          evictPrewarmBuffer()
-        }
+      const chunks: Buffer[] = []
+      let total = 0
+      let done = false
+      let settled = false
+      const req = https.get(url, {
+        agent: cdnAgent,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+          'Referer': 'https://www.youtube.com/',
+        },
+      }, (res) => {
+        const ct = res.headers['content-type'] ?? 'audio/mpeg'
+        res.on('data', (chunk: Buffer) => {
+          if (done) return
+          chunks.push(chunk)
+          total += chunk.length
+          if (total >= PREWARM_CHUNK_SIZE) {
+            done = true
+            req.destroy()
+            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
+            if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes in ${Date.now()-t0}ms`)
+            evictPrewarmBuffer()
+            if (!settled) { settled = true; resolve() }
+          }
+        })
+        res.on('end', () => {
+          if (!done && total > 0) {
+            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
+            if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes (complete) in ${Date.now()-t0}ms`)
+            evictPrewarmBuffer()
+          }
+          if (!settled) { settled = true; resolve() }
+        })
       })
-      res.on('end', () => {
-        if (!done && total > 0) {
-          prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
-          if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes (complete) in ${Date.now()-t0}ms`)
-          evictPrewarmBuffer()
-        }
+      req.on('error', (err) => {
+        if (!done && !settled) { settled = true; resolve() }
+        if (!done) console.warn(`[Proxy] Chunk download error for ${videoId}:`, err.message)
+      })
+      req.setTimeout(8000, () => {
+        if (!done && !settled) { settled = true; resolve() }
+        if (!done) req.destroy()
       })
     })
-    req.on('error', (err) => { if (!done) console.warn(`[Proxy] Chunk download error for ${videoId}:`, err.message) })
-    req.setTimeout(8000, () => { if (!done) req.destroy() })
   }
 
   /**
