@@ -253,8 +253,21 @@ export class MediaEngine {
       // Track failed to play — skip ahead to the next one.
       // This handles yt-dlp extraction failures, geoblocked videos,
       // and transient proxy errors during auto-advance.
+      //
+      // ⚠️ Circuit breaker: track how many tracks we've skipped.
+      // When repeatMode is 'all' (the default), queueNext() wraps
+      // around forever — without this guard we'd loop infinitely
+      // across the entire queue.
       if (this._state.state === 'error') {
-        this.log(`next: track at index ${result.index} failed, skipping ahead`)
+        const skipCount = result.index + 1
+        this.log(`next: track at index ${result.index} failed, skipping ahead (skip ${skipCount}/${this._state.queueList.length})`)
+        if (skipCount >= this._state.queueList.length) {
+          this.log('next: all tracks failed, stopping')
+          this._state.state = 'idle'
+          this._state.error = 'All tracks failed to play'
+          this.emit()
+          return
+        }
         this._state.state = 'idle'
         this._state.error = null
         this.emit()

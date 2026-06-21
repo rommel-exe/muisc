@@ -100,6 +100,11 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
           4: 'Audio format not supported',
         }
         msg = codes[mediaError.code] ?? 'Unknown audio error'
+        console.warn(`[audio] onError code=${mediaError.code} src=${el?.src?.substring(0,60)}`)
+      } else if (mediaError?.code) {
+        console.warn(`[audio] onError code=${mediaError.code} msg=${msg?.substring(0,60)}`)
+      } else {
+        console.warn(`[audio] onError no code, src=${el?.src?.substring(0,60)}`)
       }
       msg ??= 'Unknown audio error'
       errorRef.current = msg
