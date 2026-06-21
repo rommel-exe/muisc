@@ -505,6 +505,13 @@ export function createProxy(options: ProxyOptions = {}) {
           proxyRes.on('end', () => {
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA END ${videoId}: ${dataBytes} bytes transferred`)
           })
+          // ⚠️ Handle CDN response stream errors (ECONNRESET mid-stream).
+          // Without this, proxyRes.pipe(clientRes) does NOT forward errors,
+          // so clientRes stays open indefinitely and the audio element hangs.
+          proxyRes.on('error', (err) => {
+            console.warn(`[Proxy] CDN response error for ${videoId}:`, err.message)
+            if (!clientRes.destroyed) clientRes.end()
+          })
           proxyRes.pipe(clientRes)
         }
       )
@@ -514,6 +521,11 @@ export function createProxy(options: ProxyOptions = {}) {
         if (!clientRes.headersSent) {
           clientRes.writeHead(502, { 'Content-Type': 'application/json' })
           clientRes.end(JSON.stringify({ error: 'Stream proxy failed' }))
+        } else if (!clientRes.destroyed) {
+          // Headers already sent (streaming audio) — end client response
+          // cleanly so the audio element gets EOF and fires 'ended' instead
+          // of hanging indefinitely waiting for data that will never come.
+          clientRes.end()
         }
       })
     }
