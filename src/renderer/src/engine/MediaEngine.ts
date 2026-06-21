@@ -19,6 +19,8 @@ export class MediaEngine {
   private _state: MediaEngineState = { ...INITIAL_STATE }
   private _requestCounter = 0
   private _pendingAdvance = false
+  /** Mutex: prevents concurrent next() calls (auto-advance + user clicking ⏭). */
+  private _advancing = false
   private _currentVideoId = ''
   private _preloadedVideoId = ''
   private _listeners = new Set<MediaEngineListener>()
@@ -89,6 +91,7 @@ export class MediaEngine {
       this._state.state = 'playing'
       this._state.error = null
       this.emit()
+      this.log(`playFromQueue: playing "${resolved.title}"`)
 
       // Background: resolve real title (may differ from initial)
       this.api.resolveTrackInfo(videoId).then((info) => {
@@ -148,6 +151,7 @@ export class MediaEngine {
       this._state.state = 'playing'
       this._state.error = null
       this.emit()
+      this.log(`playSearchResult: playing "${resolved.title}"`)
 
       // Add to queue in background
       this.api.addToQueue(track).catch(() => {})
@@ -201,6 +205,7 @@ export class MediaEngine {
       this._state.state = 'playing'
       this._state.error = null
       this.emit()
+      this.log(`playCustomId: playing "${resolved.title}"`)
 
       this.preloadNext(opRequestId)
       await this.refreshState()
@@ -216,6 +221,30 @@ export class MediaEngine {
   }
 
   async next(): Promise<void> {
+    // ⚠️ Mutex: prevent concurrent next() calls.
+    // Without this, if auto-advance fires next() and the user clicks ⏭
+    // before it resolves, QueueEngine.next() runs twice, skipping a track.
+    if (this._advancing) {
+      this.log('next: already advancing, queuing another advance')
+      // Wait for the current advance to settle, then retry.
+      // This ensures the user's click advances past the auto-advance target.
+      while (this._advancing) {
+        await new Promise((r) => setTimeout(r, 10))
+      }
+      this.log('next: retrying after pending advance')
+      return this.next()
+    }
+
+    this._advancing = true
+    try {
+      return await this._nextImpl()
+    } finally {
+      this._advancing = false
+    }
+  }
+
+  /** Internal next() implementation — NO mutex, called by next() and by error-recovery recursion. */
+  private async _nextImpl(): Promise<void> {
     this.log('next: requesting next track')
     try {
       const result = await this.api.queueNext()
@@ -271,7 +300,8 @@ export class MediaEngine {
         this._state.state = 'idle'
         this._state.error = null
         this.emit()
-        await this.next()
+        // Use _nextImpl to avoid deadlocking on the mutex
+        await this._nextImpl()
       }
     } catch (err: any) {
       this.handleError(err)
