@@ -186,7 +186,6 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
         el.removeEventListener('waiting', onWaiting)
         el.removeEventListener('canplay', onCanPlay)
         el.removeEventListener('canplaythrough', onStandbyCanPlay)
-        el.removeEventListener('canplay', onStandbyCanPlay)
         el.removeEventListener('loadstart', onStandbyLoadStart)
         el.pause()
         el.src = ''
