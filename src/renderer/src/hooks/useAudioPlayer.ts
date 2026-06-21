@@ -90,7 +90,18 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const onPause = () => setState((prev) => ({ ...prev, isPlaying: false }))
     const onError = () => {
       const el = activeIsA.current ? elA.current : elB.current
-      const msg = el?.error?.message ?? 'Unknown error'
+      const mediaError = el?.error
+      let msg = mediaError?.message
+      if (!msg && mediaError?.code) {
+        const codes: Record<number, string> = {
+          1: 'Playback aborted',
+          2: 'Network error loading audio',
+          3: 'Audio decode error',
+          4: 'Audio format not supported',
+        }
+        msg = codes[mediaError.code] ?? 'Unknown audio error'
+      }
+      msg ??= 'Unknown audio error'
       errorRef.current = msg
       setState((prev) => ({ ...prev, error: msg, loading: false, isPlaying: false }))
     }

@@ -249,6 +249,17 @@ export class MediaEngine {
 
       // Fallback: resolve and play
       await this.playFromQueue(result.index)
+
+      // Track failed to play — skip ahead to the next one.
+      // This handles yt-dlp extraction failures, geoblocked videos,
+      // and transient proxy errors during auto-advance.
+      if (this._state.state === 'error') {
+        this.log(`next: track at index ${result.index} failed, skipping ahead`)
+        this._state.state = 'idle'
+        this._state.error = null
+        this.emit()
+        await this.next()
+      }
     } catch (err: any) {
       this.handleError(err)
     }

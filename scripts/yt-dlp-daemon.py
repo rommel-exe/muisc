@@ -26,10 +26,10 @@ YDL_OPTS = {
     "noplaylist": True,
     "skip_download": True,
     "no_check_certificate": True,
-    # 140 = DASH m4a (AAC, 128kbps) — web-optimized fMP4: browser starts
-    # playing after the first segment (~2s), not after full download.
-    # 251 = Opus webm fallback. bestaudio as last resort.
-    "format": "140/251/bestaudio/best",
+    # No format filter — let yt-dlp pick the default. The SABR streaming
+    # experiment is breaking audio-only formats (140/251). Combined format
+    # 18 (360p mp4) still works and HTMLAudioElement plays it fine.
+    # Match the TS subprocess's --get-url behavior (no -f flag).
     "extractor_args": {
         "youtube": {
             # Android client avoids bot detection that web client triggers

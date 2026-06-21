@@ -92,9 +92,31 @@ export class YtdlpDaemon {
       crlfDelay: Infinity,
     })
 
-    // Wait for the "READY" signal from the daemon
+    // ⚠️ CRITICAL: Register the response handler BEFORE awaiting READY.
+    // If processNext() (triggered from the READY handler) writes a queued
+    // request and the daemon responds before we register rl.on('line', ...),
+    // the response 'line' event is lost forever (readline won't re-emit it).
+    //
+    // We filter out READY here since it's handled separately below.
+    this.rl.on('line', (line) => {
+      if (line === 'READY') return // handled by the startup promise
+      this.handleResponse(line)
+    })
+
+    // Wait for the "READY" signal from the daemon.
+    // ⚠️ CRITICAL: When startup times out and start() rejects, the Python
+    // process may still be alive (warmup is slow). this.ready MUST be set
+    // when READY eventually arrives, or every subsequent daemon request
+    // silently queues up and times out (this.child is truthy so start()
+    // isn't retried, but processNext() returns early because !this.ready).
+    //
+    // Solution: always set this.ready = true + call processNext() when
+    // READY arrives, regardless of whether the promise already settled.
     await new Promise<void>((resolve, reject) => {
+      let settled = false
+
       const timer = setTimeout(() => {
+        settled = true
         reject(new YTDlpError('yt-dlp daemon startup timed out', 'TIMEOUT'))
       }, timeoutMs)
 
@@ -102,8 +124,15 @@ export class YtdlpDaemon {
         clearTimeout(timer)
         if (line === 'READY') {
           this.ready = true
-          resolve()
-        } else {
+          if (!settled) {
+            resolve()
+          } else {
+            // READY arrived after timeout — daemon is still usable.
+            // Flush any requests that queued up while it was starting.
+            console.log('[yt-dlp-daemon] READY received (after timeout), daemon now usable')
+          }
+          this.processNext()
+        } else if (!settled) {
           reject(new YTDlpError(
             `Unexpected daemon response: ${line}`,
             'DAEMON_ERROR'
@@ -111,9 +140,6 @@ export class YtdlpDaemon {
         }
       })
     })
-
-    // Route subsequent lines to request handlers
-    this.rl.on('line', (line) => this.handleResponse(line))
 
     console.log('[yt-dlp-daemon] Ready')
   }
