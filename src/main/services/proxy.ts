@@ -5,7 +5,7 @@ import https from 'node:https'
 import { URL } from 'node:url'
 import dns from 'node:dns'
 import { PROXY_PORT } from '../../shared/constants'
-import { getVideoInfo, type YTDlpInfo, YTDlpError } from './yt-dlp'
+import { getVideoInfo, getStreamUrl as subprocessGetUrl, type YTDlpInfo, YTDlpError } from './yt-dlp'
 import { getDaemon } from './yt-dlp-daemon'
 
 const PROXY_TIMING_LOGS = false
@@ -254,9 +254,9 @@ export function createProxy(options: ProxyOptions = {}) {
 
   async function doResolve(videoId: string, _controller: AbortController): Promise<string> {
     let lastError: Error | undefined
+    // 🏎️ Fast path: warm daemon (2 attempts)
     for (let attempt = 0; attempt <= 1; attempt++) {
       try {
-        // 🏎️ Fast path: warm daemon
         const daemon = getDaemon()
         const url = await daemon.getStreamUrl(videoId, 15000)
         if (url) {
@@ -277,6 +277,29 @@ export function createProxy(options: ProxyOptions = {}) {
         }
       }
     }
+
+    // 🐢 Fallback: subprocess direct resolution.
+    // Daemon may fail with SABR/rate-limiting errors (e.g. "The page needs
+    // to be reloaded"). The subprocess with different player_client flags
+    // can succeed where the daemon fails.
+    console.warn(`[Proxy] Daemon failed for ${videoId}, falling back to subprocess...`)
+    try {
+      const url = await subprocessGetUrl(videoId, {
+        timeoutMs: 30000,
+        signal: _controller.signal,
+      })
+      if (url) {
+        streamCache.set(videoId, {
+          streamUrl: url,
+          cachedAt: Date.now(),
+          contentType: 'audio/mp4',
+        })
+        return url
+      }
+    } catch (err: any) {
+      console.warn(`[Proxy] Subprocess fallback also failed for ${videoId}:`, err.message)
+    }
+
     throw lastError ?? new Error('Stream resolve failed')
   }
 
@@ -338,7 +361,7 @@ export function createProxy(options: ProxyOptions = {}) {
     })
 
     // pendingResolves: fast URL, or if that fails, fall through to metadata URL
-    pendingResolves.set(videoId, urlPromise.then((url) => {
+    const pendingResolve = urlPromise.then((url) => {
       if (url) return url
       // Fast path failed — wait for metadata path to get the URL
       return infoPromise.then((info) => {
@@ -353,7 +376,12 @@ export function createProxy(options: ProxyOptions = {}) {
         }
         return ''
       })
-    }))
+    })
+    pendingResolves.set(videoId, pendingResolve)
+    // Clean up pendingResolves when settled, just like the others
+    pendingResolve.finally(() => {
+      pendingResolves.delete(videoId)
+    })
 
     pendingInfoResolves.set(videoId, infoPromise)
 
