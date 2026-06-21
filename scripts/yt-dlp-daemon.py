@@ -68,8 +68,9 @@ try:
         "https://www.youtube.com/watch?v=jNQXAC9IVRw", download=False, process=False
     )
     warm_ms = int((time.time() - warm_t0) * 1000)
-except Exception:
+except Exception as exc:
     warm_ms = -1
+    print(f"WARMUP_ERROR: {exc}", flush=True)
 
 # Signal readiness to the Node.js parent process
 sys.stdout.write("READY\n")
@@ -93,9 +94,11 @@ for line in sys.stdin:
                     url = f["url"]
                     break
         elapsed = int((t1 - t0) * 1000)
+        print(f"RESOLVE_DETAIL:{video_id} extract={elapsed}ms url_len={len(url)} warm_ms={warm_ms}", flush=True)
         sys.stdout.write(f"{url}\n")
     except Exception as e:
         elapsed = -1
+        print(f"RESOLVE_ERROR:{video_id} {e}", flush=True)
         sys.stdout.write("\n")
 
     sys.stdout.flush()
