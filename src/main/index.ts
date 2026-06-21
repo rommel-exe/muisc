@@ -13,6 +13,11 @@ import { setSearchFunction } from '../application/SearchEngine'
 // The app serves only local content and user-initiated YouTube streams — no sandbox needed.
 app.commandLine.appendSwitch('no-sandbox')
 
+// Enable remote debugging for agent-browser automated testing (dev only)
+if (is.dev) {
+  app.commandLine.appendSwitch('remote-debugging-port', '9222')
+}
+
 // Create the media resolver — owns the proxy and cache
 const mediaResolver = createMediaResolver()
 

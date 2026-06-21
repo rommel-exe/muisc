@@ -73,6 +73,7 @@ export function useMediaEngine(logger?: (msg: string) => void): {
     setOnTrackEnd: (cb) => playerControls.setOnTrackEnd(cb),
     isNextReady: () => playerStateRef.current.isNextReady,
     isPlaying: () => playerStateRef.current.isPlaying,
+    getError: () => playerControls.getError(),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }), [])
 

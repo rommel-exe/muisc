@@ -35,7 +35,7 @@ YDL_OPTS = {
             # Android client avoids bot detection that web client triggers
             # without cookies. Trade-off: only format 18 (combined 360p MP4)
             # is available — but as a fallback path it's fine.
-            "player_client": ["android"],
+            "player_client": ["android", "web"],
             "player_skip": ["webpage", "js", "configs", "initial_data"],
         }
     },

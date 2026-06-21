@@ -186,6 +186,9 @@ export function createProxy(options: ProxyOptions = {}) {
         console.log(`[Proxy] Prewarm MISS ${videoId} — buffer has ${prewarmBuffer.size} entries`)
 
         const streamUrl = await resolveStreamUrl(videoId)
+        if (!streamUrl) {
+          throw new ProxyError(`Empty stream URL for ${videoId}`, 'STREAM_NOT_FOUND')
+        }
         if (PROXY_TIMING_LOGS) console.log(`[Proxy] HANDLER ${videoId}: resolve=${Date.now()-handlerT0}ms → proxyStream`)
         proxyStream(streamUrl, videoId, req, res)
       } catch (err: any) {

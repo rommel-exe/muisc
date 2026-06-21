@@ -71,8 +71,16 @@ export class MediaEngine {
       const resolved = await this.api.resolveTrack(videoId)
       if (this._requestCounter !== opRequestId) return
 
+      // If audio fails, loadAndPlay now throws — caught below
       await this.audio.loadAndPlay(resolved.audioUrl)
       if (this._requestCounter !== opRequestId) return
+
+      // Re-check the audio element didn't land in error state
+      // (defensive — loadAndPlay should have thrown, but some
+      //  browser edge-cases resolve play() then immediately error)
+      if (this.audio.getError?.()) {
+        throw new Error(this.audio.getError()!)
+      }
 
       this._currentVideoId = videoId
       this._state.currentTrack = { ...queueRef.track, title: resolved.title }

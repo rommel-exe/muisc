@@ -25,6 +25,8 @@ export interface AudioPlayerControls {
   setVolume: (volume: number) => void
   /** Register a callback fired directly from the DOM ended event (not through React state) */
   setOnTrackEnd: (cb: () => void) => void
+  /** Return the current audio error message, if any */
+  getError: () => string | null
 }
 
 const INITIAL_VOLUME = 0.8
@@ -43,6 +45,8 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   const onTrackEndRef = useRef<(() => void) | null>(null)
   /** Guard ref to prevent duplicate track-end triggers (both ended event + polling fallback) */
   const trackEndedFiredRef = useRef(false)
+  /** Ref to latest error so memoized getError() always returns current value */
+  const errorRef = useRef<string | null>(null)
 
   const [state, setState] = useState<AudioPlayerState>({
     isPlaying: false,
@@ -86,7 +90,9 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const onPause = () => setState((prev) => ({ ...prev, isPlaying: false }))
     const onError = () => {
       const el = activeIsA.current ? elA.current : elB.current
-      setState((prev) => ({ ...prev, error: el?.error?.message ?? 'Unknown error', loading: false, isPlaying: false }))
+      const msg = el?.error?.message ?? 'Unknown error'
+      errorRef.current = msg
+      setState((prev) => ({ ...prev, error: msg, loading: false, isPlaying: false }))
     }
     const fireTrackEnd = () => {
       if (trackEndedFiredRef.current) return
@@ -174,10 +180,14 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     el.src = url
     el.load()
 
-    return el.play().catch((err) => {
+    try {
+      await el.play()
+    } catch (err: any) {
       if (err.name === 'AbortError') return
-      setState((prev) => ({ ...prev, error: err.message }))
-    })
+      errorRef.current = err.message
+      setState((prev) => ({ ...prev, error: err.message, isPlaying: false, loading: false }))
+      throw err // Re-throw so the engine knows playback failed
+    }
   }, [])
 
   /** Preload a URL into the STANDBY element. Safe to call while active is playing. */
@@ -247,8 +257,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     onTrackEndRef.current = cb
   }, [])
 
+  const getError = useCallback((): string | null => {
+    return errorRef.current
+  }, [])
+
   return [
     state,
-    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume, setOnTrackEnd },
+    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume, setOnTrackEnd, getError },
   ]
 }

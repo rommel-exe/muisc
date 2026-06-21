@@ -19,6 +19,8 @@ export interface AudioBridge {
   // Read side — engine needs these for swap/toggle decisions
   isNextReady(): boolean
   isPlaying(): boolean
+  /** Return the current audio error message, if any */
+  getError(): string | null
 }
 
 // ── IPC abstraction (wraps window.api subset) ──
