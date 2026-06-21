@@ -350,6 +350,17 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
      * immediately with priority.
      */
     resolveQueue,
+
+    /**
+     * Speculatively pre-resolve a video ID so the stream URL and prewarm
+     * chunk are ready when the user clicks play. Fire-and-forget.
+     *
+     * Call this when search results appear, before the user clicks:
+     * the daemon extraction (~500ms) and chunk download (~200ms) run
+     * in the background. By the time the user clicks, the handler
+     * serves from cache or finds the prewarm buffer populated.
+     */
+    warmupVideo: proxy.triggerBackgroundResolve,
   }
 }
 
