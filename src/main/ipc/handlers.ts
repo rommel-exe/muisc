@@ -239,52 +239,76 @@ export function registerHandlers(resolver: MediaResolver): void {
 
   /**
    * Load a playlist's tracks into the queue (FULL REPLACE) and return them.
-   * If the playlist has stored Spotify source data, re-matches it first.
+   * Queue loads instantly (<1s). If the playlist has stored Spotify source
+   * data, rematch runs in background and updates queue when done.
    */
   ipcMain.handle('load-playlist-into-queue', async (_event, playlistId: string) => {
     if (typeof playlistId !== 'string' || !playlistId) {
       throw new Error('Invalid playlistId: expected a non-empty string')
     }
 
-    const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
-    if (pl?.spotifySource) {
-      await rematchPlaylist(playlistId)
-    }
-
-    const tracks = PlaylistEngine.getPlaylistTracks(playlistId)
+    // Load queue IMMEDIATELY with existing tracks (no rematch wait)
+    let tracks = PlaylistEngine.getPlaylistTracks(playlistId)
     if (tracks.length === 0) {
       throw new Error('Playlist is empty')
     }
     QueueEngine.setQueue(tracks, 0)
 
-    // Fire-and-forget: prewarm CDN for the first track so cold play is faster
-    if (tracks.length > 0) {
-      const firstId = tracks[0].id || tracks[0].sourceId
-      resolver.prewarmCdn(firstId).catch(() => {})
+    // Fire rematch in background if needed — updates queue when done
+    const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
+    if (pl?.spotifySource) {
+      rematchPlaylist(playlistId).then(() => {
+        const updated = PlaylistEngine.getPlaylistTracks(playlistId)
+        // Update each queue track in-place to preserve current playback position
+        for (let i = 0; i < updated.length; i++) {
+          QueueEngine.updateTrackAt(i, updated[i])
+        }
+        console.log(`[IPC] Rematch complete for ${playlistId}, queue updated`)
+      }).catch((err: any) => {
+        console.error(`[IPC] Rematch failed for ${playlistId}:`, err.message)
+      })
     }
+
+    // Batch-resolve all track URLs so streamCache is warm when user clicks.
+    // The first track resolves immediately; remaining tracks are staggered
+    // (4 concurrent, 100ms spacing) to avoid overwhelming the daemon.
+    resolver.resolveQueue(tracks).catch(() => {})
 
     return tracks
   })
 
   /**
    * Append a playlist's tracks to the end of the current queue (APPEND).
-   * If the playlist has stored Spotify source data, re-matches it first.
+   * Queue appends instantly (<1s). If the playlist has stored Spotify source
+   * data, rematch runs in background and updates appended tracks when done.
    */
   ipcMain.handle('add-playlist-to-queue', async (_event, playlistId: string) => {
     if (typeof playlistId !== 'string' || !playlistId) {
       throw new Error('Invalid playlistId: expected a non-empty string')
     }
 
-    const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
-    if (pl?.spotifySource) {
-      await rematchPlaylist(playlistId)
-    }
-
-    const tracks = PlaylistEngine.getPlaylistTracks(playlistId)
+    // Append IMMEDIATELY with existing tracks (no rematch wait)
+    let tracks = PlaylistEngine.getPlaylistTracks(playlistId)
     if (tracks.length === 0) {
       throw new Error('Playlist is empty')
     }
+    const startIndex = QueueEngine.getList().length
     QueueEngine.appendTracks(tracks)
+
+    // Fire rematch in background — updates appended tracks when done
+    const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
+    if (pl?.spotifySource) {
+      rematchPlaylist(playlistId).then(() => {
+        const updated = PlaylistEngine.getPlaylistTracks(playlistId)
+        for (let i = 0; i < updated.length; i++) {
+          QueueEngine.updateTrackAt(startIndex + i, updated[i])
+        }
+        console.log(`[IPC] Rematch complete for ${playlistId}, appended tracks updated`)
+      }).catch((err: any) => {
+        console.error(`[IPC] Rematch failed for ${playlistId}:`, err.message)
+      })
+    }
+
     return QueueEngine.getList()
   })
 

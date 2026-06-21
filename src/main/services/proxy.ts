@@ -160,6 +160,10 @@ export function createProxy(options: ProxyOptions = {}) {
               }
 
               // Pipe the CDN tail — audio resumes from the prewarm buffer's end
+              tailRes.on('error', (tailErr) => {
+                console.warn(`[Proxy] Prewarm TAIL stream error for ${videoId}:`, tailErr.message)
+                if (!res.destroyed) res.end()
+              })
               tailRes.pipe(res)
             })
 
@@ -321,8 +325,31 @@ export function createProxy(options: ProxyOptions = {}) {
     const controller = new AbortController()
     pendingControllers.set(videoId, controller)
 
-    // 🏎️ Fast path: stream URL via warm daemon
-    const urlPromise: Promise<string> = getDaemon().getStreamUrl(videoId, 15000).then((url) => {
+    // Helper: try subprocess resolve as daemon fallback
+    const trySubprocessFallback = async (): Promise<string> => {
+      try {
+        console.warn(`[Proxy] Falling back to subprocess for ${videoId}`)
+        const url = await subprocessGetUrl(videoId, {
+          timeoutMs: 15000,
+          signal: controller.signal,
+        })
+        if (url) {
+          streamCache.set(videoId, {
+            streamUrl: url,
+            cachedAt: Date.now(),
+            contentType: 'audio/mp4',
+          })
+          downloadAudioChunk(videoId, url)
+        }
+        return url
+      } catch (subErr: any) {
+        console.warn(`[Proxy] Subprocess fallback also failed for ${videoId}:`, subErr.message)
+        return ''
+      }
+    }
+
+    // 🏎️ Fast path: stream URL via warm daemon (with subprocess fallback)
+    const urlPromise: Promise<string> = getDaemon().getStreamUrl(videoId, 15000).then(async (url) => {
       if (url) {
         streamCache.set(videoId, {
           streamUrl: url,
@@ -331,11 +358,14 @@ export function createProxy(options: ProxyOptions = {}) {
         })
         // 🔥 Download first PREWARM_CHUNK_SIZE bytes into prewarm buffer
         downloadAudioChunk(videoId, url)
+        return url
       }
-      return url
-    }).catch((err) => {
+      // Daemon returned empty URL — fall back to subprocess
+      return trySubprocessFallback()
+    }).catch(async (err) => {
       console.warn(`[Proxy] Fast URL resolve failed for ${videoId}:`, err.message)
-      return ''
+      // Daemon errored (SABR/rate-limit) — fall back to subprocess
+      return trySubprocessFallback()
     })
 
     // 🐢 Slow path: full metadata
@@ -646,34 +676,19 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /**
    * Pre-warm the CDN connection for a video: resolve CDN URL via
-   * the daemon, cache it, then buffer the full audio into RAM for
-   * instant serve. Fire-and-forget — called at startup for the first
-   * queue track.
+   * triggerResolve (daemon + subprocess fallback), cache it, then
+   * pre-buffer the first chunk into RAM for instant serve.
+   * Fire-and-forget — called at startup for the first queue track.
    */
   async function prewarmCdn(videoId: string): Promise<void> {
     try {
-      const url = await getDaemon().getStreamUrl(videoId, 15000)
+      // Use triggerResolve which has daemon → subprocess fallback
+      const url = await triggerResolve(videoId)
       if (!url) return
 
-      // Cache URL so resolveStreamUrl is instant
-      streamCache.set(videoId, {
-        streamUrl: url,
-        cachedAt: Date.now(),
-        contentType: 'audio/mp4',
-      })
-
-      // Download full audio into RAM — served instantly on first click
-      const chunks: Buffer[] = []
-      let total = 0
-      const req = https.get(url, { agent: cdnAgent, headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
-        res.on('data', (chunk: Buffer) => { chunks.push(chunk); total += chunk.length })
-        res.on('end', () => {
-          if (total > 0) {
-            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: res.headers['content-type'] ?? 'audio/mpeg' })
-          }
-        })
-      })
-      req.on('error', (err) => { console.warn(`[Proxy] Prewarm CDN error for ${videoId}:`, err.message) })
+      // streamCache is already populated by triggerResolve.
+      // downloadAudioChunk starts the 1MB prewarm buffer download.
+      downloadAudioChunk(videoId, url)
     } catch (err: any) {
       console.warn(`[Proxy] Prewarm CDN failed for ${videoId}:`, err?.message ?? err)
     }

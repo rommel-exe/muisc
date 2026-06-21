@@ -258,6 +258,15 @@ function reorder(fromIndex: number, toIndex: number): void {
   }
 }
 
+/**
+ * Replace a track at a given index (used for background rematch updates).
+ * Does NOT change the playback index or history.
+ */
+function updateTrackAt(index: number, track: Track): void {
+  if (index < 0 || index >= state.list.length) return
+  state.list[index] = { ...state.list[index], track }
+}
+
 function getCurrentTrack(): Track | null {
   if (state.index < 0 || state.index >= state.list.length) return null
   return state.list[state.index]?.track ?? null
@@ -331,6 +340,7 @@ export const QueueEngine = {
   setQueue,
   appendTracks,
   removeTrack,
+  updateTrackAt,
   getList,
   next,
   previous,

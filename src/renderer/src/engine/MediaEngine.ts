@@ -28,6 +28,8 @@ export class MediaEngine {
   private _currentVideoId = ''
   private _preloadedVideoId = ''
   private _listeners = new Set<MediaEngineListener>()
+  /** Timestamp when the current operation started (for elapsed timing in logs) */
+  private _opStart = 0
 
   constructor(
     private audio: AudioBridge,
@@ -40,6 +42,7 @@ export class MediaEngine {
   // ── Public API ──
 
   async playFromQueue(idx: number): Promise<void> {
+    this.t0()
     const opRequestId = ++this._requestCounter
     this.log(`playFromQueue: idx=${idx}`)
 
@@ -127,6 +130,7 @@ export class MediaEngine {
   }
 
   async playSearchResult(result: SearchResult): Promise<void> {
+    this.t0()
     const opRequestId = ++this._requestCounter
     this.log(`playSearchResult: ${result.title}`)
 
@@ -183,6 +187,7 @@ export class MediaEngine {
   }
 
   async playCustomId(id: string): Promise<void> {
+    this.t0()
     const opRequestId = ++this._requestCounter
     this.log(`playCustomId: ${id}`)
 
@@ -225,6 +230,7 @@ export class MediaEngine {
   }
 
   async next(): Promise<void> {
+    this.t0()
     // ⚠️ Mutex: prevent concurrent next() calls.
     // Without this, if auto-advance fires next() and the user clicks ⏭
     // before it resolves, QueueEngine.next() runs twice, skipping a track.
@@ -315,6 +321,7 @@ export class MediaEngine {
   }
 
   async prev(): Promise<void> {
+    this.t0()
     this.log('prev: requesting previous track')
     try {
       const result = await this.api.queuePrev()
@@ -400,6 +407,7 @@ export class MediaEngine {
   }
 
   private preloadNext(): void {
+    this.t0()
     const capturedId = ++this._preloadCounter
 
     // Read current queue from api (not cached state)
@@ -481,6 +489,10 @@ export class MediaEngine {
   }
 
   private log(msg: string): void {
-    this.logger?.(`[engine] [vid=${this._currentVideoId}] ${msg}`)
+    const elapsed = this._opStart > 0 ? `[+${Date.now() - this._opStart}ms] ` : ''
+    this.logger?.(`[engine] ${elapsed}[vid=${this._currentVideoId}] ${msg}`)
   }
+
+  /** Start timing for elapsed log prefixes. Call at entry of each public operation. */
+  private t0(): void { this._opStart = Date.now() }
 }

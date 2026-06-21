@@ -1,6 +1,6 @@
 import { createProxy } from './proxy'
 import type { YTDlpInfo } from './yt-dlp'
-import type { ResolvedStream } from '../../shared/types'
+import type { ResolvedStream, Track } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
 
 export interface ResolveOptions {
@@ -282,6 +282,36 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     return proxy.prewarmCdn(videoId)
   }
 
+  /**
+   * Batch-resolve track URLs so they're cached when the user clicks.
+   * Fire-and-forget: resolves in background, does not block queue loading.
+   * First track resolves immediately (priority), remaining tracks
+   * are staggered (4 concurrent, 100ms spacing).
+   */
+  async function resolveQueue(tracks: Track[]): Promise<void> {
+    const CONCURRENCY = 4
+    const MAX_RESOLVE = 50
+
+    const videoIds = tracks
+      .map((t) => t.id || t.sourceId)
+      .filter((id): id is string => Boolean(id))
+      .slice(0, MAX_RESOLVE)
+
+    if (videoIds.length === 0) return
+
+    // First track resolves immediately (highest priority)
+    proxy.triggerBackgroundResolve(videoIds[0]).catch(() => {})
+
+    // Remaining tracks in staggered batches
+    for (let i = CONCURRENCY; i < videoIds.length; i += CONCURRENCY) {
+      const batch = videoIds.slice(i, i + CONCURRENCY)
+      batch.forEach((id) => {
+        proxy.triggerBackgroundResolve(id).catch(() => {})
+      })
+      await new Promise((r) => setTimeout(r, 100))
+    }
+  }
+
   return {
     resolve,
     resolveTrackInfo,
@@ -298,6 +328,13 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     getPendingResolveCount: proxy.getPendingResolveCount,
     /** Pre-warm CDN connection for a video ID */
     prewarmCdn,
+    /**
+     * Batch-resolve all tracks in a queue so streamCache is warm.
+     * Fire-and-forget: resolves are staggered (4 concurrent, 100ms spacing)
+     * to avoid overwhelming the daemon. The first track resolves
+     * immediately with priority.
+     */
+    resolveQueue,
   }
 }
 
