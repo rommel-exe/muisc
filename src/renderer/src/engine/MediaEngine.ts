@@ -18,6 +18,10 @@ const INITIAL_STATE: MediaEngineState = {
 export class MediaEngine {
   private _state: MediaEngineState = { ...INITIAL_STATE }
   private _requestCounter = 0
+  /** Dedicated counter for preloadNext — prevents stale resolves from
+   *  wasting yt-dlp work when next() advances without incrementing
+   *  _requestCounter (e.g. instant-swap path in next()). */
+  private _preloadCounter = 0
   private _pendingAdvance = false
   /** Mutex: prevents concurrent next() calls (auto-advance + user clicking ⏭). */
   private _advancing = false
@@ -62,7 +66,7 @@ export class MediaEngine {
           this._state.queueIndex = idx
           this._state.currentTime = 0
           this.emit()
-          this.preloadNext(opRequestId)
+          this.preloadNext()
           await this.refreshState()
           return
         }
@@ -102,7 +106,7 @@ export class MediaEngine {
         }
       }).catch(() => {})
 
-      this.preloadNext(opRequestId)
+      this.preloadNext()
 
       // Prefetch upcoming tracks
       const upcoming = this.computeUpcomingVideoIds(idx, 3)
@@ -165,7 +169,7 @@ export class MediaEngine {
         }
       }).catch(() => {})
 
-      this.preloadNext(opRequestId)
+      this.preloadNext()
       await this.refreshState()
     } catch (err: any) {
       if (this._requestCounter !== opRequestId) return
@@ -207,7 +211,7 @@ export class MediaEngine {
       this.emit()
       this.log(`playCustomId: playing "${resolved.title}"`)
 
-      this.preloadNext(opRequestId)
+      this.preloadNext()
       await this.refreshState()
     } catch (err: any) {
       if (this._requestCounter !== opRequestId) return
@@ -269,7 +273,7 @@ export class MediaEngine {
           this._state.error = null
           this._preloadedVideoId = ''
           this.emit()
-          this.preloadNext(this._requestCounter)
+          this.preloadNext()
           await this.refreshState()
           return
         }
@@ -393,7 +397,9 @@ export class MediaEngine {
       .finally(() => { this._pendingAdvance = false })
   }
 
-  private preloadNext(opRequestId: number): void {
+  private preloadNext(): void {
+    const capturedId = ++this._preloadCounter
+
     // Read current queue from api (not cached state)
     this.api.queuePeekNext().then((peeked) => {
       if (!peeked) {
@@ -408,11 +414,9 @@ export class MediaEngine {
       // Already preloaded this one
       if (videoId === this._preloadedVideoId) return
 
-      const capturedRequestId = opRequestId
-
       this.api.resolveTrack(videoId).then((resolved) => {
-        // Skip-spam: check we're still on the same request
-        if (this._requestCounter !== capturedRequestId) return
+        // Skip-spam: check we're still on the same preload request
+        if (this._preloadCounter !== capturedId) return
         // Double-check the preload target hasn't changed
         if (videoId !== this._preloadedVideoId) return
 
