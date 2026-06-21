@@ -530,15 +530,38 @@ export function createProxy(options: ProxyOptions = {}) {
 
           let dataStartMs = 0
           let dataBytes = 0
+          // 🔥 Buffer the first PREWARM_CHUNK_SIZE bytes into the prewarm
+          // buffer as a side effect of the main CDN stream. This eliminates
+          // the duplicate CDN connection from downloadAudioChunk — the
+          // prewarm chunk is harvested from the same data the browser is
+          // already receiving.
+          const prewarmChunks: Buffer[] = []
+          let prewarmTotal = 0
+          let prewarmDone = false
+          const ct = proxyRes.headers['content-type'] ?? 'audio/mpeg'
           proxyRes.on('data', (chunk: Buffer) => {
             if (dataStartMs === 0) {
               dataStartMs = Date.now()
               if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA START ${videoId}: +${dataStartMs - tStart}ms redirects=${redirectCount}`)
             }
             dataBytes += chunk.length
+            // Buffer chunk for prewarm (first 1MB)
+            if (!prewarmDone) {
+              prewarmChunks.push(chunk)
+              prewarmTotal += chunk.length
+              if (prewarmTotal >= PREWARM_CHUNK_SIZE) {
+                prewarmDone = true
+                prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct })
+                evictPrewarmBuffer()
+              }
+            }
           })
           proxyRes.on('end', () => {
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA END ${videoId}: ${dataBytes} bytes transferred`)
+            if (!prewarmDone && prewarmTotal > 0) {
+              prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct })
+              evictPrewarmBuffer()
+            }
           })
           // ⚠️ Handle CDN response stream errors (ECONNRESET mid-stream).
           // Without this, proxyRes.pipe(clientRes) does NOT forward errors,
