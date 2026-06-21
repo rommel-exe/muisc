@@ -92,21 +92,25 @@ export class MediaEngine {
       }
 
       this._currentVideoId = videoId
-      this._state.currentTrack = { ...queueRef.track, title: resolved.title }
+      // Use the queue track's existing title immediately. The resolved.title
+      // is 'Loading...' until background metadata resolves — don't show that.
+      const initialTitle = queueRef.track.title || resolved.title
+      this._state.currentTrack = { ...queueRef.track, title: initialTitle }
       this._state.queueIndex = idx
       this._state.currentTime = 0
       this._state.state = 'playing'
       this._state.error = null
       this.emit()
-      this.log(`playFromQueue: playing "${resolved.title}"`)
+      this.log(`playFromQueue: playing "${initialTitle}"`)
 
-      // Background: resolve real title (may differ from initial)
+      // Background: try to get a more accurate title from yt-dlp/Innertube metadata.
+      // If this fails (yt-dlp timeout, etc.), we keep the queue track's title.
       this.api.resolveTrackInfo(videoId).then((info) => {
         if (this._requestCounter !== opRequestId) return
-        if (this._state.currentTrack && this._state.currentTrack.id === videoId) {
-          this._state.currentTrack = { ...this._state.currentTrack, title: info.title }
-          this.emit()
-        }
+        if (!this._state.currentTrack || this._state.currentTrack.id !== videoId) return
+        const betterTitle = info.title && info.title !== 'Unknown' ? info.title : initialTitle
+        this._state.currentTrack = { ...this._state.currentTrack, title: betterTitle }
+        this.emit()
       }).catch(() => {})
 
       this.preloadNext()
@@ -154,23 +158,27 @@ export class MediaEngine {
       if (this._requestCounter !== opRequestId) return
 
       this._currentVideoId = result.videoId
-      this._state.currentTrack = { ...track, title: resolved.title }
+      // Use the search-result title immediately. The resolved.title is 'Loading...'
+      // placeholder until background metadata resolves — don't show that to the user.
+      this._state.currentTrack = { ...track, title: result.title || track.title }
       this._state.currentTime = 0
       this._state.state = 'playing'
       this._state.error = null
       this.emit()
-      this.log(`playSearchResult: playing "${resolved.title}"`)
+      this.log(`playSearchResult: playing "${result.title}"`)
 
       // Add to queue in background
       this.api.addToQueue(track).catch(() => {})
 
-      // Background: resolve real title
+      // Background: try to get a more accurate title from yt-dlp/Innertube metadata.
+      // If this fails (yt-dlp timeout, etc.), we keep the search result title instead
+      // of letting it regress to 'Unknown'.
       this.api.resolveTrackInfo(result.videoId).then((info) => {
         if (this._requestCounter !== opRequestId) return
-        if (this._state.currentTrack && this._state.currentTrack.id === result.videoId) {
-          this._state.currentTrack = { ...this._state.currentTrack, title: info.title }
-          this.emit()
-        }
+        if (!this._state.currentTrack || this._state.currentTrack.id !== result.videoId) return
+        const betterTitle = info.title && info.title !== 'Unknown' ? info.title : result.title
+        this._state.currentTrack = { ...this._state.currentTrack, title: betterTitle }
+        this.emit()
       }).catch(() => {})
 
       this.preloadNext()
