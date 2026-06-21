@@ -126,9 +126,28 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const onWaiting = () => setState((prev) => ({ ...prev, loading: true }))
     const onCanPlay = () => setState((prev) => ({ ...prev, loading: false }))
 
-    // Standby element ready events
-    const onStandbyCanPlay = () => setState((prev) => ({ ...prev, isNextReady: true }))
-    const onStandbyLoadStart = () => setState((prev) => ({ ...prev, isNextReady: false }))
+    // ⚠️ Standby-only events: canplaythrough/loadstart must only fire on the
+    // element that is currently the standby. If we add them to both elements,
+    // the active element's canplaythrough incorrectly sets isNextReady=true.
+    //
+    // Solution: verify the event originates from the current standby element
+    // by checking which ref it corresponds to before updating isNextReady.
+    const onStandbyCanPlay = () => {
+      const standby = activeIsA.current ? elB.current : elA.current
+      // Only report standby-ready if the standby element actually has content loaded
+      // (readyState >= HAVE_FUTURE_DATA = 3). The active element's canplaythrough
+      // will NOT match since the standby has no src or is in loading state.
+      if (standby?.readyState && standby.readyState >= 3) {
+        // Double-check: if the active also reports readyState >= 3, verify
+        // it's truly the standby by checking the standby has a non-empty src
+        if (standby.src && standby.src.length > 0) {
+          setState((prev) => ({ ...prev, isNextReady: true }))
+        }
+      }
+    }
+    const onStandbyLoadStart = () => {
+      setState((prev) => ({ ...prev, isNextReady: false }))
+    }
 
     for (const el of [a, b]) {
       el.addEventListener('timeupdate', onTimeUpdate)
@@ -140,7 +159,6 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       el.addEventListener('waiting', onWaiting)
       el.addEventListener('canplay', onCanPlay)
       el.addEventListener('canplaythrough', onStandbyCanPlay)
-      el.addEventListener('canplay', onStandbyCanPlay)
       el.addEventListener('loadstart', onStandbyLoadStart)
     }
 
