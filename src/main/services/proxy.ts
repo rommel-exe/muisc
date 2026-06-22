@@ -93,9 +93,16 @@ export function createProxy(options: ProxyOptions = {}) {
     res.write(pb.data)
     if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${prewarmDataLen}b in ${Date.now()-handlerT0}ms`)
 
-    // Resolve stream URL for the CDN tail fetch (1s daemon should now be cache hit)
+    // Resolve stream URL for the CDN tail fetch (1s daemon should now be cache hit).
+    // If this throws, we've already sent the prewarm chunk — the browser will play
+    // whatever it buffered and the stream will eventually end on its own.
     const MAX_TAIL_RETRIES = 1
-    const streamUrl = await resolveStreamUrl(videoId)
+    let streamUrl: string | null = null
+    try {
+      streamUrl = await resolveStreamUrl(videoId)
+    } catch (err: any) {
+      console.warn(`[Proxy] Prewarm tail resolve error for ${videoId}:`, err.message)
+    }
     if (!streamUrl) {
       console.error(`[Proxy] Prewarm tail resolve failed for ${videoId}`)
       res.end()
@@ -256,6 +263,13 @@ export function createProxy(options: ProxyOptions = {}) {
         proxyStream(streamUrl, videoId, req, res)
       } catch (err: any) {
         console.error(`[Proxy] Failed to stream ${videoId}:`, err.message)
+        // Headers may already be sent if servePrewarmHit wrote the prewarm
+        // chunk before its internal resolveStreamUrl threw. In that case we
+        // can't send an error status — just close the response.
+        if (res.headersSent) {
+          if (!res.destroyed) res.end()
+          return
+        }
         if (err instanceof YTDlpError && err.code === 'INVALID_VIDEO') {
           res.writeHead(404, { 'Content-Type': 'application/json' })
         } else {
