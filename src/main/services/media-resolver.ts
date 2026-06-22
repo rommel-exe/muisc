@@ -317,20 +317,22 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     const videoIds = tracks
       .map((t) => t.id || t.sourceId)
       .filter((id): id is string => Boolean(id))
+      // Deduplicate — same track may appear multiple times in a playlist
+      .filter((id, idx, arr) => arr.indexOf(id) === idx)
       .slice(0, MAX_RESOLVE)
 
     if (videoIds.length === 0) return
 
-    // First track resolves immediately (highest priority)
-    proxy.triggerBackgroundResolve(videoIds[0]).catch(() => {})
+    // First track resolves immediately
+    proxy.backgroundResolve(videoIds[0]).catch(() => {})
 
-    // Remaining tracks in staggered batches starting from index 1.
-    // ⚠️ Original code started at i=CONCURRENCY (4), skipping indices 1,2,3!
-    // This caused early queue tracks to have cold CDN TTFB (~540ms).
+    // Remaining tracks in staggered batches — each subprocess runs in parallel
+    // (unlike the yt-dlp daemon which is serial). Concurrency is limited to
+    // avoid overwhelming the system with Python process spawns.
     for (let i = 1; i < videoIds.length; i += CONCURRENCY) {
       const batch = videoIds.slice(i, i + CONCURRENCY)
       batch.forEach((id) => {
-        proxy.triggerBackgroundResolve(id).catch(() => {})
+        proxy.backgroundResolve(id).catch(() => {})
       })
       await new Promise((r) => setTimeout(r, 100))
     }

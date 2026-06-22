@@ -317,23 +317,67 @@ export function createProxy(options: ProxyOptions = {}) {
 
   async function doResolve(videoId: string, _controller: AbortController): Promise<string> {
     let lastError: Error | undefined
-    // 🏎️ Fast path: warm daemon (2 attempts)
+
+    // 🏎️ Start subprocess in PARALLEL with the daemon path. The subprocess
+    // uses --get-url via raw yt-dlp (~1.5s) which can be faster than the
+    // daemon when the daemon has a cold module cache or YouTube returns errors.
+    // Both paths cache their result independently — the winner serves the
+    // response, the loser populates the cache for the next click.
+    let subprocessDone = false
+    const subprocessPromise = subprocessGetUrl(videoId, {
+      timeoutMs: 30000,
+      signal: _controller.signal,
+    }).then(url => {
+      subprocessDone = true
+      if (url) {
+        streamCache.set(videoId, {
+          streamUrl: url,
+          cachedAt: Date.now(),
+          contentType: 'audio/mp4',
+        })
+        downloadAudioChunk(videoId, url)
+      }
+      return url
+    })
+
+    // 🏎️ Try the warm daemon while subprocess runs in background.
+    // The daemon is ~500ms when it works (no Python import overhead).
+    // Each attempt RACES against the parallel subprocess so we never wait
+    // for the daemon if the subprocess already finished.
     for (let attempt = 0; attempt <= 1; attempt++) {
       try {
         const daemon = getDaemon()
-        const url = await daemon.getStreamUrl(videoId, 15000)
+        const url = await Promise.race([
+          daemon.getStreamUrl(videoId, 15000),
+          subprocessPromise.then(u => {
+            if (u) return u
+            // Subprocess returned no URL — keep waiting for the daemon.
+            // This .then rejects the race so the daemon attempt continues.
+            return Promise.reject(new Error('subprocess no url'))
+          }),
+        ])
         if (url) {
           streamCache.set(videoId, {
             streamUrl: url,
             cachedAt: Date.now(),
             contentType: 'audio/mp4',
           })
-          // 🔥 Start prewarm chunk download — so the handler can serve from RAM
+          // 🔥 Start prewarm chunk download
           downloadAudioChunk(videoId, url)
           return url
         }
         throw new ProxyError('No stream URL returned', 'STREAM_NOT_FOUND')
       } catch (err: any) {
+        // If subprocess already resolved and returned a URL, it wins.
+        // The race resolved with subprocess — return the URL.
+        if (subprocessDone && err.message === 'subprocess no url') {
+          // Subprocess returned null — continue daemon attempts
+          lastError = new Error('Subprocess returned no URL')
+          if (attempt < 1) {
+            await new Promise((r) => setTimeout(r, 1000))
+          }
+          continue
+        }
         if (_controller.signal.aborted) throw err
         lastError = err
         if (attempt < 1) {
@@ -343,29 +387,12 @@ export function createProxy(options: ProxyOptions = {}) {
       }
     }
 
-    // 🐢 Fallback: subprocess direct resolution.
-    // Daemon may fail with SABR/rate-limiting errors (e.g. "The page needs
-    // to be reloaded"). The subprocess with different player_client flags
-    // can succeed where the daemon fails.
-    console.warn(`[Proxy] Daemon failed for ${videoId}, falling back to subprocess...`)
-    try {
-      const url = await subprocessGetUrl(videoId, {
-        timeoutMs: 30000,
-        signal: _controller.signal,
-      })
-      if (url) {
-        streamCache.set(videoId, {
-          streamUrl: url,
-          cachedAt: Date.now(),
-          contentType: 'audio/mp4',
-        })
-        // 🔥 Start prewarm chunk download
-        downloadAudioChunk(videoId, url)
-        return url
-      }
-    } catch (err: any) {
-      console.warn(`[Proxy] Subprocess fallback also failed for ${videoId}:`, err.message)
-    }
+    // 🐢 Both daemon attempts failed. By now the parallel subprocess
+    // has likely already resolved. Await it — returns cached URL if
+    // it succeeded, or null/throw.
+    console.warn(`[Proxy] Daemon failed for ${videoId}, awaiting parallel subprocess...`)
+    const subprocessUrl = await subprocessPromise
+    if (subprocessUrl) return subprocessUrl
 
     throw lastError ?? new Error('Stream resolve failed')
   }
@@ -748,11 +775,14 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /** Prewarm audio buffer: videoId → first N KB of CDN audio bytes */
   const prewarmBuffer = new Map<string, { data: Buffer; contentType: string }>()
-  /** Max tracks to keep in prewarm buffer (evict oldest) */
-  const MAX_PREWARM = 5
-  /** Bytes to pre-buffer for instant serve — 256KB is enough for moov atom + early audio data.
-   *  At CDN speed ~1.4MB/s this downloads in ~175ms (vs 700ms for 1MB). */
-  const PREWARM_CHUNK_SIZE = 256 * 1024
+  /** Max tracks to keep in prewarm buffer (evict oldest).
+   *  Matches MediaResolver's MAX_RESOLVE (50) so all pre-resolved tracks
+   *  retain their prewarm chunk and serve from RAM on click. */
+  const MAX_PREWARM = 50
+  /** Bytes to pre-buffer for instant serve — 64KB is enough for moov atom + early audio data.
+   *  At CDN speed ~1.4MB/s this downloads in ~50ms (vs 175ms for 256KB).
+   *  50 tracks × 64KB = 3.2MB peak RAM. */
+  const PREWARM_CHUNK_SIZE = 64 * 1024
 
   function evictPrewarmBuffer(): void {
     if (prewarmBuffer.size <= MAX_PREWARM) return
@@ -826,6 +856,58 @@ export function createProxy(options: ProxyOptions = {}) {
   }
 
   /**
+   * Background video resolution using a direct subprocess (NOT the serial daemon).
+   *
+   * Unlike triggerBackgroundResolve which queues work on the serial yt-dlp daemon,
+   * this spawns an independent Python subprocess per call. Multiple calls run in
+   * parallel — no queue contention with foreground daemon requests.
+   *
+   * The subprocess has a 30s timeout (vs 15s in foreground) because Python's
+   * yt-dlp module import takes ~2-4s on a cold process. Once imported, the
+   * --get-url extraction completes in ~500ms. The longer timeout ensures
+   * cold subprocesses succeed without timing out.
+   *
+   * Populates streamCache + starts prewarm chunk download so the proxy handler
+   * can serve cached content from RAM when the user clicks.
+   *
+   * Fire-and-forget: errors are logged but never thrown.
+   * Called from MediaResolver.resolveQueue() for background pre-resolution.
+   */
+  async function backgroundResolve(videoId: string): Promise<void> {
+    // Skip if already cached (streamCache has URL → already resolved)
+    const cached = streamCache.get(videoId)
+    if (cached && Date.now() - cached.cachedAt < cacheTtlMs) return
+
+    // Skip if already in-flight via the daemon path (pendingResolves).
+    // Foreground clicks use triggerResolve which populates pendingResolves,
+    // so this prevents duplicate work when resolveQueue and a foreground
+    // resolve race for the same videoId.
+    if (pendingResolves.has(videoId)) return
+
+    try {
+      // Use subprocess directly (NOT triggerResolve) to avoid clogging the
+      // daemon's serial FIFO queue. The subprocess runs independently and
+      // populates streamCache + prewarm buffer on success.
+      const url = await subprocessGetUrl(videoId, { timeoutMs: 30000 })
+      if (!url) return
+
+      streamCache.set(videoId, {
+        streamUrl: url,
+        cachedAt: Date.now(),
+        contentType: 'audio/mp4',
+      })
+      // Start prewarm chunk download — the chunk stays in RAM for instant serve
+      downloadAudioChunk(videoId, url)
+    } catch (err: any) {
+      // Subprocess failed — this is expected for cold imports. The foreground
+      // resolve (triggerResolve → daemon) will handle the click when the user
+      // taps this track. The daemon is fast (~500ms) and unclogged because we
+      // didn't queue anything on it.
+      console.warn(`[Proxy] Background resolve failed for ${videoId}:`, err.message)
+    }
+  }
+
+  /**
    * Pre-warm the CDN connection for a video: resolve CDN URL via
    * triggerResolve (daemon + subprocess fallback), cache it, then
    * pre-buffer the first chunk into RAM for instant serve.
@@ -863,6 +945,7 @@ export function createProxy(options: ProxyOptions = {}) {
     getStreamCacheEntry,
     setStreamCacheEntry,
     triggerBackgroundResolve,
+    backgroundResolve,
     getPendingResolveCount,
     prewarmCdn,
     streamCache,
