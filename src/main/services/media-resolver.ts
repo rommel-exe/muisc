@@ -96,6 +96,15 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       }
     }
 
+    // 🔥 Force refresh: clear the proxy's stream cache so the handler
+    // doesn't return the stale CDN URL. Without this, resolveStreamUrl
+    // returns the cached URL (still within 5h TTL) even though the
+    // CDN edge is dead/unreachable. The fresh background resolve below
+    // populates a new streamCache entry, and the handler awaits it.
+    if (forceRefresh) {
+      proxy.clearCache(videoId)
+    }
+
     // 🐢 daemon + proxy path.
     // The proxy handler will block until the daemon resolves the stream URL.
     // On a warm daemon (pre-warmed at app startup), this is ~500-800ms.
