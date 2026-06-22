@@ -54,6 +54,14 @@ export class MediaEngine {
 
     this.setMediaState('loading')
 
+    // 🔥 Stop current audio IMMEDIATELY before resolving the new track.
+    // Prevents:
+    //   1. Old audio playing during the 400-650ms resolve (confusing UX)
+    //   2. onTrackEnded firing from the old element during the resolve,
+    //      which races against the new playFromQueue via next()
+    //   3. Network bandwidth split between old and new CDN streams
+    this.audio.pause()
+
     try {
       const queueRef = qList[idx]
       const videoId = queueRef.track.id || queueRef.track.sourceId
@@ -126,6 +134,9 @@ export class MediaEngine {
       if (this._requestCounter !== opRequestId) return
       this.handleError(err)
     } finally {
+      // If THIS operation is the latest and state is stuck at 'loading'
+      // (e.g. because loadAndPlay's play() hung on a bad URL), reset to 'idle'
+      // so the UI is responsive and the user can try again.
       if (this._requestCounter === opRequestId && this._state.state === 'loading') {
         this._state.state = 'idle'
         this.emit()
