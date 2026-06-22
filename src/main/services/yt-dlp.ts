@@ -305,7 +305,7 @@ export async function getStreamUrl(
     '--skip-download',
     '--no-check-certificates',
     '--no-warnings',
-    '--extractor-args', 'youtube:player_client=android,web;player_skip=webpage,js,configs,initial_data',
+    '--extractor-args', 'youtube:player_client=android,web;player_skip=webpage,js,configs,initial_data;youtube_include_dash_manifest=False;youtube_include_hls_manifest=False',
     '--no-add-chapters',
     '--no-embed-metadata',
     '--',
@@ -365,7 +365,7 @@ export async function getVideoInfo(
     // player_skip=webpage,js,configs,initial_data cuts resolve time
     // from ~7s to ~4s and avoids preroll ad processing entirely.
     args.push(
-      '--extractor-args', 'youtube:player_client=android,web;player_skip=webpage,js,configs,initial_data',
+      '--extractor-args', 'youtube:player_client=android,web;player_skip=webpage,js,configs,initial_data;youtube_include_dash_manifest=False;youtube_include_hls_manifest=False',
       '--no-add-chapters',
       '--no-embed-metadata',
     )
