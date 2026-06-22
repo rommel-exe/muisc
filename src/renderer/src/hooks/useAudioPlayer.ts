@@ -225,7 +225,18 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     el.load()
 
     try {
-      await el.play()
+      // 🔥 If the element errors during loading (bad URL, network failure),
+      // the play() promise may hang forever instead of rejecting. Race it
+      // against the error event so we always reject with a real error.
+      const errorOnLoad = new Promise<never>((_, reject) => {
+        el.addEventListener('error', () => {
+          const mediaError = el.error
+          if (!mediaError) return
+          const msg = mediaError.message || `Audio error code ${mediaError.code}`
+          reject(new Error(msg))
+        }, { once: true })
+      })
+      await Promise.race([el.play(), errorOnLoad])
     } catch (err: any) {
       if (err.name === 'AbortError') return
       errorRef.current = err.message
