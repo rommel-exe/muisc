@@ -78,12 +78,33 @@ export function createProxy(options: ProxyOptions = {}) {
   async function servePrewarmHit(
     pb: { data: Buffer; contentType: string },
     videoId: string,
+    req: http.IncomingMessage,
     res: http.ServerResponse,
     handlerT0: number
   ): Promise<void> {
     prewarmBuffer.delete(videoId)
     const prewarmDataLen = pb.data.length
     if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm HIT ${videoId}: ${prewarmDataLen} bytes`)
+
+    // Check for Range header — serve partial content with 206 if present
+    const rangeHeader = req.headers['range']
+    if (rangeHeader) {
+      const parts = rangeHeader.replace(/bytes=/, '').split('-')
+      const start = parseInt(parts[0], 10)
+      const end = parts[1] ? Math.min(parseInt(parts[1], 10), prewarmDataLen - 1) : prewarmDataLen - 1
+      const chunk = pb.data.subarray(start, end + 1)
+      res.writeHead(206, {
+        'Content-Type': pb.contentType,
+        'Content-Range': `bytes ${start}-${end}/${prewarmDataLen}`,
+        'Content-Length': chunk.length,
+        'Access-Control-Allow-Origin': '*',
+      })
+      res.write(chunk)
+      if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${chunk.length}b (range ${start}-${end}) in ${Date.now()-handlerT0}ms`)
+      // No tail fetch for range requests — just serve the partial buffer
+      res.end()
+      return
+    }
 
     res.writeHead(200, {
       'Content-Type': pb.contentType,
@@ -237,7 +258,7 @@ export function createProxy(options: ProxyOptions = {}) {
         // ── Fast path: prewarm buffer HIT (chunk already in RAM) ──
         const pb = prewarmBuffer.get(videoId)
         if (pb) {
-          await servePrewarmHit(pb, videoId, res, handlerT0)
+          await servePrewarmHit(pb, videoId, req, res, handlerT0)
           return
         }
         console.log(`[Proxy] Prewarm MISS ${videoId} — buffer has ${prewarmBuffer.size} entries`)
@@ -254,7 +275,7 @@ export function createProxy(options: ProxyOptions = {}) {
         // playing immediately because moov + audio frames are in the chunk.
         const prewarmHit = prewarmBuffer.get(videoId)
         if (prewarmHit) {
-          await servePrewarmHit(prewarmHit, videoId, res, handlerT0)
+          await servePrewarmHit(prewarmHit, videoId, req, res, handlerT0)
           return
         }
 
