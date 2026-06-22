@@ -54,13 +54,25 @@ export class MediaEngine {
 
     this.setMediaState('loading')
 
-    // 🔥 Stop current audio AND abort any pending loadAndPlay from a
-    // PREVIOUS playFromQueue call (e.g. the user clicked a new track while
-    // the previous one was still resolving). Without this, the stale
-    // loadAndPlay's play() promise hangs on the previous URL until the
-    // CDN times out, blocking _nextImpl's mutex (_advancing) indefinitely.
+    // 🔥 Stop current audio. Without this, setting a new src in loadAndPlay
+    // while a previous track is still playing causes Chromium to hang the
+    // new play() promise (the old play() gets rejected but the element stays
+    // in a bad state). Pause + yield is sufficient — setting el.src = url
+    // inside loadAndPlay aborts any pending play() per the HTML spec.
     this.audio.pause()
-    this.audio.cancelPendingPlay()
+
+    // ⏳ Yield to the event loop so Chromium can settle any pending audio
+    // event handlers (pause, error, etc.) from the previous track before
+    // we start loadAndPlay on a new URL. Without this yield, stale events
+    // from the old playback can race against the new load and put the
+    // audio element in a bad state.
+    //
+    // ⚠️ Do NOT use cancelPendingPlay (el.src='' + load()) here: it fires
+    // an error event asynchronously that races against loadAndPlay's own
+    // error listener, causing new tracks to fail immediately. Pause + yield
+    // is sufficient — setting el.src = url inside loadAndPlay already aborts
+    // any pending play() per the HTML spec.
+    await new Promise((r) => setTimeout(r, 0))
 
     try {
       const queueRef = qList[idx]
