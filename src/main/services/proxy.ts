@@ -171,6 +171,26 @@ export function createProxy(options: ProxyOptions = {}) {
         res.end()
       }
     })
+
+    // 🔥 CDN tail timeout: if the CDN edge that served the prewarm chunk
+    // header stalls when the Range request follows, re-resolve + retry.
+    tailReq.setTimeout(10000, () => {
+      console.warn(`[Proxy] Prewarm TAIL timeout for ${videoId}, re-resolving...`)
+      tailReq.destroy()
+      if (res.destroyed || res.writableEnded) return
+      if (tailAttempt < maxTailRetries) {
+        streamCache.delete(videoId)
+        resolveStreamUrl(videoId)
+          .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
+          .catch(() => {
+            console.error(`[Proxy] Prewarm TAIL timeout re-resolve failed for ${videoId}`)
+            res.end()
+          })
+      } else {
+        console.error(`[Proxy] Prewarm TAIL ${videoId} timed out after retry`)
+        res.end()
+      }
+    })
   }
 
   const server = http.createServer(async (req, res) => {
@@ -391,7 +411,11 @@ export function createProxy(options: ProxyOptions = {}) {
       }
     }
 
-    // 🏎️ Fast path: stream URL via warm daemon (with subprocess fallback)
+    // 🏎️ Fast path: stream URL via the warm yt-dlp daemon (with subprocess fallback).
+    // The daemon extracts stream URLs in ~400ms when warm (pre-started at app init).
+    // This populates streamCache so the proxy handler's resolveStreamUrl() unblocks
+    // and can start piping CDN audio. The parallel metadata path (getVideoInfo below)
+    // provides title/duration/thumbnail for the UI but does NOT block playback.
     const urlPromise: Promise<string> = getDaemon().getStreamUrl(videoId, 15000).then(async (url) => {
       if (url) {
         streamCache.set(videoId, {
@@ -401,24 +425,27 @@ export function createProxy(options: ProxyOptions = {}) {
         })
         // 🔥 Download first PREWARM_CHUNK_SIZE bytes into prewarm buffer.
         // Fire-and-forget — the chunk download completes in background.
-        // The handler will check for the prewarm buffer with a short wait,
-        // and fall through to direct proxyStream if the chunk isn't ready.
+        // The handler will check for the prewarm buffer and serve from RAM if ready,
+        // otherwise fall through to direct proxyStream.
         downloadAudioChunk(videoId, url)
         return url
       }
       // Daemon returned empty URL — fall back to subprocess
       return trySubprocessFallback()
     }).catch(async (err) => {
-      console.warn(`[Proxy] Fast URL resolve failed for ${videoId}:`, err.message)
+      console.warn(`[Proxy] Daemon URL resolve failed for ${videoId}:`, err.message)
       // Daemon errored (SABR/rate-limit) — fall back to subprocess
       return trySubprocessFallback()
     })
 
-    // 🐢 Slow path: full metadata
-    const infoPromise: Promise<YTDlpInfo> = getVideoInfo(videoId, {
-      timeoutMs: 15000,
-      signal: controller.signal,
-    }).then((info) => {
+    // 🐢 Slow path: full metadata — delayed 500ms to let the daemon's fast
+    // URL extraction finish first. This avoids two concurrent yt-dlp
+    // extractions for the same videoId hitting YouTube rate limits.
+    const infoPromise: Promise<YTDlpInfo> = new Promise<void>((r) => setTimeout(r, 500))
+      .then(() => getVideoInfo(videoId, {
+        timeoutMs: 15000,
+        signal: controller.signal,
+      })).then((info) => {
       // Update stream cache with accurate content-type from metadata
       const bestFormat = info.formats
         .filter((f) => f.acodec !== 'none' && f.url)
@@ -493,7 +520,7 @@ export function createProxy(options: ProxyOptions = {}) {
     const tStart = Date.now()
     let cdnFirstByteMs = 0
 
-    const makeRequest = (targetUrl: string, redirectCount = 0) => {
+    const makeRequest = (targetUrl: string, redirectCount = 0, timeoutRetries = 0) => {
       if (redirectCount > 5) {
         clientRes.writeHead(502, { 'Content-Type': 'application/json' })
         clientRes.end(JSON.stringify({ error: 'Too many redirects' }))
@@ -628,6 +655,38 @@ export function createProxy(options: ProxyOptions = {}) {
           // of hanging indefinitely waiting for data that will never come.
           clientRes.end()
         }
+      })
+
+      // 🔥 CDN connection timeout: if CDN edge accepts TCP but sends no data
+      // for 10s, destroy the request, clear the stale cache entry, re-resolve
+      // the stream URL (may get a different CDN edge), and retry.
+      proxyReq.setTimeout(10000, () => {
+        console.warn(`[Proxy] CDN timeout for ${videoId}, re-resolving...`)
+        proxyReq.destroy()
+        // proxyReq.destroy() will fire the 'error' handler above, but since
+        // we already handled the timeout, guard against double-handling.
+        if (clientRes.destroyed || clientRes.writableEnded) return
+        streamCache.delete(videoId)
+        const resolveFn = onReResolve ?? resolveStreamUrl
+        resolveFn(videoId)
+          .then((newUrl) => {
+            if (newUrl) makeRequest(newUrl, redirectCount, timeoutRetries + 1)
+            else if (!clientRes.headersSent) {
+              clientRes.writeHead(502, { 'Content-Type': 'application/json' })
+              clientRes.end(JSON.stringify({ error: 'CDN timeout re-resolve empty' }))
+            } else if (!clientRes.destroyed) {
+              clientRes.end()
+            }
+          })
+          .catch((err) => {
+            console.error(`[Proxy] CDN timeout re-resolve failed for ${videoId}:`, err.message)
+            if (!clientRes.headersSent) {
+              clientRes.writeHead(502, { 'Content-Type': 'application/json' })
+              clientRes.end(JSON.stringify({ error: 'CDN timeout re-resolve failed' }))
+            } else if (!clientRes.destroyed) {
+              clientRes.end()
+            }
+          })
       })
     }
 
