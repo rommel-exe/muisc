@@ -21,6 +21,9 @@ export interface AudioBridge {
   isPlaying(): boolean
   /** Return the current audio error message, if any */
   getError(): string | null
+  /** Abort pending play() by clearing the active element's src.
+   *  Next loadAndPlay will resolve cleanly without racing stale play(). */
+  cancelPendingPlay(): void
 }
 
 // ── IPC abstraction (wraps window.api subset) ──

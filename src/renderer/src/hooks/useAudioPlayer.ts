@@ -27,6 +27,10 @@ export interface AudioPlayerControls {
   setOnTrackEnd: (cb: () => void) => void
   /** Return the current audio error message, if any */
   getError: () => string | null
+  /** Abort any pending play() on the active element by clearing its src.
+   *  The pending play() promise rejects with AbortError (caught silently by
+   *  loadAndPlay), allowing the caller to proceed without hanging. */
+  cancelPendingPlay: () => void
 }
 
 const INITIAL_VOLUME = 0.8
@@ -227,7 +231,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     try {
       // 🔥 If the element errors during loading (bad URL, network failure),
       // the play() promise may hang forever instead of rejecting. Race it
-      // against the error event so we always reject with a real error.
+      // against the error event and a 30s timeout so we always reject.
       const errorOnLoad = new Promise<never>((_, reject) => {
         el.addEventListener('error', () => {
           const mediaError = el.error
@@ -235,6 +239,9 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
           const msg = mediaError.message || `Audio error code ${mediaError.code}`
           reject(new Error(msg))
         }, { once: true })
+        // 30s max: if CDN connection never starts, reject so the caller
+        // can retry or abort instead of hanging indefinitely.
+        setTimeout(() => reject(new Error('Playback timeout after 30s')), 30000)
       })
       await Promise.race([el.play(), errorOnLoad])
     } catch (err: any) {
@@ -316,8 +323,22 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     return errorRef.current
   }, [])
 
+  /** Abort any pending play() promise on the active element by clearing its
+   *  source and calling load(). This causes the pending play() to reject with
+   *  AbortError, which loadAndPlay catches silently — so the caller (e.g.
+   *  playFromQueue) doesn't hang waiting for a stale audio load. */
+  const cancelPendingPlay = useCallback((): void => {
+    const el = getActive()
+    if (!el) return
+    // Setting src = '' + load() resets the element and rejects any pending
+    // play() promise with AbortError. The error handler in loadAndPlay
+    // catches AbortError silently and returns without throwing.
+    el.src = ''
+    el.load()
+  }, [])
+
   return [
     state,
-    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume, setOnTrackEnd, getError },
+    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume, setOnTrackEnd, getError, cancelPendingPlay },
   ]
 }
