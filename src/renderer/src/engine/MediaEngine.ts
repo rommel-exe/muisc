@@ -100,8 +100,16 @@ export class MediaEngine {
       const resolved = await this.api.resolveTrack(videoId)
       if (this._requestCounter !== opRequestId) return
 
-      // If audio fails, loadAndPlay now throws — caught below
-      await this.audio.loadAndPlay(resolved.audioUrl)
+      // If audio fails, loadAndPlay now throws — caught below.
+      // Retry once with forceRefresh for stale CDN URL recovery.
+      try {
+        await this.audio.loadAndPlay(resolved.audioUrl)
+      } catch {
+        this.log('playFromQueue: retrying with forceRefresh')
+        const retried = await this.api.resolveTrack(videoId, { forceRefresh: true })
+        if (this._requestCounter !== opRequestId) return
+        await this.audio.loadAndPlay(retried.audioUrl)
+      }
       if (this._requestCounter !== opRequestId) return
 
       // Re-check the audio element didn't land in error state
