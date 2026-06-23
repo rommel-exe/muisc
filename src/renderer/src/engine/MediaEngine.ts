@@ -54,6 +54,11 @@ export class MediaEngine {
 
     this.setMediaState('loading')
 
+    // Sync QueueEngine index on main process so next()/previous()
+    // advance from the correct position and refreshState() returns
+    // the right queueIndex (~2ms IPC round-trip, negligible latency).
+    await this.api.jumpToQueueIndex(idx)
+
     // 🔥 Stop current audio. Without this, setting a new src in loadAndPlay
     // while a previous track is still playing causes Chromium to hang the
     // new play() promise (the old play() gets rejected but the element stays
@@ -463,15 +468,17 @@ export class MediaEngine {
       // Already preloaded this one
       if (videoId === this._preloadedVideoId) return
 
+      // Set ahead of async resolve so the race guard below works correctly
+      this._preloadedVideoId = videoId
+
       this.api.resolveTrack(videoId).then((resolved) => {
         // Skip-spam: check we're still on the same preload request
         if (this._preloadCounter !== capturedId) return
         // Double-check the preload target hasn't changed
         if (videoId !== this._preloadedVideoId) return
 
-        this._preloadedVideoId = videoId
         this.audio.preloadNext(resolved.audioUrl)
-        this.log(`preloadNext: loaded ${videoId}`)
+        this.log(`preloadNext: loaded ${videoId} in ${Date.now()-this._opStart}ms`)
       }).catch(() => {
         this.log(`preloadNext: failed to resolve ${videoId}`)
       })

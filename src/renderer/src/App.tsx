@@ -292,15 +292,16 @@ function App() {
         {engineState.queueList.map((qt: QueueTrackRef, i: number) => {
           const label = getTrackLabel(qt)
           const isCurrent = i === engineState.queueIndex
+          const loading = engineState.state === 'loading'
           return (
             <div key={qt.queueId}
               style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', background: isCurrent ? '#222' : 'transparent', borderBottom: '1px solid #222' }}>
               <span style={{ width: 20, color: isCurrent ? '#4a4' : '#666' }}>{isCurrent ? '▶' : i + 1}</span>
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
               <span style={{ fontSize: 11, color: '#555' }}>{formatDuration(qt.track.duration)}</span>
-              <button onClick={() => controls.playFromQueue(i)} disabled={engineState.state === 'loading'}
-                style={{ padding: '2px 8px', background: isCurrent ? '#2a2' : '#333', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12 }}>
-                {engineState.state === 'loading' && isCurrent ? '...' : '▶'}
+              <button onClick={() => controls.playFromQueue(i)} disabled={loading}
+                style={{ padding: '2px 8px', background: loading ? '#554' : isCurrent ? '#2a2' : '#333', color: '#fff', border: 'none', cursor: loading ? 'wait' : 'pointer', fontSize: 12 }}>
+                {loading ? '...' : '▶'}
               </button>
             </div>
           )

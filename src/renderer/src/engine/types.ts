@@ -48,6 +48,7 @@ export interface ApiBridge {
     index: number
   }>
   setRepeat(mode: RepeatMode): Promise<string>
+  jumpToQueueIndex(index: number): Promise<{ index: number }>
 }
 
 // ── Engine observable state ──

@@ -60,6 +60,7 @@ export function useMediaEngine(logger?: (msg: string) => void): {
     prefetchQueue: (ids) => window.api.prefetchQueue(ids),
     setShuffle: (active?) => window.api.setShuffle(active),
     setRepeat: (mode) => window.api.setRepeat(mode),
+    jumpToQueueIndex: (index) => window.api.jumpToQueueIndex(index),
   }), [])
 
   const audioBridge = useMemo<AudioBridge>(() => ({

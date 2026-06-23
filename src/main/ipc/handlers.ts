@@ -361,6 +361,18 @@ export function registerHandlers(resolver: MediaResolver): void {
     return { track, index: null }
   })
 
+  /**
+   * Jump to a specific queue index (user clicked a non-current track in the queue).
+   * Unlike next()/previous(), this directly sets the index without modifying history.
+   */
+  ipcMain.handle(IPC_CHANNELS.JUMP_TO_QUEUE_INDEX, (_event, index: number) => {
+    if (typeof index !== 'number' || index < 0) {
+      throw new Error('Invalid index')
+    }
+    QueueEngine.jumpToIndex(index)
+    return { index: QueueEngine.getCurrentIndex() }
+  })
+
   console.log('[IPC] Handlers registered')
 }
 
@@ -389,5 +401,6 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_NEXT)
   ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_PREV)
   ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_PEEK_NEXT)
+  ipcMain.removeAllListeners(IPC_CHANNELS.JUMP_TO_QUEUE_INDEX)
   console.log('[IPC] Handlers unregistered')
 }

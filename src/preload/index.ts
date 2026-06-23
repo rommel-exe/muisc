@@ -164,6 +164,13 @@ const api = {
    */
   queuePeekNext: (): Promise<{ track: Track; index: null } | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.QUEUE_PEEK_NEXT),
+
+  /**
+   * Jump to a specific queue index (user clicked a non-current track in the queue).
+   * Unlike next()/previous(), this directly sets the index without modifying history.
+   */
+  jumpToQueueIndex: (index: number): Promise<{ index: number }> =>
+    ipcRenderer.invoke(IPC_CHANNELS.JUMP_TO_QUEUE_INDEX, index),
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

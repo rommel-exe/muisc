@@ -70,6 +70,17 @@ export function createProxy(options: ProxyOptions = {}) {
    *  to complete so it can serve from RAM (prewarm HIT) instead of piping the CDN. */
   const chunkDownloads = new Map<string, Promise<void>>()
 
+  /** Check whether the client's Range request (if any) starts within the prewarm buffer.
+   *  If the browser is seeking to a byte offset beyond our buffered chunk, serving from
+   *  prewarm would send an empty body with a broken Content-Range header. In that case
+   *  we skip prewarm and fall through to proxyStream, which forwards the Range correctly. */
+  function isRangeInPrewarm(req: http.IncomingMessage, bufferLen: number): boolean {
+    const rangeHeader = req.headers['range']
+    if (!rangeHeader) return true // no Range = full file request
+    const start = parseInt(rangeHeader.replace(/bytes=/, '').split('-')[0], 10)
+    return start < bufferLen
+  }
+
   /** Serve a prewarm buffer chunk from RAM, then pipe the CDN tail.
    *  Called from both the early HIT path (chunk already in buffer) and the
    *  delayed HIT path (chunk downloaded while handler was resolving URL).
@@ -82,27 +93,32 @@ export function createProxy(options: ProxyOptions = {}) {
     res: http.ServerResponse,
     handlerT0: number
   ): Promise<void> {
+    const MAX_TAIL_RETRIES = 1
     prewarmBuffer.delete(videoId)
     const prewarmDataLen = pb.data.length
     if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm HIT ${videoId}: ${prewarmDataLen} bytes`)
 
-    // Check for Range header — serve partial content with 206 if present
     const rangeHeader = req.headers['range']
     if (rangeHeader) {
       const parts = rangeHeader.replace(/bytes=/, '').split('-')
       const start = parseInt(parts[0], 10)
       const end = parts[1] ? Math.min(parseInt(parts[1], 10), prewarmDataLen - 1) : prewarmDataLen - 1
       const chunk = pb.data.subarray(start, end + 1)
+      // Unknown total size (`*`) so browser continues requesting data
       res.writeHead(206, {
         'Content-Type': pb.contentType,
-        'Content-Range': `bytes ${start}-${end}/${prewarmDataLen}`,
-        'Content-Length': chunk.length,
+        'Content-Range': `bytes ${start}-${end}/*`,
         'Access-Control-Allow-Origin': '*',
       })
       res.write(chunk)
       if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${chunk.length}b (range ${start}-${end}) in ${Date.now()-handlerT0}ms`)
-      // No tail fetch for range requests — just serve the partial buffer
-      res.end()
+      // Pipe CDN tail so audio continues past the prewarm buffer.
+      const tailUrl = await resolveStreamUrl(videoId)
+      if (tailUrl) {
+        doTailFetch(videoId, tailUrl, end + 1, res, handlerT0, MAX_TAIL_RETRIES)
+      } else if (!res.destroyed) {
+        res.end()
+      }
       return
     }
 
@@ -117,7 +133,6 @@ export function createProxy(options: ProxyOptions = {}) {
     // Resolve stream URL for the CDN tail fetch (1s daemon should now be cache hit).
     // If this throws, we've already sent the prewarm chunk — the browser will play
     // whatever it buffered and the stream will eventually end on its own.
-    const MAX_TAIL_RETRIES = 1
     let streamUrl: string | null = null
     try {
       streamUrl = await resolveStreamUrl(videoId)
@@ -200,25 +215,9 @@ export function createProxy(options: ProxyOptions = {}) {
       }
     })
 
-    // 🔥 CDN tail timeout: if the CDN edge that served the prewarm chunk
-    // header stalls when the Range request follows, re-resolve + retry.
-    tailReq.setTimeout(10000, () => {
-      console.warn(`[Proxy] Prewarm TAIL timeout for ${videoId}, re-resolving...`)
-      tailReq.destroy()
-      if (res.destroyed || res.writableEnded) return
-      if (tailAttempt < maxTailRetries) {
-        streamCache.delete(videoId)
-        resolveStreamUrl(videoId)
-          .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
-          .catch(() => {
-            console.error(`[Proxy] Prewarm TAIL timeout re-resolve failed for ${videoId}`)
-            res.end()
-          })
-      } else {
-        console.error(`[Proxy] Prewarm TAIL ${videoId} timed out after retry`)
-        res.end()
-      }
-    })
+    // Clean up tail fetch when client disconnects (navigates away, closes tab).
+    // Without this, tailRes keeps buffering data from the CDN that nobody reads.
+    res.on('close', () => { tailReq.destroy() })
   }
 
   const server = http.createServer(async (req, res) => {
@@ -255,9 +254,19 @@ export function createProxy(options: ProxyOptions = {}) {
       try {
         const handlerT0 = Date.now()
 
+        // 🔥 Stale URL prevention: if the browser requests partial content
+        // starting at a non-zero byte, it's continuing a truncated stream.
+        // Clear the cached URL so resolveStreamUrl gets a fresh one —
+        // stale CDN URLs cause 403/timeouts and songs stop mid-playback.
+        const rangeHeader = req.headers['range']
+        if (rangeHeader) {
+          const rangeStart = parseInt(rangeHeader.replace(/bytes=/, '').split('-')[0], 10)
+          if (rangeStart > 0) streamCache.delete(videoId)
+        }
+
         // ── Fast path: prewarm buffer HIT (chunk already in RAM) ──
         const pb = prewarmBuffer.get(videoId)
-        if (pb) {
+        if (pb && isRangeInPrewarm(req, pb.data.length)) {
           await servePrewarmHit(pb, videoId, req, res, handlerT0)
           return
         }
@@ -274,7 +283,7 @@ export function createProxy(options: ProxyOptions = {}) {
         // populated the buffer, serve from RAM + CDN tail — the browser starts
         // playing immediately because moov + audio frames are in the chunk.
         const prewarmHit = prewarmBuffer.get(videoId)
-        if (prewarmHit) {
+        if (prewarmHit && isRangeInPrewarm(req, prewarmHit.data.length)) {
           await servePrewarmHit(prewarmHit, videoId, req, res, handlerT0)
           return
         }
@@ -583,6 +592,18 @@ export function createProxy(options: ProxyOptions = {}) {
     let cdnFirstByteMs = 0
 
     const makeRequest = (targetUrl: string, redirectCount = 0, timeoutRetries = 0) => {
+      const MAX_TIMEOUT_RETRIES = 2
+      if (timeoutRetries > MAX_TIMEOUT_RETRIES) {
+        console.error(`[Proxy] CDN timeout retries exhausted for ${videoId}`)
+        if (!clientRes.headersSent) {
+          clientRes.writeHead(502, { 'Content-Type': 'application/json' })
+          clientRes.end(JSON.stringify({ error: 'CDN timeout after retries' }))
+        } else if (!clientRes.destroyed) {
+          clientRes.end()
+        }
+        return
+      }
+
       if (redirectCount > 5) {
         clientRes.writeHead(502, { 'Content-Type': 'application/json' })
         clientRes.end(JSON.stringify({ error: 'Too many redirects' }))
@@ -700,13 +721,24 @@ export function createProxy(options: ProxyOptions = {}) {
           // so clientRes stays open indefinitely and the audio element hangs.
           proxyRes.on('error', (err) => {
             console.warn(`[Proxy] CDN response error for ${videoId}:`, err.message)
+            // Don't close clientRes if the timeout handler is already dealing with this
+            // (timeoutHandled is declared below but in the same closure; by the time this
+            // callback fires, it exists — Temporal Dead Zone is not an issue for async callbacks).
+            if (timeoutHandled) return
             if (!clientRes.destroyed) clientRes.end()
           })
           proxyRes.pipe(clientRes)
         }
       )
 
+      let timeoutHandled = false
+
       proxyReq.on('error', (err) => {
+        // If the timeout handler already dealt with this, don't send headers
+        // (req.destroy() emits 'error' asynchronously, so the timeout handler
+        // runs before this event — without this flag we'd write 502 here,
+        // then the re-resolved CDN response tries to write 206 → crash).
+        if (timeoutHandled) return
         console.error('[Proxy] Stream request failed:', err.message)
         if (!clientRes.headersSent) {
           clientRes.writeHead(502, { 'Content-Type': 'application/json' })
@@ -724,9 +756,8 @@ export function createProxy(options: ProxyOptions = {}) {
       // the stream URL (may get a different CDN edge), and retry.
       proxyReq.setTimeout(10000, () => {
         console.warn(`[Proxy] CDN timeout for ${videoId}, re-resolving...`)
+        timeoutHandled = true
         proxyReq.destroy()
-        // proxyReq.destroy() will fire the 'error' handler above, but since
-        // we already handled the timeout, guard against double-handling.
         if (clientRes.destroyed || clientRes.writableEnded) return
         streamCache.delete(videoId)
         const resolveFn = onReResolve ?? resolveStreamUrl

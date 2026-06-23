@@ -23,6 +23,7 @@ export const IPC_CHANNELS = {
   QUEUE_NEXT: 'queue-next',
   QUEUE_PREV: 'queue-previous',
   QUEUE_PEEK_NEXT: 'queue-peek-next',
+  JUMP_TO_QUEUE_INDEX: 'jump-to-queue-index',
 
   // Playlists
   CREATE_PLAYLIST: 'create-playlist',

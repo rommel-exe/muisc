@@ -267,6 +267,23 @@ function updateTrackAt(index: number, track: Track): void {
   state.list[index] = { ...state.list[index], track }
 }
 
+/**
+ * Jump to a specific index in the queue (user clicked a queue track).
+ * Unlike next()/previous(), this directly sets the index without
+ * modifying history — the user is explicitly choosing a track.
+ * Also rebuilds shuffle order from the new position.
+ */
+function jumpToIndex(index: number): void {
+  if (index < 0 || index >= state.list.length) return
+  // No-op if already at the target index — called from _nextImpl after
+  // queueNext() already advanced the index. Without this guard, every
+  // auto-advance through playFromQueue would clear history.
+  if (index === state.index) return
+  state.index = index
+  state.history = []
+  buildShuffleOrder()
+}
+
 function getCurrentTrack(): Track | null {
   if (state.index < 0 || state.index >= state.list.length) return null
   return state.list[state.index]?.track ?? null
@@ -344,6 +361,7 @@ export const QueueEngine = {
   getList,
   next,
   previous,
+  jumpToIndex,
   reorder,
   getCurrentTrack,
   peekNext,
