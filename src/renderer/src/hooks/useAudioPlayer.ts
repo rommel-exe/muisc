@@ -181,7 +181,14 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // the element never fired 'ended' because its duration metadata
       // is longer than the actual data received.
       // Without this, truncated songs just hang silently forever.
-      if (el.currentTime < el.duration - 0.5 && !el.paused && el.readyState >= 2) {
+      //
+      // ⚠️ No el.readyState check! When a CDN stream ends prematurely,
+      // the audio element's buffer eventually drains and readyState
+      // drops to 1 (HAVE_METADATA). With readyState >= 2 required,
+      // the detection block would be entirely skipped — truncated
+      // streams would never trigger auto-advance. Just check if
+      // currentTime is stuck and the element isn't paused.
+      if (el.currentTime < el.duration - 0.5 && !el.paused) {
         if (el.currentTime === lastCurrentTime) {
           stalledCount++
           if (stalledCount >= 10) {
