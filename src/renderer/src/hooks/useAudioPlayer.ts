@@ -176,7 +176,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       if (!el || el.duration <= 0 || el.currentTime <= 0) return
 
       // 🔥 Stalled playback detection: if audio has been playing but
-      // currentTime hasn't advanced for 5s AND we're not near the end,
+      // currentTime hasn't advanced for 3s AND we're not near the end,
       // the CDN stream was truncated — the audio buffer ran out but
       // the element never fired 'ended' because its duration metadata
       // is longer than the actual data received.
@@ -188,10 +188,17 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // the detection block would be entirely skipped — truncated
       // streams would never trigger auto-advance. Just check if
       // currentTime is stuck and the element isn't paused.
+      //
+      // ⚠️ Tolerance, not strict equality! When the buffer empties,
+      // currentTime can fluctuate by tiny floating-point amounts
+      // between reads (e.g. 179.999999 vs 180.000001). Strict ===
+      // would miss the stall, stalledCount never increments, and
+      // the detection never fires — the track hangs forever.
       if (el.currentTime < el.duration - 0.5 && !el.paused) {
-        if (el.currentTime === lastCurrentTime) {
+        const diff = Math.abs(el.currentTime - lastCurrentTime)
+        if (diff < 0.01) {
           stalledCount++
-          if (stalledCount >= 10) {
+          if (stalledCount >= 6) {
             console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
             fireTrackEnd()
             stalledCount = 0
