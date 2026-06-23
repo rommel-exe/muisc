@@ -664,6 +664,15 @@ export function createProxy(options: ProxyOptions = {}) {
             return
           }
 
+          // ⚠️ Safety net: if headers were already sent (e.g. from a previous
+          // CDN response that timed out but the timeout handler raced), we
+          // can't write them again. End cleanly so the browser gets EOF
+          // instead of crashing with ERR_HTTP_HEADERS_SENT.
+          if (clientRes.headersSent) {
+            if (!clientRes.destroyed) clientRes.end()
+            return
+          }
+
           // Forward response headers
           const headers: Record<string, string> = {
             'Access-Control-Allow-Origin': '*',
@@ -754,11 +763,17 @@ export function createProxy(options: ProxyOptions = {}) {
       // 🔥 CDN connection timeout: if CDN edge accepts TCP but sends no data
       // for 10s, destroy the request, clear the stale cache entry, re-resolve
       // the stream URL (may get a different CDN edge), and retry.
+      //
+      // ⚠️ Must also check clientRes.headersSent — if a PREVIOUS CDN response
+      // already wrote headers (206/200 for an earlier stream), the retry's
+      // makeRequest will try clientRes.writeHead() on an already-headed
+      // response → ERR_HTTP_HEADERS_SENT. Instead of retrying, just let
+      // the client-side stall detection handle the truncated stream.
       proxyReq.setTimeout(10000, () => {
         console.warn(`[Proxy] CDN timeout for ${videoId}, re-resolving...`)
         timeoutHandled = true
         proxyReq.destroy()
-        if (clientRes.destroyed || clientRes.writableEnded) return
+        if (clientRes.destroyed || clientRes.writableEnded || clientRes.headersSent) return
         streamCache.delete(videoId)
         const resolveFn = onReResolve ?? resolveStreamUrl
         resolveFn(videoId)
