@@ -276,7 +276,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       })
       await Promise.race([el.play(), errorOnLoad])
     } catch (err: any) {
-      if (err.name === 'AbortError') return
+      // ⚠️ Do NOT swallow AbortError here. If el.play() is aborted (e.g.
+      // because a stale preloaded URL prevented playback from starting),
+      // the engine MUST know playback failed so it can retry with a fresh
+      // resolve or surface the error to the user. A silent AbortError catch
+      // causes playFromQueue to think playback succeeded — the engine shows
+      // 'playing' state but the user hears nothing.
       errorRef.current = err.message
       setState((prev) => ({ ...prev, error: err.message, isPlaying: false, loading: false }))
       throw err // Re-throw so the engine knows playback failed
