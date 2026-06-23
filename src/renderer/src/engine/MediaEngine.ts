@@ -25,6 +25,11 @@ export class MediaEngine {
   private _pendingAdvance = false
   /** Mutex: prevents concurrent next() calls (auto-advance + user clicking ⏭). */
   private _advancing = false
+  /** Pending skip count accumulated during an in-progress advance.
+   *  When the user rapidly clicks ⏭ N times, we count them here and
+   *  fast-forward the queue in one batch instead of processing each
+   *  skip sequentially with a full resolve+load cycle. */
+  private _pendingSkips = 0
   private _currentVideoId = ''
   private _preloadedVideoId = ''
   private _listeners = new Set<MediaEngineListener>()
@@ -279,21 +284,24 @@ export class MediaEngine {
     // Without this, if auto-advance fires next() and the user clicks ⏭
     // before it resolves, QueueEngine.next() runs twice, skipping a track.
     if (this._advancing) {
-      this.log('next: already advancing, queuing another advance')
-      // Wait for the current advance to settle, then retry.
-      // This ensures the user's click advances past the auto-advance target.
-      while (this._advancing) {
-        await new Promise((r) => setTimeout(r, 10))
-      }
-      this.log('next: retrying after pending advance')
-      return this.next()
+      this._pendingSkips++
+      this.log(`next: queued advance (pending=${this._pendingSkips})`)
+      return
     }
 
     this._advancing = true
     try {
-      return await this._nextImpl()
+      // Process ONE advance (full resolve + load)
+      await this._nextImpl()
     } finally {
       this._advancing = false
+      // Process any skips queued during the advance — one at a time via
+      // chained next() calls. This avoids the thundering herd of N concurrent
+      // spin-loops that recursively call return this.next().
+      if (this._pendingSkips > 0) {
+        this._pendingSkips--
+        this.next()
+      }
     }
   }
 
