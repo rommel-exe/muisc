@@ -52,6 +52,13 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   /** Ref to latest error so memoized getError() always returns current value */
   const errorRef = useRef<string | null>(null)
 
+  /** Distinguishes user-initiated pause from buffer-drain auto-pause.
+   *  Set true by the pause() control; cleared by onPlay (user pressed play
+   *  or a new track started). When the poll interval sees el.paused but this
+   *  flag is false, it means the element paused itself (buffer drained) —
+   *  treat as a stall and fire auto-advance. */
+  const userPausedRef = useRef(false)
+
   const [state, setState] = useState<AudioPlayerState>({
     isPlaying: false,
     currentTime: 0,
@@ -90,7 +97,10 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       const el = activeIsA.current ? elA.current : elB.current
       if (el) setState((prev) => ({ ...prev, duration: el.duration, loading: false }))
     }
-    const onPlay = () => setState((prev) => ({ ...prev, isPlaying: true }))
+    const onPlay = () => {
+      userPausedRef.current = false
+      setState((prev) => ({ ...prev, isPlaying: true }))
+    }
     const onPause = () => setState((prev) => ({ ...prev, isPlaying: false }))
     const onError = () => {
       const el = activeIsA.current ? elA.current : elB.current
@@ -182,32 +192,45 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // is longer than the actual data received.
       // Without this, truncated songs just hang silently forever.
       //
-      // ⚠️ No el.readyState check! When a CDN stream ends prematurely,
-      // the audio element's buffer eventually drains and readyState
-      // drops to 1 (HAVE_METADATA). With readyState >= 2 required,
-      // the detection block would be entirely skipped — truncated
-      // streams would never trigger auto-advance. Just check if
-      // currentTime is stuck and the element isn't paused.
+      // ⚠️ Also handles auto-paused elements: when the CDN stream ends
+      // mid-track, the audio buffer drains and the browser sets el.paused
+      // to true. Without detection here, the track hangs silently forever.
+      // The userPausedRef distinguishes user-initiated pause from buffer
+      // drain — only the latter triggers auto-advance.
       //
-      // ⚠️ Tolerance, not strict equality! When the buffer empties,
-      // currentTime can fluctuate by tiny floating-point amounts
-      // between reads (e.g. 179.999999 vs 180.000001). Strict ===
-      // would miss the stall, stalledCount never increments, and
-      // the detection never fires — the track hangs forever.
-      if (el.currentTime < el.duration - 0.5 && !el.paused) {
-        const diff = Math.abs(el.currentTime - lastCurrentTime)
-        if (diff < 0.01) {
+      // ⚠️ No el.readyState check! When a CDN stream ends prematurely,
+      // readyState drops to 1 (HAVE_METADATA). With readyState >= 2
+      // required, detection would be entirely skipped.
+      if (el.currentTime < el.duration - 0.5) {
+        if (!el.paused) {
+          // Normal stall check: currentTime stuck while actively playing
+          const diff = Math.abs(el.currentTime - lastCurrentTime)
+          if (diff < 0.01) {
+            stalledCount++
+            if (stalledCount >= 6) {
+              console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
+              fireTrackEnd()
+              stalledCount = 0
+              return
+            }
+          } else {
+            stalledCount = 0
+          }
+          lastCurrentTime = el.currentTime
+        } else if (lastCurrentTime > 0 && !el.ended && !userPausedRef.current) {
+          // ⚠️ Element auto-paused mid-track (buffer drained, not user pause).
+          // After 3s of silence, fire auto-advance.
           stalledCount++
           if (stalledCount >= 6) {
-            console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
+            console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
             fireTrackEnd()
             stalledCount = 0
             return
           }
         } else {
+          // User paused — reset stall counter
           stalledCount = 0
         }
-        lastCurrentTime = el.currentTime
       }
 
       // Use el.ended (set by the UA) OR currentTime >= duration as a catch-all
@@ -345,7 +368,10 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     try { await el.play() } catch (err: any) { if (err.name !== 'AbortError') setState((prev) => ({ ...prev, error: err.message })) }
   }, [])
 
-  const pause = useCallback(() => { getActive()?.pause() }, [])
+  const pause = useCallback(() => {
+    userPausedRef.current = true
+    getActive()?.pause()
+  }, [])
 
   const seek = useCallback((time: number) => {
     const el = getActive()

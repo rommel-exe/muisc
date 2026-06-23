@@ -150,7 +150,9 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /** Fetch the CDN tail (Range from tailStartByte-end) and pipe to response.
    *  Handles 403/410 stale URLs via re-resolve & retry.
-   *  Handles connection errors with one retry attempt. */
+   *  Handles connection errors with one retry attempt.
+   *  Has a 10s timeout on the tail request to prevent indefinite hangs when
+   *  the CDN range request stalls mid-transfer (YouTube edge timeout). */
   function doTailFetch(
     videoId: string,
     tailUrl: string,
@@ -162,6 +164,26 @@ export function createProxy(options: ProxyOptions = {}) {
   ): void {
     const parsedTailUrl = new URL(tailUrl)
     const tailTransport = parsedTailUrl.protocol === 'https:' ? https : http
+    /** Guards against double-retry from both timeout + error handlers. */
+    let handled = false
+    const retryOrEnd = () => {
+      if (handled) return
+      handled = true
+      if (tailAttempt < maxTailRetries) {
+        console.warn(`[Proxy] Prewarm TAIL ${videoId} failed (attempt ${tailAttempt + 1}), retrying...`)
+        streamCache.delete(videoId)
+        resolveStreamUrl(videoId)
+          .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
+          .catch(() => {
+            console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
+            if (!res.destroyed) res.end()
+          })
+      } else {
+        console.error(`[Proxy] Prewarm TAIL ${videoId} failed after retries`)
+        if (!res.destroyed) res.end()
+      }
+    }
+
     const tailReq = tailTransport.get(tailUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
@@ -170,6 +192,15 @@ export function createProxy(options: ProxyOptions = {}) {
       },
       agent: parsedTailUrl.protocol === 'https:' ? cdnAgent : undefined,
     }, (tailRes) => {
+      // Ten seconds: if no data arrives for 10s, treat it as a CDN stall.
+      // This catches YouTube edges that accept TCP, send headers (206), then
+      // never send body data — the request socket appears "active" because
+      // TCP keepalive is healthy, but the audio stream is effectively dead.
+      tailRes.setTimeout(10000, () => {
+        console.warn(`[Proxy] Prewarm TAIL ${videoId}: data stalled 10s, ending response`)
+        tailRes.destroy()
+        if (!res.destroyed) res.end()
+      })
       if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN TTFB=${Date.now()-tBase}ms status=${tailRes.statusCode}`)
 
       // 403/410 — stale CDN URL, re-resolve and retry fresh
@@ -177,47 +208,63 @@ export function createProxy(options: ProxyOptions = {}) {
         console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN returned ${tailRes.statusCode}, re-resolving...`)
         tailRes.destroy()
         if (tailAttempt < maxTailRetries) {
+          handled = true
           streamCache.delete(videoId)
           const resolveFn = onReResolve ?? resolveStreamUrl
           resolveFn(videoId)
             .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
-            .catch((err) => {
-              console.error(`[Proxy] Prewarm TAIL re-resolve failed for ${videoId}:`, err.message)
-              res.end()
+            .catch(() => {
+              console.error(`[Proxy] Prewarm TAIL re-resolve failed for ${videoId}`)
+              if (!res.destroyed) res.end()
             })
         } else {
-          res.end()
+          if (!res.destroyed) res.end()
         }
         return
       }
 
       // Pipe the CDN tail — audio resumes from the prewarm buffer's end
       tailRes.on('error', (tailErr) => {
+        if (handled) return
         console.warn(`[Proxy] Prewarm TAIL stream error for ${videoId}:`, tailErr.message)
         if (!res.destroyed) res.end()
+      })
+      // ⚠️ Also handle response-side errors (e.g. client disconnects mid-pipe).
+      // Without this, a destroyed res silently breaks tailRes.pipe() and the
+      // tail fetch keeps buffering CDN data in memory indefinitely.
+      res.on('error', () => {
+        if (handled) return
+        handled = true
+        tailReq.destroy()
       })
       tailRes.pipe(res)
     })
 
-    tailReq.on('error', (err) => {
-      if (tailAttempt < maxTailRetries) {
-        console.warn(`[Proxy] Prewarm TAIL ${videoId} failed (attempt ${tailAttempt + 1}), retrying...`)
-        streamCache.delete(videoId)
-        resolveStreamUrl(videoId)
-          .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
-          .catch(() => {
-            console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
-            res.end()
-          })
-      } else {
-        console.error(`[Proxy] Prewarm TAIL ${videoId} failed after retry:`, err.message)
-        res.end()
-      }
+    // ⚠️ Timeout on the request itself (before response headers arrive).
+    // This is separate from the response body timeout above — it handles the
+    // case where the CDN edge accepts TCP but never sends HTTP response headers.
+    tailReq.setTimeout(10000, () => {
+      if (handled) return
+      console.warn(`[Proxy] Prewarm TAIL ${videoId}: request timeout, ending response`)
+      handled = true
+      tailReq.destroy()
+      if (!res.destroyed) res.end()
+    })
+
+    tailReq.on('error', () => {
+      // If already handled (timeout or close), ignore the 'error' that
+      // req.destroy() fires asynchronously.
+      if (handled) return
+      retryOrEnd()
     })
 
     // Clean up tail fetch when client disconnects (navigates away, closes tab).
     // Without this, tailRes keeps buffering data from the CDN that nobody reads.
-    res.on('close', () => { tailReq.destroy() })
+    res.on('close', () => {
+      if (handled) return
+      handled = true
+      tailReq.destroy()
+    })
   }
 
   const server = http.createServer(async (req, res) => {
