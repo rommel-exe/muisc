@@ -169,9 +169,33 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // ── Polling fallback: detect track end via currentTime/duration ──
     // YouTube proxy streams often don't fire the DOM ended event.
     // Check every 500ms if the active element has reached its end.
+    let lastCurrentTime = 0
+    let stalledCount = 0
     const pollEnded = setInterval(() => {
       const el = activeIsA.current ? elA.current : elB.current
       if (!el || el.duration <= 0 || el.currentTime <= 0) return
+
+      // 🔥 Stalled playback detection: if audio has been playing but
+      // currentTime hasn't advanced for 5s AND we're not near the end,
+      // the CDN stream was truncated — the audio buffer ran out but
+      // the element never fired 'ended' because its duration metadata
+      // is longer than the actual data received.
+      // Without this, truncated songs just hang silently forever.
+      if (el.currentTime < el.duration - 0.5 && !el.paused && el.readyState >= 2) {
+        if (el.currentTime === lastCurrentTime) {
+          stalledCount++
+          if (stalledCount >= 10) {
+            console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
+            fireTrackEnd()
+            stalledCount = 0
+            return
+          }
+        } else {
+          stalledCount = 0
+        }
+        lastCurrentTime = el.currentTime
+      }
+
       // Use el.ended (set by the UA) OR currentTime >= duration as a catch-all
       if (el.ended || el.currentTime >= el.duration - 0.5) {
         fireTrackEnd()
