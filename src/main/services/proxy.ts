@@ -711,11 +711,13 @@ export function createProxy(options: ProxyOptions = {}) {
             return
           }
 
-          // ⚠️ Safety net: if headers were already sent (e.g. from a previous
-          // CDN response that timed out but the timeout handler raced), we
-          // can't write them again. End cleanly so the browser gets EOF
-          // instead of crashing with ERR_HTTP_HEADERS_SENT.
-          if (clientRes.headersSent) {
+          // ⚠️ Safety net: if the timeout handler already fired and started
+          // re-resolving (timeoutHandled=true), or headers were already sent
+          // from a previous racing CDN response, don't write them again.
+          // Without this, a CDN response that arrives after proxyReq.destroy()
+          // (response was already parsed by the HTTP parser before the destroy)
+          // tries to writeHead on an already-headed response → ERR_HTTP_HEADERS_SENT.
+          if (timeoutHandled || clientRes.headersSent) {
             if (!clientRes.destroyed) clientRes.end()
             return
           }
@@ -784,6 +786,22 @@ export function createProxy(options: ProxyOptions = {}) {
             if (!clientRes.destroyed) clientRes.end()
           })
           proxyRes.pipe(clientRes)
+
+          // ⚠️ Handle client-side errors (e.g. client disconnects mid-pipe).
+          // Without this, a destroyed res silently breaks proxyRes.pipe() and
+          // the CDN stream keeps buffering data in memory indefinitely.
+          // Also catches ERR_STREAM_WRITE_AFTER_END race: if clientRes.end()
+          // fires between pipe's writable check and the actual write, the
+          // error handler prevents a hard crash.
+          clientRes.on('error', (err: Error) => {
+            if ((err as NodeJS.ErrnoException).code === 'ERR_STREAM_WRITE_AFTER_END') return
+            console.warn(`[Proxy] Client response error for ${videoId}:`, err.message)
+          })
+          clientRes.on('close', () => {
+            if (timeoutHandled) return
+            timeoutHandled = true
+            proxyReq.destroy()
+          })
         }
       )
 
@@ -811,16 +829,30 @@ export function createProxy(options: ProxyOptions = {}) {
       // for 10s, destroy the request, clear the stale cache entry, re-resolve
       // the stream URL (may get a different CDN edge), and retry.
       //
-      // ⚠️ Must also check clientRes.headersSent — if a PREVIOUS CDN response
-      // already wrote headers (206/200 for an earlier stream), the retry's
-      // makeRequest will try clientRes.writeHead() on an already-headed
-      // response → ERR_HTTP_HEADERS_SENT. Instead of retrying, just let
-      // the client-side stall detection handle the truncated stream.
+      // ⚠️ Must check clientRes.headersSent before re-resolving:
+      // if headers were already written to the client (mid-stream timeout),
+      // retrying via makeRequest would try writeHead() on an already-headed
+      // response → ERR_HTTP_HEADERS_SENT.
+      //
+      // In that case, end the response gracefully so the audio element
+      // receives EOF and fires the `ended` event naturally, rather than
+      // leaving the response dangling (no more data, no EOF) and relying
+      // on client-side stall detection (3s delay) to auto-advance.
+      //
+      // Both the timeout handler and error handler must be careful not to
+      // skip ending the response: if timeoutHandled is set and the error
+      // handler fires next (from req.destroy()), it must still end clientRes.
       proxyReq.setTimeout(10000, () => {
         console.warn(`[Proxy] CDN timeout for ${videoId}, re-resolving...`)
         timeoutHandled = true
         proxyReq.destroy()
-        if (clientRes.destroyed || clientRes.writableEnded || clientRes.headersSent) return
+        // Headers already sent → end client response so audio element
+        // gets EOF and fires `ended` immediately (instead of stalling).
+        if (clientRes.headersSent || clientRes.writableEnded) {
+          if (!clientRes.destroyed) clientRes.end()
+          return
+        }
+        if (clientRes.destroyed) return
         streamCache.delete(videoId)
         const resolveFn = onReResolve ?? resolveStreamUrl
         resolveFn(videoId)
@@ -907,10 +939,12 @@ export function createProxy(options: ProxyOptions = {}) {
    *  Matches MediaResolver's MAX_RESOLVE (50) so all pre-resolved tracks
    *  retain their prewarm chunk and serve from RAM on click. */
   const MAX_PREWARM = 50
-  /** Bytes to pre-buffer for instant serve — 64KB is enough for moov atom + early audio data.
-   *  At CDN speed ~1.4MB/s this downloads in ~50ms (vs 175ms for 256KB).
-   *  50 tracks × 64KB = 3.2MB peak RAM. */
-  const PREWARM_CHUNK_SIZE = 64 * 1024
+  /** Bytes to pre-buffer for instant serve — 256KB gives ~16s of audio at 128kbps,
+   *  enough time for the CDN tail fetch (separate HTTPS connection + Range request) to
+   *  establish and start streaming replacement data before stall detection fires.
+   *  At CDN speed ~1.4MB/s this downloads in ~180ms.
+   *  50 tracks × 256KB = 12.5MB peak RAM. */
+  const PREWARM_CHUNK_SIZE = 256 * 1024
 
   function evictPrewarmBuffer(): void {
     if (prewarmBuffer.size <= MAX_PREWARM) return
