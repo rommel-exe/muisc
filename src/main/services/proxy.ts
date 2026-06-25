@@ -196,10 +196,27 @@ export function createProxy(options: ProxyOptions = {}) {
       // This catches YouTube edges that accept TCP, send headers (206), then
       // never send body data — the request socket appears "active" because
       // TCP keepalive is healthy, but the audio stream is effectively dead.
+      //
+      // Instead of giving up immediately, retry with a fresh resolve (clears
+      // the stale cache entry). This handles the common case where the cached
+      // CDN URL expires between search-time prewarm and play-time tail fetch.
       tailRes.setTimeout(10000, () => {
-        console.warn(`[Proxy] Prewarm TAIL ${videoId}: data stalled 10s, ending response`)
+        if (handled) return
+        handled = true
+        console.warn(`[Proxy] Prewarm TAIL ${videoId}: data stalled 10s, retrying with fresh resolve...`)
         tailRes.destroy()
-        if (!res.destroyed) res.end()
+        if (tailAttempt < maxTailRetries) {
+          streamCache.delete(videoId)
+          const resolveFn = onReResolve ?? resolveStreamUrl
+          resolveFn(videoId)
+            .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
+            .catch(() => {
+              console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
+              if (!res.destroyed) res.end()
+            })
+        } else {
+          if (!res.destroyed) res.end()
+        }
       })
       if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN TTFB=${Date.now()-tBase}ms status=${tailRes.statusCode}`)
 
@@ -243,12 +260,24 @@ export function createProxy(options: ProxyOptions = {}) {
     // ⚠️ Timeout on the request itself (before response headers arrive).
     // This is separate from the response body timeout above — it handles the
     // case where the CDN edge accepts TCP but never sends HTTP response headers.
+    // Retry with a fresh resolve, same as the body timeout.
     tailReq.setTimeout(10000, () => {
       if (handled) return
-      console.warn(`[Proxy] Prewarm TAIL ${videoId}: request timeout, ending response`)
       handled = true
+      console.warn(`[Proxy] Prewarm TAIL ${videoId}: request timeout, retrying with fresh resolve...`)
       tailReq.destroy()
-      if (!res.destroyed) res.end()
+      if (tailAttempt < maxTailRetries) {
+        streamCache.delete(videoId)
+        const resolveFn = onReResolve ?? resolveStreamUrl
+        resolveFn(videoId)
+          .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
+          .catch(() => {
+            console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
+            if (!res.destroyed) res.end()
+          })
+      } else {
+        if (!res.destroyed) res.end()
+      }
     })
 
     tailReq.on('error', () => {

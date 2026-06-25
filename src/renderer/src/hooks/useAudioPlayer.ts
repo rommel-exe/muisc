@@ -201,31 +201,49 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // ⚠️ No el.readyState check! When a CDN stream ends prematurely,
       // readyState drops to 1 (HAVE_METADATA). With readyState >= 2
       // required, detection would be entirely skipped.
+      //
+      // Instead use el.networkState: when === 2 (NETWORK_LOADING), the
+      // element is still actively downloading data from the CDN.
+      // currentTime may pause temporarily during buffering bursts —
+      // don't count this as a stall. When the stream is truly truncated,
+      // networkState drops to 1 (NETWORK_IDLE) and we proceed normally.
       if (el.currentTime < el.duration - 0.5) {
         if (!el.paused) {
-          // Normal stall check: currentTime stuck while actively playing
-          const diff = Math.abs(el.currentTime - lastCurrentTime)
-          if (diff < 0.01) {
+          // Element is still loading data — this is normal buffering,
+          // not a truncated stream. Reset counter and wait.
+          if (el.networkState === 2) {
+            stalledCount = 0
+            lastCurrentTime = el.currentTime
+          } else {
+            // Normal stall check: currentTime stuck while actively playing
+            const diff = Math.abs(el.currentTime - lastCurrentTime)
+            if (diff < 0.01) {
+              stalledCount++
+              if (stalledCount >= 6) {
+                console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
+                fireTrackEnd()
+                stalledCount = 0
+                return
+              }
+            } else {
+              stalledCount = 0
+            }
+            lastCurrentTime = el.currentTime
+          }
+        } else if (lastCurrentTime > 0 && !el.ended && !userPausedRef.current) {
+          // ⚠️ Element auto-paused mid-track (buffer drained, not user pause).
+          // After 3s of silence, fire auto-advance.
+          // Skip if still loading (element may be buffering again).
+          if (el.networkState === 2) {
+            stalledCount = 0
+          } else {
             stalledCount++
             if (stalledCount >= 6) {
-              console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
+              console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
               fireTrackEnd()
               stalledCount = 0
               return
             }
-          } else {
-            stalledCount = 0
-          }
-          lastCurrentTime = el.currentTime
-        } else if (lastCurrentTime > 0 && !el.ended && !userPausedRef.current) {
-          // ⚠️ Element auto-paused mid-track (buffer drained, not user pause).
-          // After 3s of silence, fire auto-advance.
-          stalledCount++
-          if (stalledCount >= 6) {
-            console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
-            fireTrackEnd()
-            stalledCount = 0
-            return
           }
         } else {
           // User paused — reset stall counter
