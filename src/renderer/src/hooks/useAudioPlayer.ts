@@ -49,6 +49,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   const onTrackEndRef = useRef<(() => void) | null>(null)
   /** Guard ref to prevent duplicate track-end triggers (both ended event + polling fallback) */
   const trackEndedFiredRef = useRef(false)
+  /** Per-track poll state refs. Reset on every track change to prevent stale
+   *  values from the previous track causing false stall detection on the new
+   *  track (e.g. lastCurrentTime from the old track making the diff check
+   *  appear normal when the new track hasn't started advancing yet). */
+  const lastCurrentTimeRef = useRef(0)
+  const stalledCountRef = useRef(0)
   /** Ref to latest error so memoized getError() always returns current value */
   const errorRef = useRef<string | null>(null)
 
@@ -132,11 +138,24 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const fireTrackEnd = () => {
       if (trackEndedFiredRef.current) return
       trackEndedFiredRef.current = true
+      lastCurrentTimeRef.current = 0
+      stalledCountRef.current = 0
       setState((prev) => ({ ...prev, isPlaying: false, currentTime: 0, ended: true }))
       onTrackEndRef.current?.()
     }
 
-    const onEnded = () => fireTrackEnd()
+    const onEnded = (e: Event) => {
+      // 🔥 Stale ended event check: when swapToNext clears the old active
+      // element and starts a new track, the browser may have already queued
+      // an 'ended' event for the old element. By the time this callback runs,
+      // trackEndedFiredRef has been reset for the new track, so the guard
+      // doesn't catch it. Check the event target against the current active
+      // element — if an old element fired ended, ignore it entirely.
+      const target = e.target as HTMLAudioElement
+      const active = getActive()
+      if (target !== active) return
+      fireTrackEnd()
+    }
     const onWaiting = () => setState((prev) => ({ ...prev, loading: true }))
     const onCanPlay = () => setState((prev) => ({ ...prev, loading: false }))
 
@@ -179,11 +198,17 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // ── Polling fallback: detect track end via currentTime/duration ──
     // YouTube proxy streams often don't fire the DOM ended event.
     // Check every 500ms if the active element has reached its end.
-    let lastCurrentTime = 0
-    let stalledCount = 0
+    // Uses refs (not local vars) so loadAndPlay/swapToNext can reset
+    // poll state on track change, preventing false stall detection.
     const pollEnded = setInterval(() => {
       const el = activeIsA.current ? elA.current : elB.current
-      if (!el || el.duration <= 0 || el.currentTime <= 0) return
+      if (!el || el.duration <= 0 || el.currentTime <= 0) {
+        // Element not ready — still counts toward stall detection reset
+        // so a buffering new track doesn't inherit a stale count.
+        lastCurrentTimeRef.current = 0
+        stalledCountRef.current = 0
+        return
+      }
 
       // 🔥 Stalled playback detection: if audio has been playing but
       // currentTime hasn't advanced for 3s AND we're not near the end,
@@ -212,42 +237,42 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
           // Element is still loading data — this is normal buffering,
           // not a truncated stream. Reset counter and wait.
           if (el.networkState === 2) {
-            stalledCount = 0
-            lastCurrentTime = el.currentTime
+            stalledCountRef.current = 0
+            lastCurrentTimeRef.current = el.currentTime
           } else {
             // Normal stall check: currentTime stuck while actively playing
-            const diff = Math.abs(el.currentTime - lastCurrentTime)
+            const diff = Math.abs(el.currentTime - lastCurrentTimeRef.current)
             if (diff < 0.01) {
-              stalledCount++
-              if (stalledCount >= 6) {
+              stalledCountRef.current++
+              if (stalledCountRef.current >= 6) {
                 console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
                 fireTrackEnd()
-                stalledCount = 0
+                stalledCountRef.current = 0
                 return
               }
             } else {
-              stalledCount = 0
+              stalledCountRef.current = 0
             }
-            lastCurrentTime = el.currentTime
+            lastCurrentTimeRef.current = el.currentTime
           }
-        } else if (lastCurrentTime > 0 && !el.ended && !userPausedRef.current) {
+        } else if (lastCurrentTimeRef.current > 0 && !el.ended && !userPausedRef.current) {
           // ⚠️ Element auto-paused mid-track (buffer drained, not user pause).
           // After 3s of silence, fire auto-advance.
           // Skip if still loading (element may be buffering again).
           if (el.networkState === 2) {
-            stalledCount = 0
+            stalledCountRef.current = 0
           } else {
-            stalledCount++
-            if (stalledCount >= 6) {
+            stalledCountRef.current++
+            if (stalledCountRef.current >= 6) {
               console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
               fireTrackEnd()
-              stalledCount = 0
+              stalledCountRef.current = 0
               return
             }
           }
         } else {
           // User paused — reset stall counter
-          stalledCount = 0
+          stalledCountRef.current = 0
         }
       }
 
@@ -296,6 +321,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // "Unknown audio error" and every subsequent loadAndPlay that
     // resolves (including AbortError) inherits the stale error.
     errorRef.current = null
+
+    // 🔥 Reset poll state so stall detection doesn't inherit stale
+    // lastCurrentTime/stalledCount from the previous track. Without this,
+    // a new track loading slowly could trigger false stall detection.
+    lastCurrentTimeRef.current = 0
+    stalledCountRef.current = 0
 
     // Clear standby to avoid conflict
     const standby = getStandby()
@@ -364,6 +395,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // Swap the roles
     activeIsA.current = !activeIsA.current
 
+    // 🔥 Reset poll state for the new track. swapToNext is called after
+    // the old track ended, so lastCurrentTime/stalledCount are stale.
+    // Without this, the new track's first few poll cycles could see
+    // currentTime not advancing and falsely trigger stall detection.
+    lastCurrentTimeRef.current = 0
+    stalledCountRef.current = 0
     trackEndedFiredRef.current = false
     setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 

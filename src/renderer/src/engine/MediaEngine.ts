@@ -451,6 +451,21 @@ export class MediaEngine {
 
   private onTrackEnded(): void {
     if (this._pendingAdvance) return
+    // 🔥 Prevent double-advance: if a next() call is already in progress
+    // (user clicked ⏭ or a previous auto-advance), don't queue another
+    // advance. Without this guard, the DOM 'ended' event or poll interval
+    // can fire during _nextImpl execution (detecting the old track's end),
+    // accumulating _pendingSkips. After _nextImpl completes, the pending
+    // skip causes the newly started track to immediately advance to the
+    // next one — the user hears nothing and the song appears to "skip."
+    //
+    // This also prevents stale 'ended' events from a cleared element
+    // (queued by the browser before swapToNext cleared it) from causing
+    // an unwanted advance after the new track is already playing.
+    if (this._advancing) {
+      this.log('auto-advance: skipped (already advancing)')
+      return
+    }
     this._pendingAdvance = true
     this.log('auto-advance: track ended')
     this.next()
