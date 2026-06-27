@@ -30,6 +30,8 @@ export class MediaEngine {
    *  fast-forward the queue in one batch instead of processing each
    *  skip sequentially with a full resolve+load cycle. */
   private _pendingSkips = 0
+  /** Mutex: prevents concurrent prev() calls from racing against each other or next(). */
+  private _prevInProgress = false
   private _currentVideoId = ''
   private _preloadedVideoId = ''
   private _listeners = new Set<MediaEngineListener>()
@@ -374,6 +376,8 @@ export class MediaEngine {
 
   async prev(): Promise<void> {
     this.t0()
+    if (this._prevInProgress || this._advancing) return
+    this._prevInProgress = true
     this.log('prev: requesting previous track')
     try {
       const result = await this.api.queuePrev()
@@ -385,6 +389,8 @@ export class MediaEngine {
       await this.playFromQueue(result.index)
     } catch (err: any) {
       this.handleError(err)
+    } finally {
+      this._prevInProgress = false
     }
   }
 
