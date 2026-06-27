@@ -58,19 +58,19 @@ async function main() {
 
       // Show raw title + cleaned title for top result
       const cleanedTitle = cleanTitle(best.result.title)
-      const matchIndicator = best.score >= 0.65 ? '✓' : '✗'
+      const matchIndicator = best.score >= 0.7 ? '✓' : '✗'
       process.stdout.write(
         `${matchIndicator} score=${best.score.toFixed(2)} ` +
         `"${cleanedTitle}" (raw: ${best.result.title.slice(0, 50)})\n`
       )
 
-      if (best.score >= 0.65) {
+      if (best.score >= 0.7) {
         matched++
       } else {
         failed.push({
           title: track.title,
           artist: track.artist,
-          error: `Best score ${best.score.toFixed(2)} < 0.65 threshold`,
+          error: `Best score ${best.score.toFixed(2)} < 0.7 threshold`,
         })
       }
     } catch (err: any) {
