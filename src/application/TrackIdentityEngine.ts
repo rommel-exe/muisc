@@ -94,8 +94,8 @@ export function generateSearchQueries(track: SpotifyTrack): string[] {
  * Calculate how closely a candidate result matches the target track.
  * Returns a confidence score between 0.0 and 1.0.
  *
- * DURATION IS THE GATEKEEPER. If duration is within ±2s, the candidate
- * gets a high base score. If duration differs by more than 2s, the
+ * DURATION IS THE GATEKEEPER. If duration is within ±1s, the candidate
+ * gets a high base score. If duration differs by more than 1s, the
  * candidate is almost certainly the wrong recording and scores very low.
  *
  * This forces the search phase to find the EXACT YouTube upload
@@ -103,12 +103,12 @@ export function generateSearchQueries(track: SpotifyTrack): string[] {
  * or cover version will have a detectably different duration.
  *
  * Scoring:
- *   Duration (±2s):    0.0 - 0.6   (gatekeeper — strict)
+ *   Duration (±1s):    0.0 - 0.6   (gatekeeper — strict)
  *   Title match:       0.0 - 0.2   (confirmatory)
  *   Artist/channel:    0.0 - 0.2   (confirmatory)
  *   ─────────────────────────────
  *   Max possible:      1.0
- *   Threshold:         0.65
+ *   Threshold:         0.7
  */
 export function calculateConfidence(
   target: { title: string; artist: string; duration: number },
@@ -120,16 +120,13 @@ export function calculateConfidence(
 
   // ═══ 1. Duration Score (gatekeeper — 0.0 to 0.6) ═══
   //
-  // Strict ±2s window. If the YouTube upload doesn't match the Spotify
-  // track's duration within 2 seconds, it's the wrong recording.
-  // A 3-5s difference might still be the same track (encoding trimming),
-  // so we give a weak score but not enough to pass threshold alone.
-  if (deltaT <= 2) {
+  // Strict ±1s window. If the YouTube upload doesn't match the Spotify
+  // track's duration within 1 second, it's the wrong recording.
+  // No partial credit — any difference beyond 1s gets 0 from duration.
+  if (deltaT <= 1) {
     score += 0.6 // Exact recording match
-  } else if (deltaT <= 5) {
-    score += 0.2 // Possible but unlikely — needs strong other signals
   }
-  // else: Δt > 5s → 0 contribution, candidate won't pass threshold
+  // else: Δt > 1s → 0 contribution, candidate won't pass threshold
 
   // ═══ 2. Title Match (0.0 to 0.2) ═══
   //
@@ -272,9 +269,9 @@ async function resolveFromCandidates(
  * by iterating queries until we find the right duration match.
  *
  * @param incomingTrack - The Spotify track to match
- * @param threshold - Minimum confidence score (0-1). Default 0.65.
+ * @param threshold - Minimum confidence score (0-1). Default 0.7.
  */
-async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): Promise<Track> {
+async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.7): Promise<Track> {
   const queries = generateSearchQueries(incomingTrack)
   const seen = new Set<string>()
   let allCandidates: Array<{ track: Track; score: number }> = []
@@ -301,19 +298,6 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): P
     if (allCandidates.length > 0 && allCandidates[0].score >= threshold) {
       return allCandidates[0].track
     }
-  }
-
-  // All queries exhausted — last resort (remix/original version mismatch).
-  //
-  // When a track has a different version (Remix, Taylor's Version, etc.),
-  // YouTube may not have an upload with matching duration. In that case
-  // the best candidate is the original version with the same title+artist.
-  // Accept it if the title and artist confirm the track identity.
-  //
-  // A score ≥ 0.35 means: title match (≥0.18) + artist/channel signal (≥0.15),
-  // which is strong enough to confirm identity despite duration difference.
-  if (allCandidates.length > 0 && allCandidates[0].score >= 0.35) {
-    return allCandidates[0].track
   }
 
   throw new Error(
