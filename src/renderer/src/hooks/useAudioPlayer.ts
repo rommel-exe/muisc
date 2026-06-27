@@ -145,13 +145,21 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     }
 
     const onEnded = (e: Event) => {
-      // 🔥 Stale ended event check: when swapToNext clears the old active
-      // element and starts a new track, the browser may have already queued
-      // an 'ended' event for the old element. By the time this callback runs,
-      // trackEndedFiredRef has been reset for the new track, so the guard
-      // doesn't catch it. Check the event target against the current active
-      // element — if an old element fired ended, ignore it entirely.
+      // 🔥 Stale ended event detection — two checks:
+      // 1. Element mismatch: swapToNext clears the old active element and
+      //    starts a new track. The browser may have queued an 'ended' event
+      //    for the old element. By the time this callback runs,
+      //    trackEndedFiredRef has already been reset for the new track, so
+      //    the ref guard doesn't catch it. Check the event target against
+      //    the current active element — if a swapped-out element fired
+      //    ended, ignore it.
+      // 2. State mismatch: loadAndPlay reuses the same element — the
+      //    browser queues 'ended', then loadAndPlay calls el.load() which
+      //    resets ended to false. When the callback fires, the element is
+      //    no longer in an ended state. Check target.ended — if the
+      //    element was reloaded (new src), ended is false.
       const target = e.target as HTMLAudioElement
+      if (!target.ended) return
       const active = getActive()
       if (target !== active) return
       fireTrackEnd()
