@@ -65,10 +65,7 @@ async function findBestMatch(
     }
   }
 
-  // Last resort (matches resolveIdentity behavior): accept if title+artist
-  // confirm identity despite duration mismatch (remix vs original etc.)
-  const isFallback = bestScore >= 0.35
-  return { matched: isFallback, score: bestScore, title: bestTitle, isFallback }
+  return { matched: false, score: bestScore, title: bestTitle, isFallback: false }
 }
 
 async function main() {
@@ -86,7 +83,7 @@ async function main() {
 
   for (let i = 0; i < total; i++) {
     const t = playlist.tracks[i]
-    const result = await findBestMatch(t, 0.65)
+    const result = await findBestMatch(t, 0.7)
 
     if (result.matched) {
       matched++
