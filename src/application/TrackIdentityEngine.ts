@@ -106,8 +106,9 @@ export function getAnnotationCategory(rawTitle: string, channelType?: string): A
 
   // Official signals — uploads from the rights holder or auto-generated topics
   const hasOfficialAnnotation = /\(official\s+(audio|video|music\s*video|lyric\s*video|4k\s*remaster|hd)\)/i.test(rawTitle)
-    || /\[official\s+(audio|video|music\s*video)\]/i.test(rawTitle)
+    || /\[official\s+(audio|video|music\s*video|lyric\s*video|4k\s*remaster|hd)\]/i.test(rawTitle)
     || /\(official\)/i.test(rawTitle)
+    || /\[official\]/i.test(rawTitle)
   const isTopic = channelType === 'verified_topic'
   const isVerifiedArtist = channelType === 'verified_artist'
 
@@ -356,24 +357,32 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.7): Pr
     // Sort descending by score
     allCandidates.sort((a, b) => b.score - a.score)
 
-    // Early exit: if the best candidate meets threshold AND is not a
-    // derivative upload (lyrics, instrumental, cover, karaoke, audio-only),
-    // return it immediately. Derivative candidates don't trigger early exit
-    // — we continue searching remaining queries for a better match.
+    // Early exit: scan candidates top-to-bottom for the first non-derivative
+    // with score ≥ threshold and return it. This handles the case where
+    // the top-scoring candidate is a derivative (lyrics, cover, instrumental)
+    // but a non-derivative candidate in the same query's results also exceeds
+    // threshold — we should return the good match immediately instead of
+    // continuing through remaining queries.
+    //
+    // Only checks candidates that meet threshold — once score drops below,
+    // further candidates won't qualify either (list is sorted descending).
     if (allCandidates.length > 0 && allCandidates[0].score >= threshold) {
-      const best = allCandidates[0]
-      const cat = getAnnotationCategory(best.track.title, best.track.channelType)
-      if (cat !== 'derivative') {
-        return best.track
+      for (const candidate of allCandidates) {
+        if (candidate.score < threshold) break
+        const cat = getAnnotationCategory(candidate.track.title, candidate.track.channelType)
+        if (cat !== 'derivative') {
+          return candidate.track
+        }
       }
     }
   }
 
   // All queries exhausted without finding a clean match above threshold.
   // Return the best available rather than throwing, as long as it clears
-  // a minimum viability bar (0.3). This ensures tracks with only derivative
-  // uploads on YouTube still get imported instead of silently skipped.
-  if (allCandidates.length > 0 && allCandidates[0].score >= 0.3) {
+  // a minimum viability bar (0.5). This effectively requires a duration match
+  // (max score without duration is 0.44 = exact title 0.2 + topic 0.2 + official 0.04),
+  // ensuring we never silently import a completely wrong recording.
+  if (allCandidates.length > 0 && allCandidates[0].score >= 0.5) {
     return allCandidates[0].track
   }
 
