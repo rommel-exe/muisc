@@ -300,9 +300,14 @@ export class MediaEngine {
       // Process any skips queued during the advance — one at a time via
       // chained next() calls. This avoids the thundering herd of N concurrent
       // spin-loops that recursively call return this.next().
+      //
+      // ⚠️ MUST await: onTrackEnded resets _pendingAdvance in its .finally()
+      // when the outer next() promise settles. Without await, the recursive
+      // chain runs after _pendingAdvance is already false, letting a genuinely
+      // ended track's onTrackEnded pass the guard mid-chain.
       if (this._pendingSkips > 0) {
         this._pendingSkips--
-        this.next()
+        await this.next()
       }
     }
   }
@@ -478,7 +483,10 @@ export class MediaEngine {
   // ── Internal ──
 
   private onTrackEnded(): void {
-    if (this._pendingAdvance) return
+    if (this._pendingAdvance) {
+      this.log('auto-advance: blocked (pending advance in progress)')
+      return
+    }
     // 🔥 Prevent double-advance: if a next() call is already in progress
     // (user clicked ⏭ or a previous auto-advance), don't queue another
     // advance. Without this guard, the DOM 'ended' event or poll interval
