@@ -174,7 +174,10 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
 
     expect(result).toBeDefined()
     expect(result.id).toBeTruthy()
-    // Best should be the lyrics video over audio-only (better title match)
+    // Both derivatives score identically (0.85 each), so the first one
+    // pushed to allCandidates wins via stable sort (yt_lyrics_1 is first
+    // in the mock array). The important assertion is that the function
+    // returns a candidate instead of throwing.
     expect(result.sourceId).toBe('yt_lyrics_1')
 
     searchSpy.mockRestore()
