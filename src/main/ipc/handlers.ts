@@ -398,28 +398,17 @@ export function registerHandlers(resolver: MediaResolver): void {
  * Unregister all IPC handlers. Call on app quit.
  */
 export function unregisterHandlers(): void {
-  ipcMain.removeAllListeners('resolve-track')
-  ipcMain.removeAllListeners('resolve-track-info')
-  ipcMain.removeAllListeners('test-corrupt-cache')
-  ipcMain.removeAllListeners('test-pending-count')
-  ipcMain.removeAllListeners('load-playlist-into-queue')
-  ipcMain.removeAllListeners('add-playlist-to-queue')
-  ipcMain.removeAllListeners(IPC_CHANNELS.MUSIC_SEARCH)
-  ipcMain.removeAllListeners(IPC_CHANNELS.PREFETCH_QUEUE)
-  ipcMain.removeAllListeners(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST)
-  ipcMain.removeAllListeners(IPC_CHANNELS.CANCEL_SPOTIFY_IMPORT)
-  ipcMain.removeAllListeners(IPC_CHANNELS.GET_QUEUE)
-  ipcMain.removeAllListeners(IPC_CHANNELS.ADD_TO_QUEUE)
-  ipcMain.removeAllListeners(IPC_CHANNELS.REMOVE_FROM_QUEUE)
-  ipcMain.removeAllListeners(IPC_CHANNELS.REORDER_QUEUE)
-  ipcMain.removeAllListeners(IPC_CHANNELS.CLEAR_QUEUE)
-  ipcMain.removeAllListeners(IPC_CHANNELS.SET_SHUFFLE)
-  ipcMain.removeAllListeners(IPC_CHANNELS.SET_REPEAT)
-  ipcMain.removeAllListeners(IPC_CHANNELS.GET_PLAYLISTS)
-  ipcMain.removeAllListeners(IPC_CHANNELS.GET_PLAYLIST_TRACKS)
-  ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_NEXT)
-  ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_PREV)
-  ipcMain.removeAllListeners(IPC_CHANNELS.QUEUE_PEEK_NEXT)
-  ipcMain.removeAllListeners(IPC_CHANNELS.JUMP_TO_QUEUE_INDEX)
+  const allChannels = [
+    'resolve-track',
+    'resolve-track-info',
+    'test-corrupt-cache',
+    'test-pending-count',
+    'load-playlist-into-queue',
+    'add-playlist-to-queue',
+    ...Object.values(IPC_CHANNELS),
+  ]
+  for (const channel of allChannels) {
+    ipcMain.removeHandler(channel)
+  }
   console.log('[IPC] Handlers unregistered')
 }

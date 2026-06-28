@@ -109,18 +109,21 @@ export async function importSpotifyPlaylist(
   const results = await parallelMap(
     tracks,
     async (track, i) => {
-      if (signal?.aborted) {
-        throw new Error('Import cancelled')
-      }
-
-      sendProgress(sender, {
-        current: i,
-        total,
-        currentTitle: `${track.artist} — ${track.title}`,
-        status: 'matching',
-      })
-
       try {
+        if (signal?.aborted) {
+          return {
+            type: 'skip' as const,
+            skip: { title: track.title, artist: track.artist, reason: 'Import cancelled' },
+          }
+        }
+
+        sendProgress(sender, {
+          current: i,
+          total,
+          currentTitle: `${track.artist} — ${track.title}`,
+          status: 'matching',
+        })
+
         const result = await TrackIdentityEngine.resolveIdentity(
           { title: track.title, artist: track.artist, duration: track.duration, explicit: track.explicit },
           MATCH_CONFIDENCE_THRESHOLD

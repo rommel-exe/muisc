@@ -345,6 +345,9 @@ export function createProxy(options: ProxyOptions = {}) {
         // ── Fast path: prewarm buffer HIT (chunk already in RAM) ──
         const pb = prewarmBuffer.get(videoId)
         if (pb && isRangeInPrewarm(req, pb.data.length)) {
+          // Claim atomically — delete before await so concurrent requests
+          // for the same videoId don't both try to serve the same buffer.
+          prewarmBuffer.delete(videoId)
           await servePrewarmHit(pb, videoId, req, res, handlerT0)
           return
         }
@@ -362,6 +365,7 @@ export function createProxy(options: ProxyOptions = {}) {
         // playing immediately because moov + audio frames are in the chunk.
         const prewarmHit = prewarmBuffer.get(videoId)
         if (prewarmHit && isRangeInPrewarm(req, prewarmHit.data.length)) {
+          prewarmBuffer.delete(videoId)
           await servePrewarmHit(prewarmHit, videoId, req, res, handlerT0)
           return
         }

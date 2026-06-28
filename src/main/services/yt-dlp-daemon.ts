@@ -43,6 +43,9 @@ export class YtdlpDaemon {
   /** Total requests processed since daemon start */
   private stats = { processed: 0, failed: 0 }
 
+  /** Number of auto-restart attempts (resets on successful start) */
+  private _restartCount = 0
+
   /**
    * Start the yt-dlp daemon. Resolves when the Python process is
    * initialized and ready to accept requests.
@@ -74,7 +77,13 @@ export class YtdlpDaemon {
 
     this.child.on('close', (exitCode) => {
       if (this.destroyed) return
-      console.warn(`[yt-dlp-daemon] Process exited (code=${exitCode}), restarting...`)
+      // Limit auto-restart attempts to prevent infinite loop when Python env is broken
+      if ((this._restartCount ?? 0) >= 3) {
+        console.error(`[yt-dlp-daemon] Max restarts (3) reached, giving up`)
+        return
+      }
+      this._restartCount = (this._restartCount ?? 0) + 1
+      console.warn(`[yt-dlp-daemon] Process exited (code=${exitCode}), restarting... (attempt ${this._restartCount}/3)`)
       // Reject all pending requests
       this.failAll(new YTDlpError('yt-dlp daemon crashed', 'DAEMON_CRASH'))
       // Auto-restart on crash
@@ -141,6 +150,7 @@ export class YtdlpDaemon {
       })
     })
 
+    this._restartCount = 0
     console.log('[yt-dlp-daemon] Ready')
   }
 
@@ -181,9 +191,10 @@ export class YtdlpDaemon {
     this.failAll(new YTDlpError('yt-dlp daemon stopped', 'DAEMON_CRASH'))
 
     if (this.child) {
-      this.child.kill('SIGTERM')
+      const child = this.child
+      child.kill('SIGTERM')
       // Give it 2s to exit gracefully, then SIGKILL
-      setTimeout(() => this.child?.kill('SIGKILL'), 2000)
+      setTimeout(() => { if (!child.killed) child.kill('SIGKILL') }, 2000)
       this.child = null
     }
     this.rl?.close()

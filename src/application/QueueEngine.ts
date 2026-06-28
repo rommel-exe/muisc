@@ -226,6 +226,13 @@ function previous(): QueueTrack | null {
     const prevIndex = state.list.findIndex(qt => qt.queueId === prevQueueId)
     if (prevIndex >= 0) {
       state.index = prevIndex
+      // Sync shufflePos so next() advances correctly from the historical position.
+      // Without this, shufflePos stays stale after previous() in shuffle mode,
+      // and next() plays a wrong track from the shuffled order.
+      if (state.shuffleActive) {
+        const pos = state.shuffleOrder.indexOf(prevIndex)
+        if (pos >= 0) state.shufflePos = pos + 1
+      }
       return state.list[prevIndex]
     }
   }

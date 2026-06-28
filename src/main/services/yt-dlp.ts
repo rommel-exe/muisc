@@ -215,10 +215,17 @@ function spawnAndCollect(
         stdout = stdout.slice(0, maxBuffer)
       }
     })
+    child.stdout?.on('error', () => {
+      // Suppress unhandled stream errors (EPIPE on abnormal child termination).
+      // Without this, Node.js throws an uncaught exception that can crash Electron.
+    })
 
     // Collect stderr
     child.stderr?.on('data', (data: Buffer) => {
       stderr += data.toString()
+    })
+    child.stderr?.on('error', () => {
+      // Suppress unhandled stream errors (same reason as stdout).
     })
 
     // Handle completion
