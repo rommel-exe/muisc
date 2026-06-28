@@ -54,14 +54,8 @@ function App() {
     }
   }, [doSearch, searchQuery])
 
-  const formatTime = (s: number) =>
+  const formatDuration = (s: number) =>
     `${Math.floor(s / 60)}:${Math.floor(s % 60).toString().padStart(2, '0')}`
-
-  const formatDuration = (s: number) => {
-    const m = Math.floor(s / 60)
-    const sec = s % 60
-    return `${m}:${sec.toString().padStart(2, '0')}`
-  }
 
   // ── Import state ──
   const [spotifyUrl, setSpotifyUrl] = useState('')
@@ -320,7 +314,7 @@ function App() {
             onChange={(e) => controls.seek(Number(e.target.value))}
             style={{ flex: 1, margin: '0 4px' }} />
           <span style={{ fontSize: 11, color: '#888', minWidth: 80, textAlign: 'right' }}>
-            {formatTime(engineState.currentTime)} / {formatTime(engineState.duration)}
+            {formatDuration(engineState.currentTime)} / {formatDuration(engineState.duration)}
           </span>
           <label style={{ fontSize: 11, color: '#666' }}>vol</label>
           <input type="range" min={0} max={1} step={0.05} value={engineState.volume}

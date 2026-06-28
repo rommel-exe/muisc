@@ -6,7 +6,7 @@ import { IPC_CHANNELS } from '../../shared/constants'
 import { importSpotifyPlaylist, rematchPlaylist } from '../services/spotify-importer'
 import { PlaylistEngine } from '../../application/PlaylistEngine'
 import { QueueEngine } from '../../application/QueueEngine'
-import type { Track } from '../../shared/types'
+import type { RepeatMode, Track } from '../../shared/types'
 
 /**
  * Register all IPC handlers for the media resolver pipeline.
@@ -29,17 +29,20 @@ export function registerHandlers(resolver: MediaResolver): void {
 
   /**
    * Debug: Corrupt the cached stream URL for a video to test 403 recovery.
+   * Only available in development mode.
    */
-  ipcMain.handle('test-corrupt-cache', async (_event, videoId: string) => {
-    return resolver.corruptCache(videoId)
-  })
+  if (process.env.NODE_ENV === 'development' || process.env.DEBUG) {
+    ipcMain.handle('test-corrupt-cache', async (_event, videoId: string) => {
+      return resolver.corruptCache(videoId)
+    })
 
-  /**
-   * Debug: Get the number of in-flight background resolve operations.
-   */
-  ipcMain.handle('test-pending-count', async () => {
-    return resolver.getPendingResolveCount()
-  })
+    /**
+     * Debug: Get the number of in-flight background resolve operations.
+     */
+    ipcMain.handle('test-pending-count', async () => {
+      return resolver.getPendingResolveCount()
+    })
+  }
 
   /**
    * Prefetch upcoming queue tracks into the LRU cache.
@@ -51,8 +54,8 @@ export function registerHandlers(resolver: MediaResolver): void {
       throw new Error('Invalid upcomingVideoIds: expected an array of strings')
     }
     // Don't await — prefetch is best-effort background work
-    resolver.prefetchQueue(upcomingVideoIds).catch(() => {
-      // Errors are logged internally in executeBackgroundPreload
+    resolver.prefetchQueue(upcomingVideoIds).catch((err: any) => {
+      console.warn(`[IPC] Prefetch failed:`, err?.message ?? err)
     })
     return true
   })
@@ -142,6 +145,9 @@ export function registerHandlers(resolver: MediaResolver): void {
    * Reorder a track in the queue.
    */
   ipcMain.handle(IPC_CHANNELS.REORDER_QUEUE, (_event, fromIndex: number, toIndex: number) => {
+    if (typeof fromIndex !== 'number' || typeof toIndex !== 'number' || fromIndex < 0 || toIndex < 0) {
+      throw new Error('Invalid reorder indices: expected non-negative numbers')
+    }
     QueueEngine.reorder(fromIndex, toIndex)
     return QueueEngine.getList()
   })
@@ -174,13 +180,18 @@ export function registerHandlers(resolver: MediaResolver): void {
   /**
    * Set repeat mode.
    */
-  ipcMain.handle(IPC_CHANNELS.SET_REPEAT, (_event, mode: string) => {
+  ipcMain.handle(IPC_CHANNELS.SET_REPEAT, (_event, mode: RepeatMode) => {
     if (mode !== 'none' && mode !== 'all' && mode !== 'one') {
       throw new Error('Invalid repeat mode')
     }
     QueueEngine.setRepeatMode(mode)
     return QueueEngine.getRepeatMode()
   })
+
+  /** Generation counter for load-playlist-into-queue / add-playlist-to-queue.
+   *  Incremented on every call. Rematch callbacks check this — if the generation
+   *  has changed, the callback's data is stale and should not overwrite the queue. */
+  let _loadQueueGen = 0
 
   // ── Spotify Import ──
 
@@ -267,14 +278,19 @@ export function registerHandlers(resolver: MediaResolver): void {
     if (tracks.length === 0) {
       throw new Error('Playlist is empty')
     }
+    const loadGen = ++_loadQueueGen
     QueueEngine.setQueue(tracks, 0)
 
     // Fire rematch in background if needed — updates queue when done
     const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
     if (pl?.spotifySource) {
       rematchPlaylist(playlistId).then(() => {
+        // Guard: if a newer load call has replaced the queue, skip stale rematch
+        if (_loadQueueGen !== loadGen) {
+          console.log(`[IPC] Rematch stale for ${playlistId} (gen=${loadGen} != ${_loadQueueGen}), skipping`)
+          return
+        }
         const updated = PlaylistEngine.getPlaylistTracks(playlistId)
-        // Update each queue track in-place to preserve current playback position
         for (let i = 0; i < updated.length; i++) {
           QueueEngine.updateTrackAt(i, updated[i])
         }
@@ -284,9 +300,6 @@ export function registerHandlers(resolver: MediaResolver): void {
       })
     }
 
-    // Batch-resolve all track URLs so streamCache is warm when user clicks.
-    // The first track resolves immediately; remaining tracks are staggered
-    // (4 concurrent, 100ms spacing) to avoid overwhelming the daemon.
     resolver.resolveQueue(tracks).catch(() => {})
 
     return tracks
@@ -308,12 +321,17 @@ export function registerHandlers(resolver: MediaResolver): void {
       throw new Error('Playlist is empty')
     }
     const startIndex = QueueEngine.getList().length
+    const appendGen = ++_loadQueueGen
     QueueEngine.appendTracks(tracks)
 
     // Fire rematch in background — updates appended tracks when done
     const pl = PlaylistEngine.getUserPlaylists().find((p) => p.id === playlistId)
     if (pl?.spotifySource) {
       rematchPlaylist(playlistId).then(() => {
+        if (_loadQueueGen !== appendGen) {
+          console.log(`[IPC] Rematch stale for append ${playlistId} (gen=${appendGen} != ${_loadQueueGen}), skipping`)
+          return
+        }
         const updated = PlaylistEngine.getPlaylistTracks(playlistId)
         for (let i = 0; i < updated.length; i++) {
           QueueEngine.updateTrackAt(startIndex + i, updated[i])
@@ -387,6 +405,7 @@ export function unregisterHandlers(): void {
   ipcMain.removeAllListeners('load-playlist-into-queue')
   ipcMain.removeAllListeners('add-playlist-to-queue')
   ipcMain.removeAllListeners(IPC_CHANNELS.MUSIC_SEARCH)
+  ipcMain.removeAllListeners(IPC_CHANNELS.PREFETCH_QUEUE)
   ipcMain.removeAllListeners(IPC_CHANNELS.IMPORT_SPOTIFY_PLAYLIST)
   ipcMain.removeAllListeners(IPC_CHANNELS.CANCEL_SPOTIFY_IMPORT)
   ipcMain.removeAllListeners(IPC_CHANNELS.GET_QUEUE)

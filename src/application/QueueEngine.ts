@@ -56,22 +56,30 @@ function fisherYatesShuffle(arr: number[]): number[] {
 }
 
 /**
- * Build a fresh shuffle order for the remaining portion of the queue
- * starting from the current index.
+ * Build a fresh shuffle order.
+ *
+ * Normal path: indices after the current index (remaining tracks).
+ * Full reshuffle: ALL indices — used when repeat-all exhausts the shuffle
+ * order and we loop back.
  */
-function buildShuffleOrder(): void {
+function buildShuffleOrder(fullReshuffle: boolean = false): void {
   if (state.list.length === 0) {
     state.shuffleOrder = []
     state.shufflePos = 0
     return
   }
 
-  // Start after current index — remaining tracks
+  if (fullReshuffle) {
+    const all: number[] = Array.from({ length: state.list.length }, (_, i) => i)
+    state.shuffleOrder = fisherYatesShuffle(all)
+    state.shufflePos = 0
+    return
+  }
+
   const remaining: number[] = []
   for (let i = state.index + 1; i < state.list.length; i++) {
     remaining.push(i)
   }
-  // Only shuffle if there are tracks beyond current
   if (remaining.length > 0) {
     state.shuffleOrder = fisherYatesShuffle(remaining)
     state.shufflePos = 0
@@ -183,8 +191,8 @@ function next(): QueueTrack | null {
     }
     // End of shuffle order
     if (state.repeatMode === 'all') {
-      // Re-shuffle and restart
-      buildShuffleOrder()
+      // Re-shuffle all tracks and restart (not just remaining indices)
+      buildShuffleOrder(true)
       state.index = state.shuffleOrder[0] ?? 0
       state.shufflePos = 1
       return state.list[state.index] ?? null

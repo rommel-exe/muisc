@@ -97,7 +97,7 @@ describe('yt-dlp Service', () => {
 // Test B: Proxy Range Request Compliance
 // ─────────────────────────────────────────────
 describe('HTTP Proxy', () => {
-  const TEST_PORT = 18938 // Use different port to avoid conflicts
+  const TEST_PORT = 18948 // Use different port to avoid conflicts with dev server
   let proxy: ReturnType<typeof createProxy>
 
   // Use a real video that will be resolved by yt-dlp

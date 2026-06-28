@@ -110,7 +110,7 @@ function normalizeRow(raw: RawInnertubeVideo): Track | null {
   if (!renderer?.videoId) return null
 
   const videoId = renderer.videoId
-  const rawTitle = renderer.title?.runs?.[0]?.text ?? 'Unknown'
+  const rawTitle = renderer.title?.runs?.map(r => r.text).filter(Boolean).join('') ?? 'Unknown'
   const title = normalizeTitle(rawTitle)
   const durationText = renderer.lengthText?.simpleText ?? '0:00'
   const duration = parseDuration(durationText)
@@ -122,8 +122,8 @@ function normalizeRow(raw: RawInnertubeVideo): Track | null {
     (b) => b?.metadataBadgeRenderer?.style === 'BADGE_STYLE_TYPE_VERIFIED_ARTIST'
   )
     ? 'verified_artist'
-    : extractArtist(rawTitle, title).toLowerCase().endsWith(' - topic')
-      ? 'verified_topic'
+    : rawTitle.toLowerCase().endsWith(' - topic')
+        ? 'verified_topic'
       : undefined
 
   return {
