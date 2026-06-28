@@ -22,9 +22,11 @@ function createPlaylist(name: string): Playlist {
 
 function addTrackToPlaylist(playlistId: string, track: Track): void {
   const existing = _playlistTracks.get(playlistId)
-  if (existing) {
-    existing.push(track)
+  if (!existing) {
+    console.warn(`[PlaylistEngine] addTrackToPlaylist: playlist ${playlistId} not found`)
+    return
   }
+  existing.push(track)
   // Update playlist timestamp
   const pl = _playlists.find(p => p.id === playlistId)
   if (pl) {
@@ -42,11 +44,13 @@ function getPlaylistTracks(playlistId: string): Track[] {
 
 function removeTrackFromPlaylist(playlistId: string, trackId: string): void {
   const existing = _playlistTracks.get(playlistId)
-  if (existing) {
-    const idx = existing.findIndex(t => t.id === trackId)
-    if (idx >= 0) {
-      existing.splice(idx, 1)
-    }
+  if (!existing) {
+    console.warn(`[PlaylistEngine] removeTrackFromPlaylist: playlist ${playlistId} not found`)
+    return
+  }
+  const idx = existing.findIndex(t => t.id === trackId)
+  if (idx >= 0) {
+    existing.splice(idx, 1)
   }
   const pl = _playlists.find(p => p.id === playlistId)
   if (pl) {
@@ -56,10 +60,12 @@ function removeTrackFromPlaylist(playlistId: string, trackId: string): void {
 
 function renamePlaylist(playlistId: string, newName: string): void {
   const pl = _playlists.find(p => p.id === playlistId)
-  if (pl) {
-    pl.name = newName
-    pl.updatedAt = Date.now()
+  if (!pl) {
+    console.warn(`[PlaylistEngine] renamePlaylist: playlist ${playlistId} not found`)
+    return
   }
+  pl.name = newName
+  pl.updatedAt = Date.now()
 }
 
 function deletePlaylist(playlistId: string): void {
@@ -96,13 +102,17 @@ function findPlaylistByName(name: string): Playlist | undefined {
 
 /**
  * Replace all tracks for a playlist (used for re-matching).
+ * Skips the update if the playlist no longer exists (prevents orphaned Map entries
+ * when an async rematch completes after the playlist was deleted).
  */
 function setPlaylistTracks(playlistId: string, tracks: Track[]): void {
-  _playlistTracks.set(playlistId, [...tracks])
   const pl = _playlists.find(p => p.id === playlistId)
-  if (pl) {
-    pl.updatedAt = Date.now()
+  if (!pl) {
+    console.warn(`[PlaylistEngine] setPlaylistTracks: playlist ${playlistId} not found, skipping`)
+    return
   }
+  _playlistTracks.set(playlistId, [...tracks])
+  pl.updatedAt = Date.now()
 }
 
 /**
@@ -110,10 +120,12 @@ function setPlaylistTracks(playlistId: string, tracks: Track[]): void {
  */
 function setPlaylistSource(playlistId: string, source: SpotifySource): void {
   const pl = _playlists.find(p => p.id === playlistId)
-  if (pl) {
-    pl.spotifySource = source
-    pl.updatedAt = Date.now()
+  if (!pl) {
+    console.warn(`[PlaylistEngine] setPlaylistSource: playlist ${playlistId} not found`)
+    return
   }
+  pl.spotifySource = source
+  pl.updatedAt = Date.now()
 }
 
 function clear(): void {
