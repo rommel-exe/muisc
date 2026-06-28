@@ -235,11 +235,6 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // readyState drops to 1 (HAVE_METADATA). With readyState >= 2
       // required, detection would be entirely skipped.
       //
-      // Instead use el.networkState: when === 2 (NETWORK_LOADING), the
-      // element is still actively downloading data from the CDN.
-      // currentTime may pause temporarily during buffering bursts —
-      // don't count this as a stall. When the stream is truly truncated,
-      // networkState drops to 1 (NETWORK_IDLE) and we proceed normally.
       // Run stalled detection for the entire track lifetime. The 3s
       // counter (6 polls × 500ms) naturally prevents false positives —
       // currentTime must stop advancing for 3 full seconds before firing.
@@ -249,41 +244,33 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // stalled detection nor end detection catches the completion.
       if (!el.ended) {
         if (!el.paused) {
-          // Element is still loading data — this is normal buffering,
-          // not a truncated stream. Reset counter and wait.
-          if (el.networkState === 2) {
-            stalledCountRef.current = 0
-            lastCurrentTimeRef.current = el.currentTime
-          } else {
-            // Normal stall check: currentTime stuck while actively playing
-            const diff = Math.abs(el.currentTime - lastCurrentTimeRef.current)
-            if (diff < 0.01) {
-              stalledCountRef.current++
-              if (stalledCountRef.current >= 6) {
-                console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
-                fireTrackEnd()
-                stalledCountRef.current = 0
-                return
-              }
-            } else {
-              stalledCountRef.current = 0
-            }
-            lastCurrentTimeRef.current = el.currentTime
-          }
-        } else if (lastCurrentTimeRef.current > 0 && !el.ended && !userPausedRef.current) {
-          // ⚠️ Element auto-paused mid-track (buffer drained, not user pause).
-          // After 3s of silence, fire auto-advance.
-          // Skip if still loading (element may be buffering again).
-          if (el.networkState === 2) {
-            stalledCountRef.current = 0
-          } else {
+          // ⚠️ No networkState check! YouTube truncated streams often
+          // stay in NETWORK_LOADING (2) forever — the element keeps
+          // trying to fetch more data that will never arrive. Checking
+          // networkState would bypass stall detection entirely.
+          // The 3s threshold (6 polls) handles genuine buffering bursts.
+          const diff = Math.abs(el.currentTime - lastCurrentTimeRef.current)
+          if (diff < 0.01) {
             stalledCountRef.current++
             if (stalledCountRef.current >= 6) {
-              console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
+              console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
               fireTrackEnd()
               stalledCountRef.current = 0
               return
             }
+          } else {
+            stalledCountRef.current = 0
+          }
+          lastCurrentTimeRef.current = el.currentTime
+        } else if (lastCurrentTimeRef.current > 0 && !el.ended && !userPausedRef.current) {
+          // ⚠️ Element auto-paused mid-track (buffer drained, not user pause).
+          // After 3s of silence, fire auto-advance.
+          stalledCountRef.current++
+          if (stalledCountRef.current >= 6) {
+            console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
+            fireTrackEnd()
+            stalledCountRef.current = 0
+            return
           }
         } else {
           // User paused — reset stall counter
