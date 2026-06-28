@@ -88,6 +88,47 @@ export function generateSearchQueries(track: SpotifyTrack): string[] {
   return [...new Set(queries)]
 }
 
+// ── Annotation Category ──
+
+type AnnotationCategory = 'official' | 'derivative' | 'normal'
+
+/**
+ * Classify a YouTube video's annotation type by examining its raw title
+ * (before any cleanup) and channel type.
+ *
+ * This is the tiebreaker that lets us distinguish "Eminem - Without Me
+ * (Official Video)" from "Eminem - Without Me (Lyrics)" — both become
+ * "Without Me" after cleanTitle(), but their raw titles tell different
+ * stories about whether the upload is official content or a derivative.
+ */
+export function getAnnotationCategory(rawTitle: string, channelType?: string): AnnotationCategory {
+  const lower = rawTitle.toLowerCase()
+
+  // Official signals — uploads from the rights holder or auto-generated topics
+  const hasOfficialAnnotation = /\(official\s+(audio|video|music\s*video|lyric\s*video|4k\s*remaster|hd)\)/i.test(rawTitle)
+    || /\[official\s+(audio|video|music\s*video)\]/i.test(rawTitle)
+    || /\(official\)/i.test(rawTitle)
+  const isTopic = channelType === 'verified_topic'
+  const isVerifiedArtist = channelType === 'verified_artist'
+
+  if (hasOfficialAnnotation || isTopic || isVerifiedArtist) {
+    return 'official'
+  }
+
+  // Derivative signals — non-original content
+  const hasLyrics = /\(lyrics?\s*(video)?\)/i.test(lower) || /\[lyrics?\]/i.test(lower)
+  const hasAudioOnly = /\(audio\s*only\)/i.test(lower)
+  const hasInstrumental = /\binstrumental\b/i.test(lower) && !/official\s+instrumental/i.test(lower)
+  const hasCover = /\bcover\b/i.test(lower) && !/official\s+cover/i.test(lower)
+  const hasKaraoke = /\bkaraoke\b/i.test(lower)
+
+  if (hasLyrics || hasAudioOnly || hasInstrumental || hasCover || hasKaraoke) {
+    return 'derivative'
+  }
+
+  return 'normal'
+}
+
 // ── Confidence Scoring ──
 
 /**
@@ -106,9 +147,15 @@ export function generateSearchQueries(track: SpotifyTrack): string[] {
  *   Duration (±1s):    0.0 - 0.6   (gatekeeper — strict)
  *   Title match:       0.0 - 0.2   (confirmatory)
  *   Artist/channel:    0.0 - 0.2   (confirmatory)
+ *   Annotation quality: -0.10 to +0.04 (tiebreaker)
  *   ─────────────────────────────
  *   Max possible:      1.0
  *   Threshold:         0.7
+ *
+ * Annotation quality is the tiebreaker when multiple YouTube videos share
+ * the same duration and cleaned title. Official uploads get a slight bonus;
+ * derivative uploads (lyrics, instrumental, cover, karaoke, audio-only)
+ * get a significant penalty because they are almost never the intended match.
  */
 export function calculateConfidence(
   target: { title: string; artist: string; duration: number },
@@ -180,6 +227,21 @@ export function calculateConfidence(
     if (artistMatch > 0) {
       score += 0.1 * (artistMatch / artistParts.length)
     }
+  }
+
+  // ═══ 4. Annotation Quality Score (tiebreaker: -0.10 to +0.04) ═══
+  //
+  // Examines the RAW candidate title (before cleanTitle strips annotations)
+  // to distinguish official uploads from derivative content.
+  //
+  // When two candidates have the same duration, same cleaned title,
+  // and similar artist signals (e.g. lyrics video vs official video),
+  // this is the tiebreaker that pushes official content above derivative.
+  const annotationCat = getAnnotationCategory(candidate.title, candidate.channelType)
+  if (annotationCat === 'derivative') {
+    score -= 0.10  // significant penalty for lyrics, instrumental, cover, karaoke, audio-only
+  } else if (annotationCat === 'official') {
+    score += 0.04  // slight bonus for official uploads and verified channels
   }
 
   // Clamp to [0, 1]
@@ -294,14 +356,29 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.7): Pr
     // Sort descending by score
     allCandidates.sort((a, b) => b.score - a.score)
 
-    // Early exit: if the best candidate already meets threshold, return it
+    // Early exit: if the best candidate meets threshold AND is not a
+    // derivative upload (lyrics, instrumental, cover, karaoke, audio-only),
+    // return it immediately. Derivative candidates don't trigger early exit
+    // — we continue searching remaining queries for a better match.
     if (allCandidates.length > 0 && allCandidates[0].score >= threshold) {
-      return allCandidates[0].track
+      const best = allCandidates[0]
+      const cat = getAnnotationCategory(best.track.title, best.track.channelType)
+      if (cat !== 'derivative') {
+        return best.track
+      }
     }
   }
 
+  // All queries exhausted without finding a clean match above threshold.
+  // Return the best available rather than throwing, as long as it clears
+  // a minimum viability bar (0.3). This ensures tracks with only derivative
+  // uploads on YouTube still get imported instead of silently skipped.
+  if (allCandidates.length > 0 && allCandidates[0].score >= 0.3) {
+    return allCandidates[0].track
+  }
+
   throw new Error(
-    `No match above confidence threshold for "${incomingTrack.artist} — ${incomingTrack.title}"` +
+    `No match for "${incomingTrack.artist} — ${incomingTrack.title}"` +
     (allCandidates.length > 0 ? ` (best=${allCandidates[0].score.toFixed(2)})` : ' (no candidates)')
   )
 }
@@ -312,4 +389,5 @@ export const TrackIdentityEngine = {
   resolveFromCandidates,
   resolveIdentity,
   calculateConfidence,
+  getAnnotationCategory,
 }

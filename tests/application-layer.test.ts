@@ -86,7 +86,102 @@ describe('TrackIdentityEngine 100% Accuracy Verification', () => {
   })
 })
 
-// ── Test Suite 2: Search, & Database Hydration ──
+// ── Test Suite 2: Annotation Quality Discrimination ──
+
+describe('TrackIdentityEngine Annotation Quality Scoring', () => {
+  const target = { title: 'Without Me', artist: 'Eminem', duration: 290 }
+
+  // S1: Official video vs lyrics video with same duration — official must score higher
+  it('S1: should prefer official over lyrics when duration is identical', () => {
+    const official = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Eminem - Without Me (Official Video)',
+      duration: 290,
+      channelType: undefined,
+    })
+    const lyrics = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Eminem - Without Me (Lyrics)',
+      duration: 290,
+      channelType: undefined,
+    })
+    expect(official).toBeGreaterThan(lyrics)
+    expect(official).toBeGreaterThanOrEqual(0.7)
+  })
+
+  // S2: Cover song vs official with same duration — official must score higher
+  it('S2: should prefer official over cover when duration is identical', () => {
+    const official = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Eminem - Without Me (Official Music Video)',
+      duration: 290,
+      channelType: undefined,
+    })
+    const cover = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Without Me (Piano Cover)',
+      duration: 290,
+      channelType: undefined,
+    })
+    expect(official).toBeGreaterThan(cover)
+    expect(official).toBeGreaterThanOrEqual(0.7)
+  })
+
+  // S3: Topic channel vs audio-only with same duration — topic must score higher
+  it('S3: should prefer topic channel over audio-only when duration is identical', () => {
+    const topic = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Without Me',
+      duration: 290,
+      channelType: 'verified_topic',
+    })
+    const audioOnly = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Eminem - Without Me (Audio)',
+      duration: 290,
+      channelType: undefined,
+    })
+    expect(topic).toBeGreaterThan(audioOnly)
+    expect(topic).toBeGreaterThanOrEqual(0.7)
+  })
+
+  // S4: resolveIdentity with all derivative candidates — should return best, not throw
+  it('S4: resolveIdentity with only derivative matches should return best candidate instead of throwing', async () => {
+    // Mock SearchEngine.search to return only derivative results
+    const originalSearch = await import('../src/application/SearchEngine')
+    const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
+
+    searchSpy.mockResolvedValue([
+      {
+        id: 'yt_lyrics_1',
+        title: 'Eminem - Without Me (Lyrics)',
+        artist: 'Eminem',
+        duration: 290,
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_lyrics_1',
+      },
+      {
+        id: 'yt_audio_2',
+        title: 'Eminem - Without Me (Audio Only)',
+        artist: 'Eminem',
+        duration: 290,
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_audio_2',
+      },
+    ])
+
+    // Should not throw — should return best available
+    const result = await TrackIdentityEngine.resolveIdentity(
+      { title: 'Without Me', artist: 'Eminem', duration: 290 },
+      0.7
+    )
+
+    expect(result).toBeDefined()
+    expect(result.id).toBeTruthy()
+    // Best should be the lyrics video over audio-only (better title match)
+    expect(result.sourceId).toBe('yt_lyrics_1')
+
+    searchSpy.mockRestore()
+  })
+})
+
+// ── Test Suite 3: Search, & Database Hydration ──
 
 describe('Application Layer Search & Infrastructure', () => {
   beforeEach(() => {
