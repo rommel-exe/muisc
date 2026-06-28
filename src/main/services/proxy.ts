@@ -87,7 +87,7 @@ export function createProxy(options: ProxyOptions = {}) {
    *  Writing the already-buffered data to `res` lets the browser start parsing
    *  immediately while the CDN tail fetch runs in parallel. */
   async function servePrewarmHit(
-    pb: { data: Buffer; contentType: string },
+    pb: { data: Buffer; contentType: string; totalLength?: number },
     videoId: string,
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -105,9 +105,11 @@ export function createProxy(options: ProxyOptions = {}) {
       const end = parts[1] ? Math.min(parseInt(parts[1], 10), prewarmDataLen - 1) : prewarmDataLen - 1
       const chunk = pb.data.subarray(start, end + 1)
       // Unknown total size (`*`) so browser continues requesting data
+      const totalLen = pb.totalLength ?? '*'
       res.writeHead(206, {
         'Content-Type': pb.contentType,
-        'Content-Range': `bytes ${start}-${end}/*`,
+        'Content-Range': `bytes ${start}-${end}/${totalLen}`,
+        'Content-Length': chunk.length.toString(),
         'Access-Control-Allow-Origin': '*',
       })
       res.write(chunk)
@@ -779,6 +781,7 @@ export function createProxy(options: ProxyOptions = {}) {
           let prewarmTotal = 0
           let prewarmDone = false
           const ct = proxyRes.headers['content-type'] ?? 'audio/mpeg'
+          const totalContentLength = parseInt(proxyRes.headers['content-length'] ?? '', 10) || undefined
           proxyRes.on('data', (chunk: Buffer) => {
             if (dataStartMs === 0) {
               dataStartMs = Date.now()
@@ -791,7 +794,7 @@ export function createProxy(options: ProxyOptions = {}) {
               prewarmTotal += chunk.length
               if (prewarmTotal >= PREWARM_CHUNK_SIZE) {
                 prewarmDone = true
-                prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct })
+                prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct, totalLength: totalContentLength })
                 evictPrewarmBuffer()
               }
             }
@@ -799,7 +802,7 @@ export function createProxy(options: ProxyOptions = {}) {
           proxyRes.on('end', () => {
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA END ${videoId}: ${dataBytes} bytes transferred`)
             if (!prewarmDone && prewarmTotal > 0) {
-              prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct })
+              prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct, totalLength: totalContentLength })
               evictPrewarmBuffer()
             }
           })
@@ -963,7 +966,7 @@ export function createProxy(options: ProxyOptions = {}) {
   }
 
   /** Prewarm audio buffer: videoId → first N KB of CDN audio bytes */
-  const prewarmBuffer = new Map<string, { data: Buffer; contentType: string }>()
+  const prewarmBuffer = new Map<string, { data: Buffer; contentType: string; totalLength?: number }>()
   /** Max tracks to keep in prewarm buffer (evict oldest).
    *  Matches MediaResolver's MAX_RESOLVE (50) so all pre-resolved tracks
    *  retain their prewarm chunk and serve from RAM on click. */
@@ -1010,6 +1013,7 @@ export function createProxy(options: ProxyOptions = {}) {
         },
       }, (res) => {
         const ct = res.headers['content-type'] ?? 'audio/mpeg'
+        const totalLen = parseInt(res.headers['content-length'] ?? '', 10) || undefined
         res.on('data', (chunk: Buffer) => {
           if (done) return
           chunks.push(chunk)
@@ -1017,7 +1021,7 @@ export function createProxy(options: ProxyOptions = {}) {
           if (total >= PREWARM_CHUNK_SIZE) {
             done = true
             req.destroy()
-            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
+            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct, totalLength: totalLen })
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes in ${Date.now()-t0}ms`)
             evictPrewarmBuffer()
             resolve()
@@ -1025,7 +1029,7 @@ export function createProxy(options: ProxyOptions = {}) {
         })
         res.on('end', () => {
           if (!done && total > 0) {
-            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct })
+            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct, totalLength: totalLen })
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes (complete) in ${Date.now()-t0}ms`)
             evictPrewarmBuffer()
           }
