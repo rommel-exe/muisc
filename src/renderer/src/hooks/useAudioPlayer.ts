@@ -240,7 +240,14 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // currentTime may pause temporarily during buffering bursts —
       // don't count this as a stall. When the stream is truly truncated,
       // networkState drops to 1 (NETWORK_IDLE) and we proceed normally.
-      if (el.currentTime < el.duration - 0.5) {
+      // Run stalled detection for the entire track lifetime. The 3s
+      // counter (6 polls × 500ms) naturally prevents false positives —
+      // currentTime must stop advancing for 3 full seconds before firing.
+      // No near-end exclusion because metadata duration from yt-dlp can
+      // be LONGER than the actual stream (proxy streams ending early).
+      // Excluding near-end time would create a dead zone where neither
+      // stalled detection nor end detection catches the completion.
+      if (!el.ended) {
         if (!el.paused) {
           // Element is still loading data — this is normal buffering,
           // not a truncated stream. Reset counter and wait.
@@ -284,8 +291,16 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
         }
       }
 
-      // Use el.ended (set by the UA) OR currentTime >= duration as a catch-all
-      if (el.ended || el.currentTime >= el.duration - 0.5) {
+      // Use el.ended (set by the UA) as the primary end signal.
+      // Fallback to currentTime >= duration ONLY when the element has
+      // stopped playing (el.paused). YouTube metadata duration from yt-dlp
+      // is often SHORTER than the actual audio stream — checking only
+      // currentTime >= duration would cause tracks to be skipped mid-song
+      // while the audio is still playing. The stalled detection above
+      // handles the opposite case (metadata longer than actual stream).
+      if (el.ended) {
+        fireTrackEnd()
+      } else if (el.currentTime >= el.duration - 0.5 && el.paused) {
         fireTrackEnd()
       }
     }, 500)

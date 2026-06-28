@@ -326,18 +326,40 @@ export class MediaEngine {
         this.log('next: instant swap (preloaded hit)')
         const swapped = await this.audio.swapToNext()
         if (swapped) {
+          // 🔥 Guard: user may have navigated to a different track while
+          // swapToNext was executing. If the queue index changed, abort
+          // the auto-advance — the user's explicit navigation takes priority.
+          await this.refreshState()
+          if (this._state.queueIndex !== result.index) {
+            this.log('next: queue changed during swap, aborting auto-advance')
+            return
+          }
           this._currentVideoId = videoId
           this._state.currentTrack = result.track
-          this._state.queueIndex = result.index
+          // queueIndex was already set by refreshState() — no need to
+          // overwrite since it already matches result.index (guard above).
           this._state.currentTime = 0
           this._state.error = null
           this._preloadedVideoId = ''
           this.emit()
           this.preloadNext()
-          await this.refreshState()
+          // refreshState() already called above — skip duplicate
           return
         }
         this.log('next: swap failed, falling through to resolve')
+      }
+
+      // 🔥 Abort guard: the user may have navigated to a different track
+      // while queueNext() was resolving (slow IPC round-trip). If the
+      // queue index changed since the call, the user's explicit navigation
+      // takes priority — abort the auto-advance without overriding their
+      // selection. playFromQueue calls jumpToQueueIndex which would
+      // overwrite the user's chosen index, clear history, and rebuild
+      // shuffle order — all of which we must avoid.
+      await this.refreshState()
+      if (this._state.queueIndex !== result.index) {
+        this.log(`next: queue changed since advance (expected=${result.index}, actual=${this._state.queueIndex}), aborting auto-advance`)
+        return
       }
 
       // Fallback: resolve and play
