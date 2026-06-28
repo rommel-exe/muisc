@@ -291,6 +291,15 @@ export class MediaEngine {
       return
     }
 
+    // 🔥 DIAGNOSTIC: log who called next() — specifically looking for
+    // callers that bypass onTrackEnded() (where auto-advance: track ended
+    // would appear). Expected callers: onTrackEnded, controls.next (user),
+    // or recursive from _pendingSkips in finally block.
+    if (!this._pendingAdvance) {
+      const stack = new Error().stack?.split('\n').slice(2, 5).join(' → ') ?? 'no stack'
+      this.log(`next: CALLED WITHOUT auto-advance — stack: ${stack}`)
+    }
+
     this._advancing = true
     try {
       // Process ONE advance (full resolve + load)
