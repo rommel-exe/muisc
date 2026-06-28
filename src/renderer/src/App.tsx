@@ -106,12 +106,14 @@ function App() {
       setImportError(err.message)
       addLog(`import ERROR: ${err.message}`)
     }
-  }, [spotifyUrl, addLog])
+  }, [spotifyUrl, spotifySpDc, addLog])
 
   const handleCancelImport = useCallback(async () => {
     await window.api.cancelSpotifyImport()
     setImporting(false)
     setImportProgress(null)
+    setImportError(null)
+    setImportResult(null)
     addLog('import: cancelled')
   }, [addLog])
 
@@ -306,7 +308,7 @@ function App() {
       <div style={{ padding: '8px 0', borderTop: '1px solid #333', marginBottom: 8 }}>
         <div style={{ fontSize: 12, marginBottom: 6, color: '#888' }}>{engineState.currentTrack?.title || 'No track loaded'}</div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <button onClick={() => controls.prev()} disabled={engineState.queueIndex <= 0 || engineState.queueList.length === 0} style={btnStyle}>{'⏮'}</button>
+          <button onClick={() => controls.prev()} disabled={engineState.queueList.length === 0} style={btnStyle}>{'⏮'}</button>
           <button onClick={() => engineState.state === 'playing' ? controls.pause() : controls.play()}
             disabled={!engineState.currentTrack?.title} style={btnStyle}>{engineState.state === 'playing' ? '⏸' : '▶'}</button>
           <button onClick={() => controls.next()} disabled={engineState.queueList.length === 0} style={btnStyle}>{'⏭'}</button>

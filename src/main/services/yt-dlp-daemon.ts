@@ -232,7 +232,18 @@ export class YtdlpDaemon {
   }
 
   private removeFromQueue(videoId: string): void {
-    this.queue = this.queue.filter((r) => r.videoId !== videoId)
+    const removed: QueuedRequest[] = []
+    this.queue = this.queue.filter((r) => {
+      if (r.videoId === videoId) {
+        removed.push(r)
+        return false
+      }
+      return true
+    })
+    // Clear timers for orphaned entries to prevent unhandled rejections
+    for (const r of removed) {
+      clearTimeout(r.timer)
+    }
   }
 
   private failAll(err: Error): void {
