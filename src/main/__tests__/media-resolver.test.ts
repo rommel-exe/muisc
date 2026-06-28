@@ -202,10 +202,22 @@ describe('HTTP Proxy', () => {
   })
 
   it('should forward CORS headers on every response', async () => {
-    const res = await fetch(`http://127.0.0.1:${TEST_PORT}/health`)
-    expect(res.headers.get('access-control-allow-origin')).toBe('*')
-    expect(res.headers.get('access-control-allow-headers')).toContain('Range')
-    expect(res.headers.get('access-control-expose-headers')).toContain('Content-Range')
+    // Retry wrapper for the fetch: the proxy is fully started in beforeAll,
+    // but macOS can briefly delay new connection acceptance under concurrent
+    // streaming test load. Retry with short backoff instead of failing.
+    let res: Response | null = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        res = await fetch(`http://127.0.0.1:${TEST_PORT}/health`, { signal: AbortSignal.timeout(5000) })
+        break
+      } catch {
+        if (attempt < 2) await new Promise(r => setTimeout(r, 200 * (attempt + 1)))
+      }
+    }
+    expect(res).toBeTruthy()
+    expect(res!.headers.get('access-control-allow-origin')).toBe('*')
+    expect(res!.headers.get('access-control-allow-headers')).toContain('Range')
+    expect(res!.headers.get('access-control-expose-headers')).toContain('Content-Range')
   })
 
   it('should abort stale resolve when same video ID requested concurrently', async () => {
