@@ -92,24 +92,20 @@ const SPOTIFY_UA =
  * Get an anonymous access token from Spotify using TOTP auth.
  * Follows the same flow as open.spotify.com's web player.
  */
-async function getAnonymousToken(signal?: AbortSignal): Promise<string> {
-  const { secret, version } = TOKEN_SECRETS[0]
+async function trySecret(
+  secret: string,
+  version: number,
+  signal?: AbortSignal
+): Promise<string | null> {
   const secretBytes = transformSecret(secret)
-
-  // Step 1: Get server timestamp
   const timeRes = await fetch('https://open.spotify.com/api/server-time', {
     headers: { 'User-Agent': SPOTIFY_UA, Accept: 'application/json' },
     signal,
   })
-  if (!timeRes.ok) {
-    throw new Error(`Spotify server-time returned HTTP ${timeRes.status}`)
-  }
+  if (!timeRes.ok) return null
   const timeData = (await timeRes.json()) as { serverTime?: number }
-  if (!timeData.serverTime) {
-    throw new Error('Spotify server-time response missing serverTime')
-  }
+  if (!timeData.serverTime) return null
 
-  // Step 2: Generate TOTP, exchange for token
   const totp = generateTOTP(secretBytes, timeData.serverTime)
   const params = new URLSearchParams({
     reason: 'init',
@@ -130,15 +126,24 @@ async function getAnonymousToken(signal?: AbortSignal): Promise<string> {
       signal,
     }
   )
-  if (!tokenRes.ok) {
-    throw new Error(`Spotify token request failed (HTTP ${tokenRes.status})`)
-  }
-
+  if (!tokenRes.ok) return null
   const data = (await tokenRes.json()) as { accessToken?: string }
-  if (!data.accessToken) {
-    throw new Error('Spotify token response missing accessToken')
+  return data.accessToken ?? null
+}
+
+async function getAnonymousToken(signal?: AbortSignal): Promise<string> {
+  // Try secrets in order (newest first). When Spotify rotates the TOTP
+  // secret, older secrets still work for a grace period — falling back
+  // prevents the import from breaking until the secrets list is updated.
+  const errors: string[] = []
+  for (const { secret, version } of TOKEN_SECRETS) {
+    const token = await trySecret(secret, version, signal)
+    if (token) return token
+    errors.push(`v${version} failed`)
   }
-  return data.accessToken
+  throw new Error(
+    `Spotify TOTP auth failed (tried ${errors.length} secrets: ${errors.join(', ')})`
+  )
 }
 
 // ── sp_dc Cookie Auth ──
