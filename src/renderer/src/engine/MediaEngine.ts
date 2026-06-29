@@ -624,7 +624,12 @@ export class MediaEngine {
         })
         .then(() => {
           if (this._currentVideoId !== truncatedVideoId) return
-          this._truncatedRetries.delete(truncatedVideoId)
+          // ⚠️ Do NOT delete the retry counter on forceRefresh success —
+          // the track may be getting the same truncated CDN URL again.
+          // Only playFromQueue (which gets a fresh non-forceRefresh URL)
+          // resets the counter when it starts playing this videoId.
+          // Without this guard, the truncated-stream retry limit is
+          // never reached and the track loops 2-3s forever.
           this._trackStartedAt = performance.now()
           this.log('auto-advance: forceRefresh replay succeeded')
         })

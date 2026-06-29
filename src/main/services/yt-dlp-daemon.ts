@@ -81,6 +81,11 @@ export class YtdlpDaemon {
     })
     this.child.unref()
 
+    this.child.on('error', (err) => {
+      console.error(`[yt-dlp-daemon] Spawn error: ${err.message}`)
+      this.failAll(new YTDlpError(`yt-dlp daemon spawn failed: ${err.message}`, 'DAEMON_CRASH'))
+    })
+
     // Pipe stderr to our logger (daemon uses it for errors)
     this.child.stderr?.on('data', (data: Buffer) => {
       const msg = data.toString().trim()
@@ -94,6 +99,16 @@ export class YtdlpDaemon {
 
     this.child.on('close', (exitCode) => {
       if (this.destroyed) return
+
+      // Reject startup promise if daemon crashed before emitting READY
+      if (!this.ready && this._starting) {
+        this._starting = Promise.reject(new YTDlpError(
+          `yt-dlp daemon exited before READY (code=${exitCode})`,
+          'DAEMON_CRASH'
+        ))
+        this._starting.catch(() => {}) // suppress unhandled rejection
+      }
+
       // Limit auto-restart attempts to prevent infinite loop when Python env is broken
       if ((this._restartCount ?? 0) >= 3) {
         console.error(`[yt-dlp-daemon] Max restarts (3) reached, giving up`)
@@ -103,13 +118,16 @@ export class YtdlpDaemon {
       console.warn(`[yt-dlp-daemon] Process exited (code=${exitCode}), restarting... (attempt ${this._restartCount}/3)`)
       // Reject all pending requests
       this.failAll(new YTDlpError('yt-dlp daemon crashed', 'DAEMON_CRASH'))
-      // Auto-restart on crash
-      this.child = null
+        this.child = null
+      this.rl?.close()
       this.rl = null
       this.ready = false
-      this.start().catch((err) => {
-        console.error('[yt-dlp-daemon] Restart failed:', err.message)
-      })
+      const backoff = Math.min(1000 * Math.pow(2, this._restartCount - 1), 8000)
+      setTimeout(() => {
+        this.start().catch((err) => {
+          console.error('[yt-dlp-daemon] Restart failed:', err.message)
+        })
+      }, backoff)
     })
 
     // Set up readline interface for stdout
@@ -143,6 +161,8 @@ export class YtdlpDaemon {
 
       const timer = setTimeout(() => {
         settled = true
+        // Kill the zombie process — it's still alive but we're giving up on it
+        this.child?.kill('SIGKILL')
         reject(new YTDlpError('yt-dlp daemon startup timed out', 'TIMEOUT'))
       }, timeoutMs)
 
@@ -189,6 +209,12 @@ export class YtdlpDaemon {
       const timer = setTimeout(() => {
         // Timeout — remove from queue
         this.removeFromQueue(videoId)
+        // If the timed-out request was the in-flight one, clear busy state
+        // so the daemon can process subsequent queued requests
+        if (this.currentRequest?.videoId === videoId) {
+          this.busy = false
+          this.currentRequest = null
+        }
         reject(new YTDlpError(
           `yt-dlp daemon timed out for ${videoId}`,
           'TIMEOUT'
@@ -196,7 +222,17 @@ export class YtdlpDaemon {
       }, timeoutMs)
 
       this.queue.push({ videoId, resolve, reject, timer, startTime: 0 })
-      this.processNext()
+      try {
+        this.processNext()
+      } catch (err) {
+        // If processNext() throws, reject the promise so it doesn't hang forever
+        clearTimeout(timer)
+        this.removeFromQueue(videoId)
+        reject(new YTDlpError(
+          `yt-dlp daemon processNext error: ${(err as Error).message}`,
+          'DAEMON_ERROR'
+        ))
+      }
     })
   }
 

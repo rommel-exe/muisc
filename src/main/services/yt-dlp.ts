@@ -154,7 +154,7 @@ export async function warmYtdlp(): Promise<void> {
       const binary = await findYTDlp()
       await spawnAndCollect(binary, ['--version'], { timeoutMs: 15000 })
       console.log('[yt-dlp] Pre-warmed')
-    } catch (err) { console.warn('[yt-dlp] Pre-warm failed:', (err as Error).message) }
+    } catch (err) { console.error('[yt-dlp] Pre-warm failed:', (err as Error).message) }
   })()
   return warmPromise
 }
@@ -185,6 +185,10 @@ function spawnAndCollect(
     let stdout = ''
     let stderr = ''
     let aborted = false
+    /** Set to true when WE kill the child (abort signal or our timeout).
+     *  Distinguishes our intentional kill from an external SIGTERM/SIGKILL
+     *  sent by the OS (e.g. GPU crash cascade on macOS). */
+    let wasKilledByUs = false
     /** Registered abort listener (nullable — set only when signal is provided).
      *  Declared at Promise scope so close/error handlers can remove it,
      *  preventing the closure from leaking until the signal is aborted. */
@@ -204,6 +208,7 @@ function spawnAndCollect(
       }
       onAbort = () => {
         aborted = true
+        wasKilledByUs = true
         child.kill('SIGKILL')
         cleanUp()
         reject(new YTDlpError('yt-dlp aborted', 'ABORTED'))
@@ -227,6 +232,9 @@ function spawnAndCollect(
     // Collect stderr
     child.stderr?.on('data', (data: Buffer) => {
       stderr += data.toString()
+      if (stderr.length > maxBuffer) {
+        stderr = stderr.slice(0, maxBuffer)
+      }
     })
     child.stderr?.on('error', () => {
       // Suppress unhandled stream errors (same reason as stdout).
@@ -245,11 +253,18 @@ function spawnAndCollect(
         return reject(new YTDlpError(`yt-dlp aborted for video`, 'ABORTED'))
       }
 
-      // Timeout: process killed by our timeout
-      if (sig === 'SIGKILL' || sig === 'SIGTERM') {
+      // Timeout: process killed by our timeout (SIGKILL from Node's killSignal)
+      if (sig === 'SIGKILL' || (sig === 'SIGTERM' && wasKilledByUs)) {
         return reject(new YTDlpError(
           `yt-dlp timed out after ${timeoutMs}ms`,
           'TIMEOUT'
+        ))
+      }
+      // External SIGTERM (e.g. macOS GPU crash cascade) — not our timeout
+      if (sig === 'SIGTERM') {
+        return reject(new YTDlpError(
+          `yt-dlp terminated by external signal: ${sig}`,
+          'PARSE_ERROR'
         ))
       }
 
@@ -404,7 +419,16 @@ export async function getVideoInfo(
   })
   const tAfterExec = Date.now()
 
-  const info = JSON.parse(stdout) as YTDlpInfo
+  let info: YTDlpInfo
+  try {
+    info = JSON.parse(stdout) as YTDlpInfo
+  } catch (parseErr) {
+    throw new YTDlpError(
+      `Failed to parse yt-dlp JSON output: ${(parseErr as Error).message}`,
+      'PARSE_ERROR',
+      parseErr as Error
+    )
+  }
   const tAfterParse = Date.now()
   console.log(`[yt-dlp] ${videoId}: exec=${tAfterExec - tBefore}ms parse=${tAfterParse - tAfterExec}ms`)
   return info
