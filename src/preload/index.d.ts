@@ -46,6 +46,7 @@ interface Track {
   thumbnailUrl: string
   source: 'youtube' | 'spotify_imported' | 'local'
   sourceId: string
+  channelType?: string
 }
 
 interface Playlist {
