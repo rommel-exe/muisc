@@ -393,6 +393,6 @@ export async function warmDaemon(): Promise<void> {
   try {
     await getDaemon().start()
   } catch (err) {
-    console.warn('[yt-dlp-daemon] Warm failed:', (err as Error).message)
+    console.error('[yt-dlp-daemon] Warm failed:', (err as Error).message)
   }
 }
