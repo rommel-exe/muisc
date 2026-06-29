@@ -63,6 +63,9 @@ export function createProxy(options: ProxyOptions = {}) {
   // Track in-flight yt-dlp resolves so we can await them instead of duplicating work.
   // Shared with MediaResolver so resolve() can kick off bg work that proxy waits on.
   const pendingResolves = new Map<string, Promise<string>>()
+  // Separate map for triggerBackgroundResolve's URL promises so they don't
+  // conflict with triggerResolve's entries in pendingResolves.
+  const backgroundUrlResolves = new Map<string, Promise<string>>()
   const pendingControllers = new Map<string, AbortController>()
 
   /** Track in-flight chunk downloads so the handler can await them.
@@ -422,11 +425,18 @@ export function createProxy(options: ProxyOptions = {}) {
       return cached.streamUrl
     }
 
-    // 2. There's already a background resolve in-flight — await it
-    const pending = pendingResolves.get(videoId)
-    if (pending) {
-      const url = await pending
+    // 2. There's already a foreground or background resolve in-flight — await it
+    const foregroundPending = pendingResolves.get(videoId)
+    if (foregroundPending) {
+      const url = await foregroundPending
       // Re-check cache (resolve populates it)
+      const hit = streamCache.get(videoId)
+      if (hit) return hit.streamUrl
+      return url
+    }
+    const bgPending = backgroundUrlResolves.get(videoId)
+    if (bgPending) {
+      const url = await bgPending
       const hit = streamCache.get(videoId)
       if (hit) return hit.streamUrl
       return url
@@ -629,7 +639,7 @@ export function createProxy(options: ProxyOptions = {}) {
       return { id: videoId, title: 'Unknown', duration: 0, thumbnail: '', formats: [] } as YTDlpInfo
     })
 
-    // pendingResolves: fast URL, or if that fails, fall through to metadata URL
+    // backgroundUrlResolves: fast URL, or if that fails, fall through to metadata URL
     const pendingResolve = urlPromise.then((url) => {
       if (url) return url
       // Fast path failed — wait for metadata path to get the URL
@@ -648,10 +658,10 @@ export function createProxy(options: ProxyOptions = {}) {
         return ''
       })
     })
-    pendingResolves.set(videoId, pendingResolve)
-    // Clean up pendingResolves when settled, just like the others
+    backgroundUrlResolves.set(videoId, pendingResolve)
+    // Clean up backgroundUrlResolves when settled, just like the others
     pendingResolve.finally(() => {
-      pendingResolves.delete(videoId)
+      backgroundUrlResolves.delete(videoId)
     })
 
     pendingInfoResolves.set(videoId, infoPromise)
@@ -950,8 +960,20 @@ export function createProxy(options: ProxyOptions = {}) {
 
   /**
    * Stop the proxy server gracefully.
+   * Aborts all in-flight resolves and clears all internal state.
    */
   function stop(): Promise<void> {
+    // Abort all in-flight yt-dlp subprocesses
+    for (const controller of pendingControllers.values()) {
+      controller.abort()
+    }
+    pendingResolves.clear()
+    backgroundUrlResolves.clear()
+    pendingControllers.clear()
+    pendingInfoResolves.clear()
+    chunkDownloads.clear()
+    prewarmBuffer.clear()
+    streamCache.clear()
     return new Promise((resolve) => {
       server.close(() => resolve())
     })
@@ -1090,11 +1112,12 @@ export function createProxy(options: ProxyOptions = {}) {
     const cached = streamCache.get(videoId)
     if (cached && Date.now() - cached.cachedAt < cacheTtlMs) return
 
-    // Skip if already in-flight via the daemon path (pendingResolves).
+    // Skip if already in-flight via the daemon path (pendingResolves/pendingInfoResolves).
     // Foreground clicks use triggerResolve which populates pendingResolves,
-    // so this prevents duplicate work when resolveQueue and a foreground
+    // triggerBackgroundResolve populates pendingInfoResolves — check both
+    // to prevent duplicate work when resolveQueue and a foreground
     // resolve race for the same videoId.
-    if (pendingResolves.has(videoId)) return
+    if (pendingResolves.has(videoId) || pendingInfoResolves.has(videoId)) return
 
     try {
       // Use subprocess directly (NOT triggerResolve) to avoid clogging the

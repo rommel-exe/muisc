@@ -1,4 +1,4 @@
-import { createProxy } from './proxy'
+import { createProxy, ProxyError } from './proxy'
 import type { YTDlpInfo } from './yt-dlp'
 import type { ResolvedStream, Track } from '../../shared/types'
 import { PROXY_PORT } from '../../shared/constants'
@@ -47,10 +47,13 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     await proxy.triggerBackgroundResolve(videoId)
     const cached = proxy.getStreamCacheEntry(videoId)
     if (cached?.streamUrl) return cached.streamUrl
-    throw new Error('Stream re-resolve failed')
+    throw new ProxyError('Stream re-resolve failed', 'RESOLVE_FAILED')
   }
 
   const proxy = createProxy({ port: proxyPort, cacheTtlMs, onReResolve: reResolveStream })
+
+  // Guard: once stopped, all public methods throw immediately
+  let _stopped = false
 
   // LRU cache: videoId → ResolvedStream (minus audioUrl, which is derived from proxy)
   const resolveCache = new Map<string, { info: ResolvedStream; cachedAt: number }>()
@@ -86,6 +89,7 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     videoId: string,
     opts: ResolveOptions = {}
   ): Promise<ResolvedStream> {
+    if (_stopped) throw new Error('MediaResolver is stopped')
     const { forceRefresh = false } = opts
 
     // Check cache first
@@ -114,7 +118,7 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
 
     infoPromise.then((info) => {
       const resolved: ResolvedStream = {
-        videoId: info.id,
+        videoId,
         audioUrl: getProxyUrl(videoId),
         duration: info.duration,
         title: info.title,
@@ -122,8 +126,8 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
       }
       resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
       evictIfNeeded()
-    }).catch(() => {
-      // Errors logged in proxy.triggerBackgroundResolve
+    }).catch((err) => {
+      console.warn(`[MediaResolver] Cache update failed for ${videoId}:`, (err as Error)?.message ?? err)
     }).finally(() => {
       pendingInfo.delete(videoId)
     })
@@ -141,15 +145,9 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * Evict oldest entries if cache exceeds size limit.
    */
   function evictIfNeeded(): void {
-    if (resolveCache.size <= cacheSize) return
-
-    // Evict oldest entries
-    const entries = Array.from(resolveCache.entries())
-      .sort((a, b) => a[1].cachedAt - b[1].cachedAt)
-
-    const toRemove = entries.slice(0, entries.length - cacheSize)
-    for (const [key] of toRemove) {
-      resolveCache.delete(key)
+    while (resolveCache.size > cacheSize) {
+      const oldestKey = resolveCache.keys().next().value
+      if (oldestKey !== undefined) resolveCache.delete(oldestKey)
     }
   }
 
@@ -165,14 +163,23 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * Safe to call multiple times — subsequent calls hit the cache instantly.
    */
   async function resolveTrackInfo(videoId: string): Promise<ResolvedStream> {
+    if (_stopped) throw new Error('MediaResolver is stopped')
+
     // Check cache first — fast path when metadata is ready
     const cached = resolveCache.get(videoId)
     if (cached && Date.now() - cached.cachedAt < cacheTtlMs) {
       return cached.info
     }
 
-    // Wait for an in-flight resolve, or start one
-    const pending = pendingInfo.get(videoId) ?? proxy.triggerBackgroundResolve(videoId)
+    // Wait for an in-flight resolve, or start one and track it
+    let pending = pendingInfo.get(videoId)
+    if (!pending) {
+      pending = proxy.triggerBackgroundResolve(videoId)
+      pendingInfo.set(videoId, pending)
+      pending.then(() => {}).catch(() => {}).finally(() => {
+        pendingInfo.delete(videoId)
+      })
+    }
     const info = await pending
     const resolved: ResolvedStream = {
       videoId: info.id,
@@ -200,6 +207,7 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * Call this whenever the queue changes or playback advances.
    */
   async function prefetchQueue(upcomingVideoIds: string[]): Promise<void> {
+    if (_stopped) return
     const targets = upcomingVideoIds
       .slice(0, preloadedWindowSize)
       .filter((id) => {
@@ -221,8 +229,8 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
         }
         resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
         evictIfNeeded()
-      }).catch(() => {
-        // Errors logged in proxy
+      }).catch((err) => {
+        console.warn(`[MediaResolver] Prefetch failed for ${videoId}:`, (err as Error)?.message ?? err)
       })
     }
   }
@@ -233,9 +241,11 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
   function clearCache(videoId?: string): void {
     if (videoId) {
       resolveCache.delete(videoId)
+      pendingInfo.delete(videoId)
       proxy.clearCache(videoId)
     } else {
       resolveCache.clear()
+      pendingInfo.clear()
       proxy.clearCache()
     }
   }
@@ -267,7 +277,9 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * Stop the proxy server gracefully. Call this on app quit.
    */
   async function stop(): Promise<void> {
+    _stopped = true
     resolveCache.clear()
+    pendingInfo.clear()
     await proxy.stop()
     console.log('[MediaResolver] Stopped')
   }
