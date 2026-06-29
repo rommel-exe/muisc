@@ -45,14 +45,31 @@ export class YtdlpDaemon {
 
   /** Number of auto-restart attempts (resets on successful start) */
   private _restartCount = 0
+  /** Mutex guard for start() — prevents concurrent spawns when
+   *  an auto-restart races against an explicit start() call. */
+  private _starting: Promise<void> | null = null
 
   /**
    * Start the yt-dlp daemon. Resolves when the Python process is
    * initialized and ready to accept requests.
+   * Uses a mutex (_starting) so concurrent calls reuse the same promise,
+   * preventing duplicate daemon spawns when restart races with new start().
    */
   async start(timeoutMs = 15000): Promise<void> {
     if (this.child) return
+    if (this._starting) return this._starting
 
+    const promise = this._startInternal(timeoutMs)
+    this._starting = promise
+    try {
+      await promise
+    } finally {
+      this._starting = null
+    }
+  }
+
+  /** Internal start implementation — called by start() under the _starting mutex. */
+  private async _startInternal(timeoutMs: number): Promise<void> {
     const scriptPath = this.resolveScriptPath()
     const python = await this.findPython()
 
@@ -239,7 +256,11 @@ export class YtdlpDaemon {
       }
     }
 
-    this.processNext()
+    try {
+      this.processNext()
+    } catch (err) {
+      console.error('[yt-dlp-daemon] processNext error:', err)
+    }
   }
 
   private removeFromQueue(videoId: string): void {
@@ -251,9 +272,15 @@ export class YtdlpDaemon {
       }
       return true
     })
-    // Clear timers for orphaned entries to prevent unhandled rejections
+    // Clear timers AND reject orphaned entries. Otherwise, when multiple
+    // requests queue for the same videoId and one times out, the others
+    // get removed but never rejected — their Promises hang forever.
     for (const r of removed) {
       clearTimeout(r.timer)
+      r.reject(new YTDlpError(
+        `Removed from queue (duplicate request for ${videoId})`,
+        'RESOLVE_FAILED'
+      ))
     }
   }
 

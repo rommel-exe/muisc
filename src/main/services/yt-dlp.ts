@@ -185,6 +185,10 @@ function spawnAndCollect(
     let stdout = ''
     let stderr = ''
     let aborted = false
+    /** Registered abort listener (nullable — set only when signal is provided).
+     *  Declared at Promise scope so close/error handlers can remove it,
+     *  preventing the closure from leaking until the signal is aborted. */
+    let onAbort: (() => void) | undefined
 
     const cleanUp = () => {
       child.stdout?.removeAllListeners()
@@ -198,7 +202,7 @@ function spawnAndCollect(
         cleanUp()
         return reject(new YTDlpError('yt-dlp aborted', 'ABORTED'))
       }
-      const onAbort = () => {
+      onAbort = () => {
         aborted = true
         child.kill('SIGKILL')
         cleanUp()
@@ -231,6 +235,9 @@ function spawnAndCollect(
     // Handle completion
     child.on('close', (code, sig) => {
       cleanUp()
+      // Remove the signal listener so the onAbort closure doesn't
+      // leak (child, reject, etc.) until the signal is eventually aborted.
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort)
       if (aborted) return // already rejected by abort handler
 
       // Check for explicit abort signal
@@ -265,6 +272,7 @@ function spawnAndCollect(
     // Handle spawn error (binary not found, etc.)
     child.on('error', (err) => {
       cleanUp()
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort)
       if (signal?.aborted || aborted) {
         return reject(new YTDlpError('yt-dlp aborted', 'ABORTED'))
       }
