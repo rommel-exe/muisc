@@ -288,7 +288,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // handles the opposite case (metadata longer than actual stream).
       if (el.ended) {
         fireTrackEnd('dom-ended-poll')
-      } else if (el.currentTime >= el.duration - 0.5 && el.paused) {
+      } else if (el.currentTime >= el.duration - 0.5 && el.paused && !userPausedRef.current) {
         fireTrackEnd('time-reached')
       }
     }, 500)
