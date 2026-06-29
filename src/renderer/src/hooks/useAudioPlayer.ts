@@ -135,8 +135,9 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       errorRef.current = msg
       setState((prev) => ({ ...prev, error: msg, loading: false, isPlaying: false }))
     }
-    const fireTrackEnd = () => {
+    const fireTrackEnd = (source: string) => {
       if (trackEndedFiredRef.current) return
+      console.warn(`[audio] fireTrackEnd: ${source}`)
       trackEndedFiredRef.current = true
       lastCurrentTimeRef.current = 0
       stalledCountRef.current = 0
@@ -162,7 +163,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       if (!target.ended) return
       const active = getActive()
       if (target !== active) return
-      fireTrackEnd()
+      fireTrackEnd('dom-ended')
     }
     const onWaiting = () => setState((prev) => ({ ...prev, loading: true }))
     const onCanPlay = () => setState((prev) => ({ ...prev, loading: false }))
@@ -254,7 +255,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
             stalledCountRef.current++
             if (stalledCountRef.current >= 6) {
               console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
-              fireTrackEnd()
+              fireTrackEnd('stalled')
               stalledCountRef.current = 0
               return
             }
@@ -268,7 +269,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
           stalledCountRef.current++
           if (stalledCountRef.current >= 6) {
             console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
-            fireTrackEnd()
+            fireTrackEnd('buffer-drained')
             stalledCountRef.current = 0
             return
           }
@@ -286,9 +287,9 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // while the audio is still playing. The stalled detection above
       // handles the opposite case (metadata longer than actual stream).
       if (el.ended) {
-        fireTrackEnd()
+        fireTrackEnd('dom-ended-poll')
       } else if (el.currentTime >= el.duration - 0.5 && el.paused) {
-        fireTrackEnd()
+        fireTrackEnd('time-reached')
       }
     }, 500)
 
@@ -348,6 +349,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     el.src = url
     el.load()
 
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
       // 🔥 If the element errors during loading (bad URL, network failure),
       // the play() promise may hang forever instead of rejecting. Race it
@@ -359,9 +361,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
           const msg = mediaError.message || `Audio error code ${mediaError.code}`
           reject(new Error(msg))
         }, { once: true })
-        // 30s max: if CDN connection never starts, reject so the caller
-        // can retry or abort instead of hanging indefinitely.
-        setTimeout(() => reject(new Error('Playback timeout after 30s')), 30000)
+        timeoutId = setTimeout(() => reject(new Error('Playback timeout after 30s')), 30000)
       })
       await Promise.race([el.play(), errorOnLoad])
     } catch (err: any) {
@@ -374,6 +374,8 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       errorRef.current = err.message
       setState((prev) => ({ ...prev, error: err.message, isPlaying: false, loading: false }))
       throw err // Re-throw so the engine knows playback failed
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId)
     }
   }, [])
 
@@ -412,6 +414,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     lastCurrentTimeRef.current = 0
     stalledCountRef.current = 0
     trackEndedFiredRef.current = false
+    userPausedRef.current = false
     setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 
     // Play the preloaded element

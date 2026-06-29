@@ -102,6 +102,7 @@ function App() {
     } catch (err: any) {
       setImporting(false)
       setImportProgress(null)
+      setImportResult(null) // Clear stale success state if getPlaylists() failed after import
       if (err.message === 'Import cancelled') { addLog('import: cancelled'); return }
       setImportError(err.message)
       addLog(`import ERROR: ${err.message}`)
