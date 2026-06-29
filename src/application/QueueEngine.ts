@@ -138,10 +138,20 @@ function removeTrack(index: number): void {
   // Remove from list
   state.list.splice(index, 1)
 
+  // Track the position of the removed index in shuffleOrder so we can
+  // adjust shufflePos. If the removed entry was at a position before the
+  // current shufflePos, we need to decrement shufflePos — otherwise the
+  // next next() call skips ahead past unplayed tracks.
+  const removedPos = state.shuffleOrder.indexOf(index)
+
   // Adjust shuffle order
   state.shuffleOrder = state.shuffleOrder
     .filter(i => i !== index)
     .map(i => i > index ? i - 1 : i)
+
+  if (removedPos >= 0 && removedPos < state.shufflePos) {
+    state.shufflePos--
+  }
 
   // Adjust current index
   if (wasCurrent) {
@@ -229,9 +239,14 @@ function previous(): QueueTrack | null {
   if (state.list.length === 0) return null
 
   if (state.history.length > 0) {
-    const prevQueueId = state.history.pop()!
+    // Peek at the last history entry without popping — only consume it if
+    // the track still exists in the list. If the track was removed between
+    // when it was played and when the user clicked previous, popping it
+    // would corrupt the history stack on subsequent previous() calls.
+    const prevQueueId = state.history[state.history.length - 1]
     const prevIndex = state.list.findIndex(qt => qt.queueId === prevQueueId)
     if (prevIndex >= 0) {
+      state.history.pop()
       state.index = prevIndex
       // Sync shufflePos so next() advances correctly from the historical position.
       // Without this, shufflePos stays stale after previous() in shuffle mode,

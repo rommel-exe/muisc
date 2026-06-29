@@ -23,17 +23,23 @@ function App() {
   const { engineState, controls } = useMediaEngine(addLog)
 
   // ── Search ──
+  // ── Search request counter — guards stale debounced results ──
+  const searchReqRef = useRef(0)
+
   const doSearch = useCallback(async (query: string) => {
+    const reqId = ++searchReqRef.current
     if (!query.trim()) { setSearchResults([]); return }
     setSearching(true)
     try {
       const results = await window.api.search(query.trim())
+      // Stale guard: if a newer search has been issued, discard these results
+      if (reqId !== searchReqRef.current) return
       setSearchResults(results)
       addLog(`search: ${results.length} results`)
     } catch (err: any) {
       addLog(`search ERROR: ${err.message}`)
     } finally {
-      setSearching(false)
+      if (reqId === searchReqRef.current) setSearching(false)
     }
   }, [addLog])
 
@@ -79,7 +85,11 @@ function App() {
     const cleanupProgress = window.api.onSpotifyImportProgress((progress) => {
       setImportProgress(progress)
     })
-    return () => cleanupProgress()
+    return () => {
+      cleanupProgress()
+      // Clear pending debounced search so it doesn't fire after unmount
+      if (searchTimer.current) clearTimeout(searchTimer.current)
+    }
   }, [])
 
   const handleImport = useCallback(async () => {
@@ -110,7 +120,11 @@ function App() {
   }, [spotifyUrl, spotifySpDc, addLog])
 
   const handleCancelImport = useCallback(async () => {
-    await window.api.cancelSpotifyImport()
+    try {
+      await window.api.cancelSpotifyImport()
+    } catch (err: any) {
+      addLog(`cancel ERROR: ${err.message}`)
+    }
     setImporting(false)
     setImportProgress(null)
     setImportError(null)

@@ -187,8 +187,15 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
         }
       }
     }
-    const onStandbyLoadStart = () => {
-      setState((prev) => ({ ...prev, isNextReady: false }))
+    const onStandbyLoadStart = (ev: Event) => {
+      // Only mark next-track-not-ready if the standby element itself is
+      // loading. When the active element fires loadstart (e.g. seeking or
+      // rebuffering), the standby's preloaded content is still ready.
+      const target = ev.target as HTMLAudioElement
+      const standby = activeIsA.current ? elB.current : elA.current
+      if (target === standby) {
+        setState((prev) => ({ ...prev, isNextReady: false }))
+      }
     }
 
     for (const el of [a, b]) {
@@ -338,6 +345,12 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // a new track loading slowly could trigger false stall detection.
     lastCurrentTimeRef.current = 0
     stalledCountRef.current = 0
+
+    // ⚠️ Reset user pause flag — if the user previously paused, a subsequent
+    // track that buffer-drains (short stream) would suppress auto-advance
+    // because the poll checks userPausedRef. A new loadAndPlay means a fresh
+    // track — the user didn't pause this one.
+    userPausedRef.current = false
 
     // Clear standby to avoid conflict
     const standby = getStandby()
