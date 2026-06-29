@@ -152,6 +152,13 @@ function removeTrack(index: number): void {
     } else if (state.index >= state.list.length) {
       state.index = state.list.length - 1
     }
+    // 🔥 Shuffle mode: the shuffle order was modified (indices filtered + shifted)
+    // but shufflePos was not adjusted. The stale shufflePos would cause next()
+    // to pick a wrong track from the shuffled order. Rebuild from current index
+    // to ensure shuffle order is consistent with the new queue state.
+    if (state.shuffleActive) {
+      buildShuffleOrder()
+    }
   } else if (index < state.index) {
     state.index--
   }
