@@ -555,18 +555,35 @@ export class MediaEngine {
     // 🚨 Truncated-stream detection: YouTube CDN can return preview-only
     // streams that play ~24s then end. If the track played for < 30s,
     // re-resolve with forceRefresh and retry instead of advancing.
+    //
+    // ⚠️ Capture the videoId at call time. If the user navigates to a
+    // different track during the async re-resolve (clicked a different
+    // search result or queue entry), _currentVideoId changes — the
+    // navigation guard below prevents the stale replay from overriding
+    // the user's selection.
     const MIN_PLAY_MS = 30000
     const elapsed = performance.now() - this._trackStartedAt
-    if (this._currentVideoId && elapsed < MIN_PLAY_MS && this._trackStartedAt > 0) {
-      this.log(`auto-advance: truncated end at ${(elapsed/1000).toFixed(1)}s — re-resolving ${this._currentVideoId} with forceRefresh`)
+    const truncatedVideoId = this._currentVideoId
+    if (truncatedVideoId && elapsed < MIN_PLAY_MS && this._trackStartedAt > 0) {
+      this.log(`auto-advance: truncated end at ${(elapsed/1000).toFixed(1)}s — re-resolving ${truncatedVideoId} with forceRefresh`)
       this._pendingAdvance = true
-      this.api.resolveTrack(this._currentVideoId, { forceRefresh: true })
-        .then((resolved) => this.audio.loadAndPlay(resolved.audioUrl))
+      this.api.resolveTrack(truncatedVideoId, { forceRefresh: true })
+        .then((resolved) => {
+          // 🚨 Navigation guard: if the user navigated to a different track
+          // during the async re-resolve, discard this stale replay.
+          if (this._currentVideoId !== truncatedVideoId) {
+            this.log('auto-advance: forceRefresh stale — user navigated away')
+            return
+          }
+          return this.audio.loadAndPlay(resolved.audioUrl)
+        })
         .then(() => {
+          if (this._currentVideoId !== truncatedVideoId) return
           this._trackStartedAt = performance.now()
           this.log('auto-advance: forceRefresh replay succeeded')
         })
         .catch(() => {
+          if (this._currentVideoId !== truncatedVideoId) return
           this.log('auto-advance: forceRefresh re-resolve failed, advancing')
           this.next()
             .catch((err) => { this.log(`auto-advance error: ${err.message}`) })

@@ -274,7 +274,7 @@ export function registerHandlers(resolver: MediaResolver): void {
     }
 
     // Load queue IMMEDIATELY with existing tracks (no rematch wait)
-    let tracks = PlaylistEngine.getPlaylistTracks(playlistId)
+    const tracks = PlaylistEngine.getPlaylistTracks(playlistId)
     if (tracks.length === 0) {
       throw new Error('Playlist is empty')
     }
@@ -316,7 +316,7 @@ export function registerHandlers(resolver: MediaResolver): void {
     }
 
     // Append IMMEDIATELY with existing tracks (no rematch wait)
-    let tracks = PlaylistEngine.getPlaylistTracks(playlistId)
+    const tracks = PlaylistEngine.getPlaylistTracks(playlistId)
     if (tracks.length === 0) {
       throw new Error('Playlist is empty')
     }
