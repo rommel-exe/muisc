@@ -50,16 +50,26 @@ async function parallelMap<T, R>(
 ): Promise<R[]> {
   const results: R[] = new Array(items.length)
   let nextIndex = 0
+  let cancelled = false
 
   async function worker(): Promise<void> {
-    while (nextIndex < items.length) {
+    while (!cancelled && nextIndex < items.length) {
       const idx = nextIndex++
-      results[idx] = await fn(items[idx], idx)
+      try {
+        results[idx] = await fn(items[idx], idx)
+      } catch (err: any) {
+        cancelled = true
+        throw err
+      }
     }
   }
 
   const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-  await Promise.all(workers)
+  try {
+    await Promise.all(workers)
+  } finally {
+    cancelled = true
+  }
   return results
 }
 

@@ -98,12 +98,25 @@ async function trySecret(
   signal?: AbortSignal
 ): Promise<string | null> {
   const secretBytes = transformSecret(secret)
-  const timeRes = await fetch('https://open.spotify.com/api/server-time', {
-    headers: { 'User-Agent': SPOTIFY_UA, Accept: 'application/json' },
-    signal,
-  })
+
+  let timeRes: Response
+  try {
+    timeRes = await fetch('https://open.spotify.com/api/server-time', {
+      headers: { 'User-Agent': SPOTIFY_UA, Accept: 'application/json' },
+      signal,
+    })
+  } catch (err: any) {
+    if (err.name === 'AbortError') throw err
+    return null
+  }
   if (!timeRes.ok) return null
-  const timeData = (await timeRes.json()) as { serverTime?: number }
+
+  let timeData: { serverTime?: number }
+  try {
+    timeData = (await timeRes.json()) as { serverTime?: number }
+  } catch {
+    return null
+  }
   if (!timeData.serverTime) return null
 
   const totp = generateTOTP(secretBytes, timeData.serverTime)
@@ -115,19 +128,31 @@ async function trySecret(
     totpVer: String(version),
   })
 
-  const tokenRes = await fetch(
-    `https://open.spotify.com/api/token?${params.toString()}`,
-    {
-      headers: {
-        'User-Agent': SPOTIFY_UA,
-        Accept: 'application/json',
-        Referer: 'https://open.spotify.com/',
-      },
-      signal,
-    }
-  )
+  let tokenRes: Response
+  try {
+    tokenRes = await fetch(
+      `https://open.spotify.com/api/token?${params.toString()}`,
+      {
+        headers: {
+          'User-Agent': SPOTIFY_UA,
+          Accept: 'application/json',
+          Referer: 'https://open.spotify.com/',
+        },
+        signal,
+      }
+    )
+  } catch (err: any) {
+    if (err.name === 'AbortError') throw err
+    return null
+  }
   if (!tokenRes.ok) return null
-  const data = (await tokenRes.json()) as { accessToken?: string }
+
+  let data: { accessToken?: string }
+  try {
+    data = (await tokenRes.json()) as { accessToken?: string }
+  } catch {
+    return null
+  }
   return data.accessToken ?? null
 }
 
@@ -185,10 +210,18 @@ async function fetchPlaylistUris(
   token: string,
   signal?: AbortSignal
 ): Promise<{ name: string; uris: string[] }> {
-  const res = await fetch(
-    `https://spclient.wg.spotify.com/playlist/v2/playlist/${playlistId}`,
-    { headers: authHeaders(`Bearer ${token}`), signal }
-  )
+  let res: Response
+  try {
+    res = await fetch(
+      `https://spclient.wg.spotify.com/playlist/v2/playlist/${playlistId}`,
+      { headers: authHeaders(`Bearer ${token}`), signal }
+    )
+  } catch (err: any) {
+    if (err.name === 'AbortError') throw err
+    throw new Error(
+      `Spotify playlist fetch failed (network): ${err.message}`
+    )
+  }
 
   if (!res.ok) {
     throw new Error(
@@ -197,12 +230,26 @@ async function fetchPlaylistUris(
     )
   }
 
-  const data = (await res.json()) as SpClientPlaylistResponse
+  let data: SpClientPlaylistResponse
+  try {
+    data = (await res.json()) as SpClientPlaylistResponse
+  } catch {
+    throw new Error(
+      `Spotify playlist fetch failed: non-JSON response (HTTP ${res.status})`
+    )
+  }
+
   const name = data.attributes?.name ?? 'Imported Playlist'
   const items = data.contents?.items ?? []
 
   if (items.length === 0) {
     throw new Error('Playlist has no tracks or is empty.')
+  }
+
+  // Warn if the spclient response was truncated — the API may return
+  // only the first batch for very large playlists.
+  if (data.contents?.truncated) {
+    console.warn(`[Spotify] Playlist '${name}' response is truncated (may not contain all tracks)`)
   }
 
   const uris = items
@@ -252,25 +299,44 @@ async function resolveBatch(
     extensions: { persistedQuery: { version: 1, sha256Hash: LOOKUP_ENTITIES_HASH } },
   })
 
-  const res = await fetch(
-    'https://api-partner.spotify.com/pathfinder/v1/query',
-    {
-      method: 'POST',
-      headers: {
-        ...authHeaders(`Bearer ${token}`),
-        'Content-Type': 'application/json',
-      },
-      body,
-      signal,
-    }
-  )
-
-  if (!res.ok) {
-    console.log(`[Spotify] GraphQL batch resolve failed: HTTP ${res.status}`)
+  let res: Response
+  try {
+    res = await fetch(
+      'https://api-partner.spotify.com/pathfinder/v1/query',
+      {
+        method: 'POST',
+        headers: {
+          ...authHeaders(`Bearer ${token}`),
+          'Content-Type': 'application/json',
+        },
+        body,
+        signal,
+      }
+    )
+  } catch (err: any) {
+    if (err.name === 'AbortError') throw err
+    console.warn(`[Spotify] GraphQL batch fetch failed (network):`, err.message)
     return result
   }
 
-  const data = (await res.json()) as GraphQLTrackData
+  if (!res.ok) {
+    console.warn(`[Spotify] GraphQL batch resolve failed: HTTP ${res.status}`)
+    return result
+  }
+
+  let data: GraphQLTrackData
+  try {
+    data = (await res.json()) as GraphQLTrackData
+  } catch {
+    console.warn(`[Spotify] GraphQL batch resolve: non-JSON response`)
+    return result
+  }
+
+  // Check for GraphQL errors in HTTP 200 body
+  if ((data as any).errors) {
+    console.warn(`[Spotify] GraphQL batch resolve returned errors:`, (data as any).errors)
+  }
+
   const entities = data?.data?.lookupEntities ?? []
 
   for (const entity of entities) {
