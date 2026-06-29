@@ -207,6 +207,9 @@ export class MediaEngine {
       const resolved = await this.api.resolveTrack(result.videoId)
       if (this._requestCounter !== opRequestId) return
 
+      // Fresh manual play — clear any stale truncated-stream retry counter
+      this._truncatedRetries.delete(result.videoId)
+
       const track: Track = {
         id: result.videoId,
         title: result.title,
@@ -276,6 +279,9 @@ export class MediaEngine {
     try {
       const resolved = await this.api.resolveTrack(id)
       if (this._requestCounter !== opRequestId) return
+
+      // Fresh manual play — clear any stale truncated-stream retry counter
+      this._truncatedRetries.delete(id)
 
       // If audio fails, loadAndPlay now throws — caught below.
       // Retry once with forceRefresh for stale CDN URL recovery.

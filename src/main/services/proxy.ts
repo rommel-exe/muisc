@@ -149,7 +149,7 @@ export function createProxy(options: ProxyOptions = {}) {
     }
     if (!streamUrl) {
       console.error(`[Proxy] Prewarm tail resolve failed for ${videoId}`)
-      res.end()
+      if (!res.destroyed) res.end()
       return
     }
 

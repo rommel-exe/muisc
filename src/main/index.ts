@@ -20,7 +20,7 @@ app.commandLine.appendSwitch('no-sandbox')
 if (is.dev) {
   try {
     const { execSync } = require('child_process')
-    execSync('lsof -ti:9222', { stdio: 'ignore' })
+    execSync('lsof -ti:9222', { stdio: 'ignore', timeout: 2000 })
     console.warn('[App] Port 9222 in use by another process, skipping remote debugging flag')
   } catch {
     app.commandLine.appendSwitch('remote-debugging-port', '9222')
