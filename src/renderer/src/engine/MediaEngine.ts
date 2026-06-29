@@ -211,7 +211,16 @@ export class MediaEngine {
         sourceId: result.videoId,
       }
 
-      await this.audio.loadAndPlay(resolved.audioUrl)
+      // If audio fails, loadAndPlay now throws — caught below.
+      // Retry once with forceRefresh for stale CDN URL recovery.
+      try {
+        await this.audio.loadAndPlay(resolved.audioUrl)
+      } catch {
+        this.log('playSearchResult: retrying with forceRefresh')
+        const retried = await this.api.resolveTrack(result.videoId, { forceRefresh: true })
+        if (this._requestCounter !== opRequestId) return
+        await this.audio.loadAndPlay(retried.audioUrl)
+      }
       if (this._requestCounter !== opRequestId) return
 
       this._currentVideoId = result.videoId
@@ -262,7 +271,16 @@ export class MediaEngine {
       const resolved = await this.api.resolveTrack(id)
       if (this._requestCounter !== opRequestId) return
 
-      await this.audio.loadAndPlay(resolved.audioUrl)
+      // If audio fails, loadAndPlay now throws — caught below.
+      // Retry once with forceRefresh for stale CDN URL recovery.
+      try {
+        await this.audio.loadAndPlay(resolved.audioUrl)
+      } catch {
+        this.log('playCustomId: retrying with forceRefresh')
+        const retried = await this.api.resolveTrack(id, { forceRefresh: true })
+        if (this._requestCounter !== opRequestId) return
+        await this.audio.loadAndPlay(retried.audioUrl)
+      }
       if (this._requestCounter !== opRequestId) return
 
       this._currentVideoId = id

@@ -140,6 +140,17 @@ function App() {
     } catch (err: any) { addLog(`queue append ERROR: ${err.message}`) }
   }, [addLog, controls])
 
+  // ── Play handlers (clear playlist name when switching to direct play) ──
+  const handlePlaySearchResult = useCallback((result: SearchResult) => {
+    setQueuePlaylistName('')
+    controls.playSearchResult(result)
+  }, [controls])
+
+  const handlePlayCustomId = useCallback((id: string) => {
+    setQueuePlaylistName('')
+    controls.playCustomId(id)
+  }, [controls])
+
   const getTrackLabel = (qt: QueueTrackRef): string => {
     const t = qt.track
     if (t.artist && t.artist !== 'Unknown Artist') return `${t.artist} — ${t.title}`
@@ -165,7 +176,7 @@ function App() {
         {searchResults.length > 0 && (
           <div style={{ background: '#1a1a1a', border: '1px solid #333', maxHeight: 300, overflowY: 'auto' }}>
             {searchResults.map((result) => (
-              <div key={result.videoId} onClick={() => controls.playSearchResult(result)}
+              <div key={result.videoId} onClick={() => handlePlaySearchResult(result)}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderBottom: '1px solid #222', cursor: 'pointer' }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = '#2a2a2a')}
                 onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
@@ -255,10 +266,10 @@ function App() {
       {/* ── Custom ID ── */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         <input value={customId} onChange={(e) => setCustomId(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') controls.playCustomId(customId) }}
+          onKeyDown={(e) => { if (e.key === 'Enter') handlePlayCustomId(customId) }}
           placeholder="Paste YouTube video ID..."
           style={{ flex: 1, padding: '6px 8px', background: '#1a1a1a', color: '#ddd', border: '1px solid #333', borderRadius: 0, fontFamily: 'monospace', fontSize: 12, outline: 'none' }} />
-        <button onClick={() => controls.playCustomId(customId)} disabled={engineState.state === 'loading' || !customId.trim()}
+        <button onClick={() => handlePlayCustomId(customId)} disabled={engineState.state === 'loading' || !customId.trim()}
           style={{ padding: '6px 14px', background: engineState.state === 'loading' ? '#333' : '#06a', color: '#fff', border: 'none', cursor: 'pointer', fontSize: 12 }}>
           {engineState.state === 'loading' ? '...' : '▶ Play'}
         </button>

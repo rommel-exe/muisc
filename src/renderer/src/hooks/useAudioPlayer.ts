@@ -350,17 +350,23 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     el.load()
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined
+    // Track the error listener so we can remove it after successful play.
+    // Without cleanup, a mid-stream error event would call reject() on the
+    // dangling errorOnLoad promise — an unhandled rejection.
+    let onErrorListener: ((ev: Event) => void) | null = null
     try {
       // 🔥 If the element errors during loading (bad URL, network failure),
       // the play() promise may hang forever instead of rejecting. Race it
       // against the error event and a 30s timeout so we always reject.
       const errorOnLoad = new Promise<never>((_, reject) => {
-        el.addEventListener('error', () => {
+        const handler = () => {
           const mediaError = el.error
           if (!mediaError) return
           const msg = mediaError.message || `Audio error code ${mediaError.code}`
           reject(new Error(msg))
-        }, { once: true })
+        }
+        onErrorListener = handler
+        el.addEventListener('error', handler, { once: true })
         timeoutId = setTimeout(() => reject(new Error('Playback timeout after 30s')), 30000)
       })
       await Promise.race([el.play(), errorOnLoad])
@@ -376,6 +382,14 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       throw err // Re-throw so the engine knows playback failed
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId)
+      // ⚠️ Remove the error listener after play() settled, whether it
+      // succeeded or failed (we already caught the error). Without this,
+      // a later 'error' event on this element calls reject() on the now-
+      // dangling errorOnLoad promise — an unhandled promise rejection.
+      if (onErrorListener) {
+        el.removeEventListener('error', onErrorListener)
+        onErrorListener = null
+      }
     }
   }, [])
 
