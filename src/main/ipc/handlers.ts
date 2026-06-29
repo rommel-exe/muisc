@@ -291,8 +291,15 @@ export function registerHandlers(resolver: MediaResolver): void {
           return
         }
         const updated = PlaylistEngine.getPlaylistTracks(playlistId)
+        const queueLen = QueueEngine.getList().length
         for (let i = 0; i < updated.length; i++) {
-          QueueEngine.updateTrackAt(i, updated[i])
+          if (i < queueLen) {
+            QueueEngine.updateTrackAt(i, updated[i])
+          } else {
+            // Overflow: rematch found more tracks than the queue had.
+            // Append extras so the user sees all matched tracks.
+            QueueEngine.appendTracks([updated[i]])
+          }
         }
         console.log(`[IPC] Rematch complete for ${playlistId}, queue updated`)
       }).catch((err: any) => {
@@ -333,8 +340,14 @@ export function registerHandlers(resolver: MediaResolver): void {
           return
         }
         const updated = PlaylistEngine.getPlaylistTracks(playlistId)
+        const queueLen = QueueEngine.getList().length
         for (let i = 0; i < updated.length; i++) {
-          QueueEngine.updateTrackAt(startIndex + i, updated[i])
+          if (startIndex + i < queueLen) {
+            QueueEngine.updateTrackAt(startIndex + i, updated[i])
+          } else {
+            // Overflow: rematch found more tracks than the queue had.
+            QueueEngine.appendTracks([updated[i]])
+          }
         }
         console.log(`[IPC] Rematch complete for ${playlistId}, appended tracks updated`)
       }).catch((err: any) => {

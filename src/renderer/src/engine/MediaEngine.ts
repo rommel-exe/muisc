@@ -48,6 +48,10 @@ export class MediaEngine {
    *  expected duration — if the track ends in < 30s, it's likely a YouTube
    *  preview/stale URL, and we re-resolve with forceRefresh instead of advancing. */
   private _trackStartedAt = 0
+  /** Per-video retry count for truncated-stream replay. Reset when a track plays past MIN_PLAY_MS. */
+  private _truncatedRetries = new Map<string, number>()
+  /** Max consecutive truncated-stream replays before giving up and advancing (prevents infinite loop). */
+  private readonly MAX_TRUNCATED_RETRIES = 3
 
   constructor(
     private audio: AudioBridge,
@@ -112,6 +116,7 @@ export class MediaEngine {
           this._state.queueIndex = idx
           this._state.currentTime = 0
           this.emit()
+          this._truncatedRetries.delete(this._currentVideoId)
           this._trackStartedAt = performance.now()
           this.preloadNext()
           await this.refreshState()
@@ -154,6 +159,7 @@ export class MediaEngine {
       this._state.state = 'playing'
       this._state.error = null
       this.emit()
+      this._truncatedRetries.delete(this._currentVideoId)
       this._trackStartedAt = performance.now()
       this.log(`playFromQueue: playing "${initialTitle}"`)
 
@@ -413,6 +419,7 @@ export class MediaEngine {
           this._state.error = null
           this._preloadedVideoId = ''
           this.emit()
+          this._truncatedRetries.delete(this._currentVideoId)
           this._trackStartedAt = performance.now()
           this.preloadNext()
           // refreshState() already called above — skip duplicate
@@ -583,7 +590,21 @@ export class MediaEngine {
     const elapsed = performance.now() - this._trackStartedAt
     const truncatedVideoId = this._currentVideoId
     if (truncatedVideoId && elapsed < MIN_PLAY_MS && this._trackStartedAt > 0) {
-      this.log(`auto-advance: truncated end at ${(elapsed/1000).toFixed(1)}s — re-resolving ${truncatedVideoId} with forceRefresh`)
+      // ⚠️ Retry limit: if the CDN consistently returns truncated URLs, give up
+      // after MAX_TRUNCATED_RETRIES consecutive replays and advance instead of
+      // looping the same ~24s snippet forever.
+      const retries = (this._truncatedRetries.get(truncatedVideoId) ?? 0) + 1
+      this._truncatedRetries.set(truncatedVideoId, retries)
+      if (retries > this.MAX_TRUNCATED_RETRIES) {
+        this.log(`auto-advance: truncated retry limit (${this.MAX_TRUNCATED_RETRIES}) for ${truncatedVideoId}, advancing`)
+        this._truncatedRetries.delete(truncatedVideoId)
+        this._pendingAdvance = true
+        this.next()
+          .catch((err) => { this.log(`auto-advance error: ${err.message}`) })
+          .finally(() => { this._pendingAdvance = false })
+        return
+      }
+      this.log(`auto-advance: truncated end at ${(elapsed/1000).toFixed(1)}s (retry ${retries}/${this.MAX_TRUNCATED_RETRIES}) — re-resolving ${truncatedVideoId} with forceRefresh`)
       this._pendingAdvance = true
       this.api.resolveTrack(truncatedVideoId, { forceRefresh: true })
         .then((resolved) => {
@@ -597,6 +618,7 @@ export class MediaEngine {
         })
         .then(() => {
           if (this._currentVideoId !== truncatedVideoId) return
+          this._truncatedRetries.delete(truncatedVideoId)
           this._trackStartedAt = performance.now()
           this.log('auto-advance: forceRefresh replay succeeded')
         })

@@ -98,6 +98,12 @@ export function createProxy(options: ProxyOptions = {}) {
     const prewarmDataLen = pb.data.length
     if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm HIT ${videoId}: ${prewarmDataLen} bytes`)
 
+    // ⚠️ Register client disconnect handler before any async operation.
+    // Without this, if the client disconnects during resolveStreamUrl (500ms-2s),
+    // the CDN tail fetch still runs and leaks the connection until timeout (10s).
+    let clientGone = false
+    res.on('close', () => { clientGone = true })
+
     const rangeHeader = req.headers['range']
     if (rangeHeader) {
       const parts = rangeHeader.replace(/bytes=/, '').split('-')
@@ -116,7 +122,7 @@ export function createProxy(options: ProxyOptions = {}) {
       if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${chunk.length}b (range ${start}-${end}) in ${Date.now()-handlerT0}ms`)
       // Pipe CDN tail so audio continues past the prewarm buffer.
       const tailUrl = await resolveStreamUrl(videoId)
-      if (tailUrl) {
+      if (tailUrl && !clientGone) {
         doTailFetch(videoId, tailUrl, end + 1, res, handlerT0, MAX_TAIL_RETRIES)
       } else if (!res.destroyed) {
         res.end()
@@ -144,6 +150,13 @@ export function createProxy(options: ProxyOptions = {}) {
     if (!streamUrl) {
       console.error(`[Proxy] Prewarm tail resolve failed for ${videoId}`)
       res.end()
+      return
+    }
+
+    if (clientGone) {
+      // Client disconnected during resolveStreamUrl — skip tail fetch to
+      // avoid leaking the CDN connection until timeout.
+      if (!res.destroyed) res.end()
       return
     }
 

@@ -13,9 +13,18 @@ import { setSearchFunction } from '../application/SearchEngine'
 // The app serves only local content and user-initiated YouTube streams — no sandbox needed.
 app.commandLine.appendSwitch('no-sandbox')
 
-// Enable remote debugging for agent-browser automated testing (dev only)
+// Enable remote debugging for agent-browser automated testing (dev only).
+// Check port availability first — if another Electron/Chrome instance already
+// owns 9222, skip instead of letting Electron silently pick a different port
+// that agent-browser tests won't find.
 if (is.dev) {
-  app.commandLine.appendSwitch('remote-debugging-port', '9222')
+  try {
+    const { execSync } = require('child_process')
+    execSync('lsof -ti:9222', { stdio: 'ignore' })
+    console.warn('[App] Port 9222 in use by another process, skipping remote debugging flag')
+  } catch {
+    app.commandLine.appendSwitch('remote-debugging-port', '9222')
+  }
 }
 
 // Create the media resolver — owns the proxy and cache
