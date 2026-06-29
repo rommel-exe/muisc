@@ -30,6 +30,12 @@ export class MediaEngine {
    *  fast-forward the queue in one batch instead of processing each
    *  skip sequentially with a full resolve+load cycle. */
   private _pendingSkips = 0
+  /** Advance generation counter. Incremented on every next() call.
+   *  Guards _advancing in the finally block: only the most recent
+   *  advance's finally may reset _advancing. Prevents a zombie
+   *  _nextImpl() (that recovered after hang-timer reset) from
+   *  clobbering the mutex of a subsequent advance. */
+  private _advanceGen = 0
   /** Mutex: prevents concurrent prev() calls from racing against each other or next(). */
   private _prevInProgress = false
   private _currentVideoId = ''
@@ -37,6 +43,11 @@ export class MediaEngine {
   private _listeners = new Set<MediaEngineListener>()
   /** Timestamp when the current operation started (for elapsed timing in logs) */
   private _opStart = 0
+  /** Timestamp when the current track started playing (performance.now).
+   *  Used by onTrackEnded to detect truncated streams that end before the
+   *  expected duration — if the track ends in < 30s, it's likely a YouTube
+   *  preview/stale URL, and we re-resolve with forceRefresh instead of advancing. */
+  private _trackStartedAt = 0
 
   constructor(
     private audio: AudioBridge,
@@ -101,6 +112,7 @@ export class MediaEngine {
           this._state.queueIndex = idx
           this._state.currentTime = 0
           this.emit()
+          this._trackStartedAt = performance.now()
           this.preloadNext()
           await this.refreshState()
           return
@@ -138,9 +150,11 @@ export class MediaEngine {
       this._state.currentTrack = { ...queueRef.track, title: initialTitle }
       this._state.queueIndex = idx
       this._state.currentTime = 0
+      this._state.duration = queueRef.track.duration || 0
       this._state.state = 'playing'
       this._state.error = null
       this.emit()
+      this._trackStartedAt = performance.now()
       this.log(`playFromQueue: playing "${initialTitle}"`)
 
       // Background: try to get a more accurate title from yt-dlp/Innertube metadata.
@@ -282,48 +296,73 @@ export class MediaEngine {
 
   async next(): Promise<void> {
     this.t0()
+    // 🚨 DIAGNOSTIC: log EVERY next() call with caller stack trace,
+    // regardless of _pendingAdvance state. This catches callers
+    // that bypass onTrackEnded() entirely — the user's bug shows
+    // next: requesting next track with NO preceding auto-advance log.
+    const stack = new Error().stack?.split('\n').slice(2, 5).join(' → ') ?? 'no stack'
+    this.log(`next: CALLED (pendingAdvance=${this._pendingAdvance}) — stack: ${stack}`)
+
     // ⚠️ Mutex: prevent concurrent next() calls.
     // Without this, if auto-advance fires next() and the user clicks ⏭
     // before it resolves, QueueEngine.next() runs twice, skipping a track.
-    if (this._advancing) {
-      this._pendingSkips++
-      this.log(`next: queued advance (pending=${this._pendingSkips})`)
-      return
-    }
+      if (this._advancing) {
+        this._pendingSkips++
+        // 🚨 Log the caller of queued advances. Despite the mutex guard,
+        // _pendingSkips accumulates to 5+ during a single _nextImpl() via
+        // an unidentified path. The stack trace identifies the mystery caller.
+        const qStack = new Error().stack?.split('\n').slice(2, 5).join(' → ') ?? 'no stack'
+        this.log(`next: queued advance (pending=${this._pendingSkips}) — caller: ${qStack}`)
+        return
+      }
 
-    // 🔥 DIAGNOSTIC: log who called next() — specifically looking for
-    // callers that bypass onTrackEnded() (where auto-advance: track ended
-    // would appear). Expected callers: onTrackEnded, controls.next (user),
-    // or recursive from _pendingSkips in finally block.
-    if (!this._pendingAdvance) {
-      const stack = new Error().stack?.split('\n').slice(2, 5).join(' → ') ?? 'no stack'
-      this.log(`next: CALLED WITHOUT auto-advance — stack: ${stack}`)
-    }
-
+    // Advance generation: guards _advancing in finally against zombie resets.
+    // If a hang-timer-recovered _nextImpl finishes after a new advance started,
+    // its stale finally can't clobber the new advance's mutex.
+    const advanceGen = ++this._advanceGen
     this._advancing = true
+    // Advance-hang recovery: auto-reset _advancing if _nextImpl takes >10s.
+    // Prevents permanent ⏭ lockout if IPC hangs or swapToNext never settles.
+    const hangTimer = setTimeout(() => {
+      if (this._advancing) {
+        this.log('next: hang recovery — _advancing auto-reset after 10s')
+        this._advancing = false
+        this._pendingSkips = 0
+      }
+    }, 10000)
     try {
       // Process ONE advance (full resolve + load)
       await this._nextImpl()
     } finally {
-      this._advancing = false
-      // Process any skips queued during the advance — one at a time via
-      // chained next() calls. This avoids the thundering herd of N concurrent
-      // spin-loops that recursively call return this.next().
-      //
-      // ⚠️ MUST await: onTrackEnded resets _pendingAdvance in its .finally()
-      // when the outer next() promise settles. Without await, the recursive
-      // chain runs after _pendingAdvance is already false, letting a genuinely
-      // ended track's onTrackEnded pass the guard mid-chain.
+      clearTimeout(hangTimer)
+      // Only reset _advancing if we're still the current generation.
+      // A zombie _nextImpl (recovered after hang-timer + new advance)
+      // must not clobber the new advance's mutex.
+      if (this._advanceGen === advanceGen) this._advancing = false
+      // 🚫 ZERO pending skips — prevent ANY cascade.
+      // The cascade bug (tracks skipping every 24s) is caused by
+      // _pendingSkips accumulating during _nextImpl() through an
+      // unidentified path. Our earlier fix of "process at most 1"
+      // STILL caused a skip (one recursive advance). The only safe
+      // fix is to discard all pending skips — user ⏭ clicks during
+      // the ~100ms advance window are lost, which is far better than
+      // tracks skipping mid-song.
       if (this._pendingSkips > 0) {
-        this._pendingSkips--
-        await this.next()
+        this.log(`next: discarded ${this._pendingSkips} queued advances (cascade prevention)`)
+        this._pendingSkips = 0
       }
     }
   }
 
   /** Internal next() implementation — NO mutex, called by next() and by error-recovery recursion. */
   private async _nextImpl(errorSkipCount = 0): Promise<void> {
-    this.log('next: requesting next track')
+    // 🚨 Log caller stack to catch direct calls that bypass next().
+    // The cascade bug shows `next: requesting next track` WITHOUT a
+    // preceding `auto-advance: track ended` or `next: CALLED` — meaning
+    // _nextImpl() was called directly outside the mutex. This diagnostic
+    // captures who that caller is.
+    const implStack = new Error().stack?.split('\n').slice(2, 5).join(' → ') ?? 'no stack'
+    this.log(`next: requesting next track (caller: ${implStack})`)
     try {
       const result = await this.api.queueNext()
       if (!result) {
@@ -356,6 +395,7 @@ export class MediaEngine {
           this._state.error = null
           this._preloadedVideoId = ''
           this.emit()
+          this._trackStartedAt = performance.now()
           this.preloadNext()
           // refreshState() already called above — skip duplicate
           return
@@ -511,6 +551,30 @@ export class MediaEngine {
       this.log('auto-advance: skipped (already advancing)')
       return
     }
+
+    // 🚨 Truncated-stream detection: YouTube CDN can return preview-only
+    // streams that play ~24s then end. If the track played for < 30s,
+    // re-resolve with forceRefresh and retry instead of advancing.
+    const MIN_PLAY_MS = 30000
+    const elapsed = performance.now() - this._trackStartedAt
+    if (this._currentVideoId && elapsed < MIN_PLAY_MS && this._trackStartedAt > 0) {
+      this.log(`auto-advance: truncated end at ${(elapsed/1000).toFixed(1)}s — re-resolving ${this._currentVideoId} with forceRefresh`)
+      this._pendingAdvance = true
+      this.api.resolveTrack(this._currentVideoId, { forceRefresh: true })
+        .then((resolved) => this.audio.loadAndPlay(resolved.audioUrl))
+        .then(() => {
+          this._trackStartedAt = performance.now()
+          this.log('auto-advance: forceRefresh replay succeeded')
+        })
+        .catch(() => {
+          this.log('auto-advance: forceRefresh re-resolve failed, advancing')
+          this.next()
+            .catch((err) => { this.log(`auto-advance error: ${err.message}`) })
+        })
+        .finally(() => { this._pendingAdvance = false })
+      return
+    }
+
     this._pendingAdvance = true
     this.log('auto-advance: track ended')
     this.next()
@@ -539,6 +603,9 @@ export class MediaEngine {
       // Set ahead of async resolve so the race guard below works correctly
       this._preloadedVideoId = videoId
 
+      // No forceRefresh needed: the proxy's 403/410 handler re-resolves stale
+      // stream URLs automatically, and playFromQueue retries with forceRefresh
+      // if the first resolve fails. Preload is speculative — let the cache serve.
       this.api.resolveTrack(videoId).then((resolved) => {
         // Skip-spam: check we're still on the same preload request
         if (this._preloadCounter !== capturedId) return

@@ -350,6 +350,7 @@
   <li><a href="#config">Configuration &amp; Build</a></li>
   <li><a href="#ci-cd">CI/CD Pipeline</a></li>
   <li><a href="#testing">Testing Strategy</a></li>
+  <li><a href="#recommendations">Recommendations &amp; Roadmap</a></li>
 </ol>
 </div>
 
@@ -2351,6 +2352,435 @@ npx tsx tests/import-test-full.ts      # Full 332-track suite</code></pre>
     <tr><td><code>tests/import-test.ts</code></td><td>—</td><td>Test</td><td>Quick import smoke test</td><td>— (tsx script)</td></tr>
   </tbody>
 </table>
+</section>
+
+<!-- ═══════════ 18. RECOMMENDATIONS & ROADMAP ═══════════ -->
+<section id="recommendations" style="scroll-margin-top: 20px;">
+<h2><span class="section-num">18</span> Recommendations &amp; Roadmap</h2>
+<p class="lede">A data-driven prioritization of what to build next, structured by effort, risk, and user impact. Each recommendation is grounded in the codebase analysis above.</p>
+
+<!-- ── 18.1 Priority Matrix ── -->
+<h3>Priority Matrix</h3>
+<p>Every potential improvement plotted against <strong>implementation effort</strong> (X-axis) and <strong>user impact</strong> (Y-axis). The sweet spot is high impact / low effort — tackle those first.</p>
+
+<div class="mermaid">
+quadrantChart
+    title Recommendation Priority Matrix
+    x-axis Low Effort --> High Effort
+    y-axis Low Impact --> High Impact
+    quadrant-1 "Quick Wins (Do First)"
+    quadrant-2 "Major Investments (Plan)"
+    quadrant-3 "Low Priority (Skip)"
+    quadrant-4 "Thankless Chores (Automate)"
+    "SQLite Persistence": [0.35; 0.85]
+    "UI: Wireframes→Components": [0.50; 0.92]
+    "Frameless Window + Drag": [0.25; 0.70]
+    "Subcomponent Extraction": [0.30; 0.55]
+    "MediaSession API": [0.15; 0.50]
+    "Error Boundaries": [0.20; 0.65]
+    "Tray Icon + Menu": [0.15; 0.40]
+    "App Icon + Code Signing": [0.45; 0.35]
+    "CDN Prewarm Tuning": [0.10; 0.25]
+    "a11y Audit": [0.30; 0.30]
+    "Playlist Drag-and-Drop": [0.25; 0.45]
+    "Keyboard Shortcuts": [0.15; 0.55]
+    "CSP Hardening": [0.20; 0.30]
+    "Auto-Update Testing": [0.10; 0.20]
+    "Unit Test Coverage": [0.35; 0.60]
+    "Smooth Animations": [0.40; 0.75]
+</div>
+
+<div class="callout" style="margin-top: 16px;">
+  <strong>🎯 Key Insight:</strong> The <strong>UI Phase 4</strong> work (wireframes → subcomponents, frameless window, animations) clusters in the high-impact zone. SQLite persistence is the most critical infrastructure gap — without it, all user data is ephemeral.
+</div>
+
+<!-- ── 18.2 Phase 4: UI Overhaul ── -->
+<h3>18.1 — Phase 4: UI Overhaul (Highest Priority)</h3>
+<p>The wireframes exist in <code>src/renderer/src/wireframes/</code> but none are wired to <code>App.tsx</code>. The current UI is a functional monospace debug interface. A complete visual rebuild targeting the glassmorphism design system is the single highest-impact investment available.</p>
+
+<div class="mermaid">
+flowchart TD
+    subgraph Current State
+        APP["App.tsx (726 lines, monolithic)"]
+        WF["Wireframes/\n7 mockup components"]
+        AUDIO["useAudioPlayer hook"]
+        DEBUG["Bare-bones debug UI\nmonospace, no styling"]
+    end
+
+    subgraph Phase 4 Goal
+        SL["Sidebar\n(playlists, library nav)"]
+        NP["Now Playing Bar\n(album art, controls, progress)"]
+        QD["Queue Drawer\n(up next, history)"]
+        SR["Search Results\n(grid/list view)"]
+        PL["Playlist Detail\n(track list, metadata)"]
+        LIB["Library View\n(songs, playlists tabs)"]
+        NPE["Now Playing Expanded\n(full screen, lyrics)"]
+    end
+
+    subgraph Design System
+        GLASS["Glassmorphism\nbackdrop-filter: blur(20px)"]
+        FRAME["Frameless Window\ncustom titlebar + drag"]
+        DARK["Dark Theme\n#0d1117 base"]
+        FONT["System Font Stack\n-apple-system, Segoe UI"]
+        ANIM["Smooth Transitions\nCSS + View Transition API"]
+    end
+
+    APP --> SL
+    APP --> NP
+    APP --> QD
+    APP --> SR
+    APP --> PL
+    APP --> LIB
+    APP --> NPE
+
+    SL --> GLASS
+    NP --> FRAME
+    QD --> DARK
+    SR --> FONT
+    PL --> ANIM
+    LIB --> GLASS
+    NPE --> FRAME
+
+    WF -. "Reference" .-> SL
+    WF -. "Reference" .-> NP
+    WF -. "Reference" .-> QD
+    WF -. "Reference" .-> SR
+    WF -. "Reference" .-> PL
+    WF -. "Reference" .-> LIB
+    WF -. "Reference" .-> NPE
+</div>
+
+<div class="stats-row" style="margin-top: 20px;">
+  <div class="stat"><div class="num">7</div><div class="label">Components to Build</div></div>
+  <div class="stat"><div class="num">726</div><div class="label">Lines to Refactor</div></div>
+  <div class="stat"><div class="num">~2w</div><div class="label">Estimated Effort</div></div>
+  <div class="stat"><div class="num">🥇</div><div class="label">Priority Rank</div></div>
+</div>
+
+<!-- ── 18.3 SQLite Persistence ── -->
+<h3>18.2 — SQLite Persistence (Critical Infrastructure)</h3>
+<p>Phase 3's schema is designed (<code>interview.md</code>) but <strong>never implemented</strong>. Every playlist, queue, and setting lives in-memory and vanishes on restart. This is the single biggest reliability gap.</p>
+
+<div class="mermaid">
+flowchart LR
+    subgraph Current
+        MEM["In-Memory State\nPlaylistEngine\nQueueEngine\nSettings"]
+        LOST["❌ Lost on restart"]
+    end
+    subgraph Target
+        SQL["better-sqlite3 DB\n~/muisc.db"]
+        TBL_PLAYLISTS["playlists table"]
+        TBL_TRACKS["playlist_tracks table"]
+        TBL_QUEUE["queue_state table"]
+        TBL_SETTINGS["settings table"]
+        TBL_HISTORY["play_history table"]
+    end
+
+    MEM -. "migrate on startup" .-> SQL
+    SQL --> TBL_PLAYLISTS
+    SQL --> TBL_TRACKS
+    SQL --> TBL_QUEUE
+    SQL --> TBL_SETTINGS
+    SQL --> TBL_HISTORY
+</div>
+
+<div class="callout" style="margin-top: 16px;">
+  <strong>⚠️ Risk:</strong> <code>better-sqlite3</code> is a native module and requires <code>electron-rebuild</code> after every Electron upgrade. The rebuild must be part of the CI/CD pipeline. Schema migrations (future-proof with a <code>schema_version</code> row) are strongly recommended before v1.0.
+</div>
+
+<!-- ── 18.4 Phase 5 Remaining: Polish ── -->
+<h3>18.3 — Phase 5: Polish &amp; Packaging</h3>
+<p>Phase 5 was partially completed (Spotify import, CI/CD). Several high-visibility items remain. These are individually low-effort but collectively define the app's production readiness.</p>
+
+<table>
+  <thead><tr><th>Item</th><th>Effort</th><th>Status</th><th>Dependencies</th></tr></thead>
+  <tbody>
+    <tr><td><strong>MediaSession API</strong></td><td>🟢 Low (2-4h)</td><td class="tag-red">Not started</td><td>None — pure renderer API</td></tr>
+    <tr><td><strong>Tray Icon + Menu</strong></td><td>🟢 Low (4-6h)</td><td class="tag-red">Not started</td><td>Need app icon asset first</td></tr>
+    <tr><td><strong>App Icon (macOS/Windows)</strong></td><td>🟡 Medium (8-16h)</td><td class="tag-red">Not started</td><td>Designer or AI-generated asset</td></tr>
+    <tr><td><strong>macOS Code Signing</strong></td><td>🟡 Medium (8h)</td><td class="tag-red">Not started</td><td>Apple Developer Account ($99/yr)</td></tr>
+    <tr><td><strong>Windows Code Signing</strong></td><td>🟡 Medium (4h)</td><td class="tag-red">Not started</td><td>EV cert or Azure Key Vault</td></tr>
+    <tr><td><strong>System Media Controls</strong></td><td>🟢 Low (2-4h)</td><td class="tag-red">Not started</td><td>MediaSession API first</td></tr>
+    <tr><td><strong>Auto-Update E2E Test</strong></td><td>🟢 Low (2h)</td><td class="tag-orange">Partial</td><td>electron-updater configured, needs staging test</td></tr>
+  </tbody>
+</table>
+
+<div class="mermaid">
+flowchart LR
+    MEDIA["MediaSession API\n🎵 OS media controls"] --> TRAY["Tray Icon\n⏲️ Background playback"]
+    TRAY --> ICON["App Icon\n🖼️ Brand identity"]
+    ICON --> SIGN["Code Signing\n🔏 Notarization"]
+    SIGN --> UPDATE["Auto-Update\n🔄 Production pipeline"]
+    MEDIA --> SMC["System Media Controls\n⌨️ Keyboard media keys"]
+    SMC --> TRAY
+
+    style MEDIA fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+    style TRAY fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+    style ICON fill:#3a2a1a,stroke:#d29922,color:#e6edf3
+    style SIGN fill:#3a1a2a,stroke:#f778ba,color:#e6edf3
+    style UPDATE fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style SMC fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+</div>
+
+<!-- ── 18.5 Technical Debt ── -->
+<h3>18.4 — Technical Debt &amp; Refactoring</h3>
+<p>Several areas of the codebase would benefit from targeted refactoring. These are organized by risk/reward — the highest-value changes are not the most glamorous.</p>
+
+<div class="mermaid">
+flowchart TD
+    subgraph "High Value"
+        DECOMP["Decompose App.tsx\n726 lines → 7 components"]
+        EB["Error Boundaries\nGraceful crash recovery"]
+        KW["Keyboard Shortcuts\nSpace=Play, J=Back, K=Play/Pause, L=Next"]
+    end
+    subgraph "Medium Value"
+        A11Y["a11y Audit\nARIA labels, focus mgmt, screen reader"]
+        TEST_COV["Test Coverage\nBackfill engine unit tests"]
+        LOGS["Structured Logging\nReplace console.log with winston/debug"]
+    end
+    subgraph "Low Value / Future"
+        DND["Drag-and-Drop\nReorder queue/playlist items"]
+        THEMES["Theme Support\nLight mode, accent colors"]
+        LANG["i18n / L10n\nMulti-language support"]
+    end
+
+    DECOMP --> EB
+    EB --> KW
+    KW --> A11Y
+    A11Y --> TEST_COV
+    TEST_COV --> LOGS
+
+    style DECOMP fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style EB fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style KW fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+    style A11Y fill:#3a2a1a,stroke:#d29922,color:#e6edf3
+</div>
+
+<!-- ── 18.6 Architecture Risks ── -->
+<h3>18.5 — Architecture Risks</h3>
+<p>Every external dependency and architectural decision carries risk. These are the top threats to muisc's long-term viability, ordered by likelihood × severity.</p>
+
+<div class="mermaid">
+flowchart LR
+    subgraph External Dependencies
+        YT["YouTube (yt-dlp + Innertube)"]
+        ELEC["Electron 35"]
+        SQLITE["better-sqlite3 (native)"]
+    end
+    subgraph Risks
+        R1["🚨 Innertube API breakage\nUnofficial API, can break without notice"]
+        R2["🚨 yt-dlp blocks / rate limits\nGoogle actively fights scraping"]
+        R3["⚠️ Stream URL expiration\nURLs valid ~6h, proxy must re-fetch"]
+        R4["⚠️ Native module rebuild\nElectron upgrade breaks better-sqlite3"]
+        R5["⚠️ macOS sandbox restrictions\nChild processes fail without flags"]
+        R6["🔶 YouTube DOM/API changes\nSearch parsing breaks on layout change"]
+    end
+    YT --> R1
+    YT --> R2
+    YT --> R6
+    ELEC --> R5
+    SQLITE --> R4
+    YT --> R3
+
+    style R1 fill:#3a1a2a,stroke:#f778ba,color:#e6edf3
+    style R2 fill:#3a1a2a,stroke:#f778ba,color:#e6edf3
+    style R3 fill:#3a2a1a,stroke:#d29922,color:#e6edf3
+    style R4 fill:#3a2a1a,stroke:#d29922,color:#e6edf3
+    style R5 fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style R6 fill:#3a2a1a,stroke:#d29922,color:#e6edf3
+</div>
+
+<div class="stats-row" style="margin-top: 16px;">
+  <div class="stat" style="border: 1px solid #f778ba;"><div class="num" style="color: #f778ba;">2</div><div class="label">Critical Risks</div></div>
+  <div class="stat" style="border: 1px solid #d29922;"><div class="num" style="color: #d29922;">3</div><div class="label">Moderate Risks</div></div>
+  <div class="stat" style="border: 1px solid #58a6ff;"><div class="num" style="color: #58a6ff;">1</div><div class="label">Low Risk</div></div>
+</div>
+
+<div class="callout" style="margin-top: 16px;">
+  <strong>🔴 Critical Risk — Mitigation Strategy:</strong> The Innertube API (<code>youtubei.js</code>) has broken twice in the project's history. Mitigations: (1) Pin the <code>youtubei.js</code> version in <code>package.json</code> — never use <code>^</code>. (2) Cache resolved stream URLs with a TTL under the 6h expiration window. (3) Monitor <a href="https://github.com/LuanRT/YouTube.js" style="color: #58a6ff;">YouTube.js GitHub</a> for breaking changes before updating. (4) Consider a yt-dlp fallback path for search as well (currently Innertube-only for search, yt-dlp-only for audio).
+</div>
+
+<!-- ── 18.7 Performance Targets ── -->
+<h3>18.6 — Performance Targets</h3>
+<p>Current performance is adequate for a v0.2 prototype. For v1.0, specific quantified targets should guide optimization work.</p>
+
+<table>
+  <thead><tr><th>Metric</th><th>Current</th><th>Target</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Cold start → playable</strong></td><td>~4-8s</td><td>&lt; 3s</td><td>yt-dlp daemon prewarm + Innertube warm is critical</td></tr>
+    <tr><td><strong>Track switch (next)</strong></td><td>~1.5-3s</td><td>&lt; 1s</td><td>CDN prewarm + dual AudioElement swap is already fast; bottleneck is yt-dlp resolve</td></tr>
+    <tr><td><strong>App startup (window visible)</strong></td><td>~2s</td><td>&lt; 1.2s</td><td>Electron's ready time. Lazy-load heavy services</td></tr>
+    <tr><td><strong>Memory (idle, no playback)</strong></td><td>~180 MB</td><td>&lt; 120 MB</td><td>Chromium overhead is baseline; reduce retained listeners</td></tr>
+    <tr><td><strong>Search response</strong></td><td>~0.8-2s</td><td>&lt; 0.5s</td><td>Innertube API latency; debounce 300ms already implemented</td></tr>
+    <tr><td><strong>Spotify import (50 tracks)</strong></td><td>~30-60s</td><td>&lt; 25s</td><td>Parallel batch processing (batch-50) already implemented</td></tr>
+    <tr><td><strong>Bundle size (renderer JS)</strong></td><td>~1.2 MB</td><td>&lt; 600 KB</td><td>Code splitting + dynamic imports for optional features</td></tr>
+  </tbody>
+</table>
+
+<div class="mermaid">
+flowchart LR
+    subgraph "Startup Sequence & Latency Targets"
+        A["App Launch"] --> B["Window Ready\n[Target: &lt;1.2s]"]
+        B --> C["Warm Innertube"]
+        B --> D["Warm yt-dlp Daemon"]
+        C --> E["User Clicks Play\n[Ready &lt;3s total]"]
+        D --> E
+        E --> F["yt-dlp Resolve Stream"]
+        F --> G["Proxy Cache\n[Hit: &lt;200ms]"]
+        F --> H["Proxy Miss\n[Fetch: &lt;3s]"]
+        G --> I["Dual AudioElement\n[Swap: &lt;50ms]"]
+        H --> I
+    end
+
+    style A fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style E fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+    style I fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+</div>
+
+<!-- ── 18.8 Feature Roadmap ── -->
+<h3>18.7 — Recommended Feature Roadmap</h3>
+<p>A phased delivery plan sequenced by dependency and value. Each phase is independently shippable.</p>
+
+<div class="mermaid">
+gantt
+    title Muisc Development Roadmap
+    dateFormat  YYYY-MM-DD
+    axisFormat  %b
+
+    section Phase 4 — UI
+    Extract 7 Wireframe Components    :p4a, 2026-07-01, 10d
+    Frameless Window + Titlebar        :p4b, after p4a, 4d
+    Glassmorphism Design System        :p4c, after p4a, 5d
+    Smooth Animations                  :p4d, after p4c, 3d
+    Keyboard Shortcuts                 :p4e, after p4b, 2d
+
+    section SQLite Persistence
+    Database Schema & Migrations       :sql1, 2026-07-01, 5d
+    Playlist/Queue Save & Restore      :sql2, after sql1, 4d
+    Settings Persistence               :sql3, after sql2, 2d
+    Play History                       :sql4, after sql3, 3d
+
+    section Phase 5 — Polish
+    MediaSession API                   :p5a, 2026-07-15, 2d
+    Tray Icon + Background Playback    :p5b, after p5a, 3d
+    App Icon Assets                    :p5c, 2026-07-20, 5d
+    Code Signing (macOS)               :p5d, after p5c, 2d
+
+    section Quality
+    Error Boundaries + Crash Reports   :qa1, 2026-07-25, 3d
+    Backfill Unit Tests                :qa2, after p4a, 5d
+    a11y Audit + Fixes                 :qa3, 2026-08-01, 4d
+    E2E Playback Test Suite            :qa4, after qa2, 3d
+</div>
+
+<!-- ── 18.9 Engineering Culture ── -->
+<h3>18.8 — Engineering Practices</h3>
+<p>Observations and recommendations for the development process itself, based on patterns visible in the codebase.</p>
+
+<table>
+  <thead><tr><th>Practice</th><th>Current State</th><th>Recommendation</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>Commits</strong></td>
+      <td>Infrequent, large batches</td>
+      <td>Aim for <strong>one commit per logical change</strong>. Each commit should compile and pass type checks. This enables clean reverts and bisection.</td>
+    </tr>
+    <tr>
+      <td><strong>Testing</strong></td>
+      <td>4 test files, mix of unit + integration</td>
+      <td>Adopt <strong>TDD for all new engines/services</strong>. Backfill tests for existing modules before refactoring them. Target 60%+ coverage on application layer, 30%+ overall.</td>
+    </tr>
+    <tr>
+      <td><strong>TypeScript Strictness</strong></td>
+      <td><code>strict: true</code> in tsconfig</td>
+      <td>Excellent foundation. Add <code>noUncheckedIndexedAccess</code> and <code>exactOptionalPropertyTypes</code> to catch class of bugs. <strong>Never use <code>as any</code></strong> — current codebase is clean.</td>
+    </tr>
+    <tr>
+      <td><strong>Error Handling</strong></td>
+      <td>Mixed — some services have typed errors, others throw generic</td>
+      <td>Standardize on <strong>typed error classes</strong> per module (already done in proxy/yt-dlp). Extend the pattern to all services. No empty <code>catch {}</code> blocks.</td>
+    </tr>
+    <tr>
+      <td><strong>State Management</strong></td>
+      <td>React useState + useReducer in App.tsx</td>
+      <td>For Phase 4, consider <strong>React Context + useReducer</strong> per domain (QueueContext, PlaylistContext) or a lightweight store. Avoid adding a state library — the app is simple enough that context is sufficient.</td>
+    </tr>
+    <tr>
+      <td><strong>Feature Flags</strong></td>
+      <td>Not implemented</td>
+      <td>Useful during Phase 4 to ship incomplete UI components behind flags. A simple <code>FEATURE_FLAGS</code> const object in shared/constants.ts is enough — no LaunchDarkly needed.</td>
+    </tr>
+    <tr>
+      <td><strong>Documentation</strong></td>
+      <td>AGENTS.md, interview.md, this report</td>
+      <td>Keep this architecture report updated as the codebase evolves. Consider adding JSDoc to all public API surfaces in the application layer.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ── 18.10 Summary Action Plan ── -->
+<h3>18.9 — Executive Summary: Action Plan</h3>
+<p>Ranked by impact × urgency. Each item includes a recommendation and rationale.</p>
+
+<div class="mermaid">
+flowchart TD
+    START["📋 Action Plan<br/>Prioritized"] --> W1
+
+    subgraph "Week 1-2: Foundation"
+        W1["🥇 SQLite Persistence<br/>Stop losing data on restart"]
+        W2["🥇 Decompose App.tsx<br/>Extract 7 components from 726 lines"]
+    end
+
+    subgraph "Week 3-4: Visual Identity"
+        W3["🥇 Wire up Wireframes<br/>Sidebar → Now Playing → Queue"]
+        W4["🥇 Frameless Window<br/>Custom titlebar + drag regions"]
+        W5["🥇 Glassmorphism Theme<br/>backdrop-filter + dark palette"]
+    end
+
+    subgraph "Week 5-6: Interactivity"
+        W6["🥈 Smooth Animations<br/>View transitions, micro-interactions"]
+        W7["🥈 Keyboard Shortcuts<br/>Space, J/K/L, arrows"]
+        W8["🥈 Error Boundaries<br/>Graceful crash recovery"]
+    end
+
+    subgraph "Week 7-8: Production Polish"
+        W9["🥉 MediaSession API<br/>OS media controls"]
+        W10["🥉 Tray + Background Playback<br/>Minimize to tray"]
+        W11["🥉 Code Signing + Auto-Update<br/>Production pipeline"]
+        W12["🥉 App Icon<br/>Polished brand identity"]
+    end
+
+    START --> W1
+    W1 --> W2
+    W2 --> W3
+    W3 --> W4
+    W4 --> W5
+    W5 --> W6
+    W6 --> W7
+    W7 --> W8
+    W8 --> W9
+    W9 --> W10
+    W10 --> W11
+    W11 --> W12
+
+    style W1 fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+    style W2 fill:#1a3a2a,stroke:#3fb950,color:#e6edf3
+    style W3 fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style W4 fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style W5 fill:#1f3a5f,stroke:#58a6ff,color:#e6edf3
+    style W9 fill:#3a2a1a,stroke:#d29922,color:#e6edf3
+    style W10 fill:#3a2a1a,stroke:#d29922,color:#e6edf3
+    style W11 fill:#3a1a2a,stroke:#f778ba,color:#e6edf3
+</div>
+
+<div class="callout" style="margin-top: 20px;">
+  <strong>🏁 The Bottom Line:</strong> Muisc has a solid, well-architected foundation. The three highest-leverage investments are: <strong>(1) SQLite persistence</strong> so users don't lose their playlists, <strong>(2) the UI overhaul</strong> with glassmorphism and subcomponents, and <strong>(3) MediaSession + tray integration</strong> for a native-feeling desktop experience. Everything else is polish. The architecture supports all of these — there are no structural blockers.
+</div>
+
+<div class="callout" style="margin-top: 12px; border-color: #58a6ff;">
+  <strong>📊 Project Health:</strong> <span class="badge badge-green">Good</span> — Clean TypeScript, modular engine layer, decoupled services, functional audio pipeline. Primary risks are external (YouTube/Innertube stability), not internal. The 3-layer architecture (Renderer ↔ IPC ↔ Main + Application) is sound and will scale well through all remaining phases.
+</div>
+
 </section>
 
 </div>

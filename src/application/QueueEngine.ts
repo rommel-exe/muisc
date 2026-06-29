@@ -240,11 +240,16 @@ function previous(): QueueTrack | null {
   // No history fallback: go to previous index
   if (state.index > 0) {
     state.index--
+    // In shuffle mode, rebuild the shuffle order from the new position.
+    // The old shuffle was built from the jump-in point — it doesn't
+    // contain this earlier index, so next() would skip ahead.
+    if (state.shuffleActive) buildShuffleOrder()
     return state.list[state.index]
   }
 
   if (state.repeatMode === 'all') {
     state.index = state.list.length - 1
+    if (state.shuffleActive) buildShuffleOrder()
     return state.list[state.index]
   }
 
