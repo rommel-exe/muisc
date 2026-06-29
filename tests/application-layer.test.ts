@@ -228,3 +228,84 @@ describe('Application Layer Search & Infrastructure', () => {
     expect(endTime - startTime).toBeLessThan(100)
   })
 })
+
+// ── Test Suite 4: QueueEngine Shuffle Edge Cases ──
+
+describe('QueueEngine Shuffle previous() Regression', () => {
+  const tracks = [
+    { id: '1', title: 'Track A', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '1' },
+    { id: '2', title: 'Track B', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '2' },
+    { id: '3', title: 'Track C', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '3' },
+    { id: '4', title: 'Track D', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '4' },
+    { id: '5', title: 'Track E', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '5' },
+  ]
+
+  beforeEach(() => {
+    QueueEngine.clear()
+  })
+
+  it('should rebuild shuffle order after previous() no-history fallback', () => {
+    QueueEngine.setQueue(tracks, 0)
+    QueueEngine.setShuffleActive(true)
+
+    // jumpToIndex clears history and builds shuffle from that point
+    QueueEngine.jumpToIndex(2)
+    let state = QueueEngine._getState()
+    expect(state.index).toBe(2)
+    expect(state.history).toEqual([])
+    // Shuffle order should only contain indices 3+ (remaining after jump index 2)
+    expect(state.shuffleOrder.length).toBe(2) // indices 3, 4
+    state.shuffleOrder.forEach((i) => expect(i).toBeGreaterThanOrEqual(3))
+
+    // previous() with no history: index>0 → decrement
+    const prevResult = QueueEngine.previous()
+    expect(prevResult).not.toBeNull()
+    state = QueueEngine._getState()
+    expect(state.index).toBe(1)
+
+    // KEY ASSERTION: shuffle order was rebuilt from index 2+ (remaining after new index 1).
+    // Without the fix, shuffleOrder would still be [3,4] (old 2-element order),
+    // causing next() to skip past index 2.
+    expect(state.shuffleOrder.length).toBe(3) // indices 2, 3, 4
+    state.shuffleOrder.forEach((i) => {
+      expect(i).toBeGreaterThanOrEqual(2)
+      expect(i).toBeLessThan(5)
+    })
+    expect(state.shufflePos).toBe(0)
+
+    // next() should play from the rebuilt shuffle order (index 2+)
+    const nextResult = QueueEngine.next()
+    expect(nextResult).not.toBeNull()
+    state = QueueEngine._getState()
+    // The new index should be one of the remaining tracks (2, 3, or 4)
+    expect(state.index).toBeGreaterThanOrEqual(2)
+    // Without the fix, next() could return index 3 or 4 (from stale [3,4] order),
+    // skipping the track at index 2 entirely.
+  })
+
+  it('should rebuild shuffle order after previous() repeat-all wrap in shuffle mode', () => {
+    QueueEngine.setQueue(tracks, 0)
+
+    // index=0, repeatMode='all' (set by setQueue)
+    QueueEngine.setShuffleActive(true)
+
+    // previous() with no history and index=0: repeat-all wraps to last track
+    const prevResult = QueueEngine.previous()
+    expect(prevResult).not.toBeNull()
+    const state = QueueEngine._getState()
+    expect(state.index).toBe(4) // last track
+
+    // KEY ASSERTION: shuffle order was rebuilt from index 5 (nothing remaining).
+    // Without the fix, shuffleOrder keeps the old order (indices 1+ shuffled),
+    // causing next() to skip ahead instead of starting a full reshuffle.
+    expect(state.shuffleOrder.length).toBe(0) // nothing after index 4
+    expect(state.shufflePos).toBe(0)
+
+    // next() should trigger full reshuffle since shuffleOrder is empty
+    const nextResult = QueueEngine.next()
+    expect(nextResult).not.toBeNull()
+    // repeat-all: full reshuffle plays from the beginning
+    expect(QueueEngine.getCurrentIndex()).toBeGreaterThanOrEqual(0)
+    expect(QueueEngine.getCurrentIndex()).toBeLessThan(tracks.length)
+  })
+})
