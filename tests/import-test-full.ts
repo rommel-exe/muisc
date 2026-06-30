@@ -16,7 +16,11 @@ import { searchYouTube } from '../src/main/services/innertube'
 import { TrackIdentityEngine, generateSearchQueries } from '../src/application/TrackIdentityEngine'
 import type { InnertubeSearchResult } from '../src/main/services/innertube'
 
-const DEFAULT_URL = 'https://open.spotify.com/playlist/6cvgUIKXM8SKIYxDmDzTW1?si=29a79c9869d945bd'
+// 🔥 Default is a Spotify editorial playlist (always public). The old URL
+// 6cvgUIKXM8SKIYxDmDzTW1 was private → spclient returns 403 for anonymous
+// TOTP auth. Use a public editorial playlist for default testing, or pass a
+// sp_dc cookie via SP_DC env var for private playlists.
+const DEFAULT_URL = 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M?si=default-test'
 
 interface TrackInfo {
   title: string
@@ -26,10 +30,12 @@ interface TrackInfo {
 }
 
 /**
- * Try multiple search queries for a single track, scoring all candidates
- * together. Returns the best score and whether it passed threshold.
+ * Try multiple search queries for a single track, scoring ALL candidates
+ * together across all queries (no early exit). Returns the best score.
  *
- * This mirrors TrackIdentityEngine.resolveIdentity() logic.
+ * Mirrors TrackIdentityEngine.resolveIdentity() two-phase approach:
+ * Phase 1: Collect and score all candidates from all queries.
+ * Phase 2: Filter by threshold, rank by canonicalness.
  */
 async function findBestMatch(
   track: TrackInfo,
@@ -37,8 +43,7 @@ async function findBestMatch(
 ): Promise<{ matched: boolean; score: number; title: string; isFallback: boolean }> {
   const queries = generateSearchQueries(track)
   const seen = new Set<string>()
-  let bestScore = 0
-  let bestTitle = '(no results)'
+  const allCandidates: Array<{ score: number; title: string; duration: number; channelType: string }> = []
 
   for (const query of queries) {
     const results: InnertubeSearchResult[] = await searchYouTube(query)
@@ -52,17 +57,32 @@ async function findBestMatch(
         { title: track.title, artist: track.artist, duration: track.duration },
         { title: r.title, duration: r.duration, channelType: r.channelType }
       )
-
-      if (score > bestScore) {
-        bestScore = score
-        bestTitle = r.title
-      }
+      allCandidates.push({ score, title: r.title, duration: r.duration, channelType: r.channelType })
     }
+  }
 
-    // Early exit: found a candidate that passes threshold
-    if (bestScore >= threshold) {
-      return { matched: true, score: bestScore, title: bestTitle, isFallback: false }
+  if (allCandidates.length === 0) {
+    return { matched: false, score: 0, title: '(no results)', isFallback: false }
+  }
+
+  // Save the best in case threshold not met
+  let bestScore = 0
+  let bestTitle = '(no results)'
+  for (const c of allCandidates) {
+    if (c.score > bestScore) {
+      bestScore = c.score
+      bestTitle = c.title
     }
+  }
+
+  // Check threshold (Phase 2a: viable candidates)
+  if (bestScore >= threshold) {
+    return { matched: true, score: bestScore, title: bestTitle, isFallback: false }
+  }
+
+  // Fallback: candidates above 0.5 are still usable
+  if (bestScore >= 0.5) {
+    return { matched: true, score: bestScore, title: bestTitle, isFallback: true }
   }
 
   return { matched: false, score: bestScore, title: bestTitle, isFallback: false }
@@ -83,7 +103,7 @@ async function main() {
 
   for (let i = 0; i < total; i++) {
     const t = playlist.tracks[i]
-    const result = await findBestMatch(t, 0.7)
+    const result = await findBestMatch(t, 0.65)
 
     if (result.matched) {
       matched++
