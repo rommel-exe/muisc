@@ -115,6 +115,10 @@ export class MediaEngine {
           this._state.currentTrack = queueRef.track
           this._state.queueIndex = idx
           this._state.currentTime = 0
+          this._state.duration = queueRef.track.duration || 0
+          this._state.state = 'playing'
+          this._state.error = null
+          this._preloadedVideoId = ''
           this.emit()
           this._truncatedRetries.delete(this._currentVideoId)
           this._trackStartedAt = performance.now()
@@ -422,6 +426,8 @@ export class MediaEngine {
           // queueIndex was already set by refreshState() — no need to
           // overwrite since it already matches result.index (guard above).
           this._state.currentTime = 0
+          this._state.duration = result.track.duration || 0
+          this._state.state = 'playing'
           this._state.error = null
           this._preloadedVideoId = ''
           this.emit()
