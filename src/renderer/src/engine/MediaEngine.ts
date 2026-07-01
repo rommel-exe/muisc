@@ -215,10 +215,15 @@ export class MediaEngine {
       // Instant swap path: if preloaded matches, try swap
       if (videoId === this._preloadedVideoId && this.audio.isNextReady()) {
         this.log(`playFromQueue: instant swap (preloaded hit)`)
+        // 🔥 Same fix as _nextImpl: disable old error handler before swap
+        // to prevent stale clearing events from retrying the previous track.
+        this.audio.setOnError(null)
+        this._currentVideoId = videoId
         const swapped = await this.audio.swapToNext()
         if (swapped) {
           if (this._requestCounter !== opRequestId) return
-          this._currentVideoId = videoId
+          // Re-enable error handler for the new track
+          this.audio.setOnError(this._onMidPlaybackError)
           this._state.currentTrack = queueRef.track
           this._state.queueIndex = idx
           this._state.currentTime = 0
@@ -490,6 +495,12 @@ export class MediaEngine {
       // Check if preloaded matches — instant swap
       if (videoId === this._preloadedVideoId && this.audio.isNextReady()) {
         this.log(`next: instant swap (preloaded hit) — videoId=${videoId}, _preloadedVideoId=${this._preloadedVideoId}, result.track="${(result.track?.title || '').substring(0, 40)}"`)
+        // 🔥 Disable old error handler before swap — clearing the old element in
+        // swapToNext fires a stale error event. If still registered, _onMidPlaybackError
+        // reads the stale _currentVideoId and retries the previous track on the
+        // swapped element (root cause of UI/audio desync).
+        this.audio.setOnError(null)
+        this._currentVideoId = videoId
         const swapped = await this.audio.swapToNext()
         if (swapped) {
           // 🔥 Guard: user may have navigated to a different track while
@@ -500,7 +511,8 @@ export class MediaEngine {
             this.log('next: queue changed during swap, aborting auto-advance')
             return
           }
-          this._currentVideoId = videoId
+          // Re-enable error handler for the new track (set in _retryPlayback for normal path)
+          this.audio.setOnError(this._onMidPlaybackError)
           this._state.currentTrack = result.track
           // queueIndex was already set by refreshState() — no need to
           // overwrite since it already matches result.index (guard above).
