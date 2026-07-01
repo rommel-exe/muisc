@@ -89,7 +89,17 @@ export class MediaEngine {
     // Prevent re-entry — _retryPlayback will re-enable on success
     this.audio.setOnError(null)
     const retryOpId = ++this._requestCounter
-    this._retryPlayback(videoId, this.api.resolveTrack.bind(this.api), retryOpId)
+    // 🔥 For mid-playback errors, ALWAYS use forceRefresh. The cached CDN URL
+    // already served a truncated stream — retrying with it hits the same
+    // broken CDN edge (attempt 0 in _retryPlayback uses no forceRefresh, and
+    // since loadAndPlay resolves instantly when the stream starts, the error
+    // fires AFTER loadAndPlay returns — so attempt 0 ALWAYS succeeds and the
+    // forceRefresh attempts 1-4 are never reached).
+    // forceRefresh clears the proxy cache and gets a fresh URL that routes to
+    // a different CDN edge, giving us a chance at a full stream.
+    const refreshResolve = (id: string, _opts?: { forceRefresh?: boolean }) =>
+      this.api.resolveTrack(id, { forceRefresh: true })
+    this._retryPlayback(videoId, refreshResolve, retryOpId)
       .catch(err => {
         if (this._requestCounter !== retryOpId) return
         this.handleError(err)
@@ -129,6 +139,14 @@ export class MediaEngine {
         await this.audio.loadAndPlay(resolved.audioUrl)
 
         if (this._requestCounter !== opRequestId) return
+
+        // Set _currentVideoId BEFORE registering the mid-playback error handler.
+        // The callers (playFromQueue, playSearchResult, playCustomId) also set
+        // _currentVideoId after _retryPlayback returns, but there's a race window
+        // between onError handler registration and the caller's set — if the audio
+        // errors in that window, _onMidPlaybackError sees empty _currentVideoId and
+        // silently gives up instead of retrying.
+        this._currentVideoId = videoId
 
         // Success — enable mid-playback error handler for future CDN truncation errors
         this.audio.setOnError(this._onMidPlaybackError)
