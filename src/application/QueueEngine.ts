@@ -58,35 +58,23 @@ function fisherYatesShuffle(arr: number[]): number[] {
 /**
  * Build a fresh shuffle order.
  *
- * Normal path: indices after the current index (remaining tracks).
- * Full reshuffle: ALL indices — used when repeat-all exhausts the shuffle
- * order and we loop back.
+ * Shuffles ALL indices, excluding the current track by default so it
+ * stays in place during playback. Set includeAll=true to include every
+ * track (used when repeat-all wraps around and reshuffles everything).
  */
-function buildShuffleOrder(fullReshuffle: boolean = false): void {
+function buildShuffleOrder(includeAll: boolean = false): void {
   if (state.list.length === 0) {
     state.shuffleOrder = []
     state.shufflePos = 0
     return
   }
 
-  if (fullReshuffle) {
-    const all: number[] = Array.from({ length: state.list.length }, (_, i) => i)
-    state.shuffleOrder = fisherYatesShuffle(all)
-    state.shufflePos = 0
-    return
-  }
-
-  const remaining: number[] = []
-  for (let i = state.index + 1; i < state.list.length; i++) {
-    remaining.push(i)
-  }
-  if (remaining.length > 0) {
-    state.shuffleOrder = fisherYatesShuffle(remaining)
-    state.shufflePos = 0
-  } else {
-    state.shuffleOrder = []
-    state.shufflePos = 0
-  }
+  const all: number[] = Array.from({ length: state.list.length }, (_, i) => i)
+  state.shuffleOrder = fisherYatesShuffle(all)
+  state.shuffleOrder = includeAll || state.index < 0
+    ? state.shuffleOrder
+    : state.shuffleOrder.filter(i => i !== state.index)
+  state.shufflePos = 0
 }
 
 // ── Core Methods ──

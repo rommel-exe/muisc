@@ -426,9 +426,13 @@ describe('QueueEngine Shuffle previous() Regression', () => {
     let state = QueueEngine._getState()
     expect(state.index).toBe(2)
     expect(state.history).toEqual([])
-    // Shuffle order should only contain indices 3+ (remaining after jump index 2)
-    expect(state.shuffleOrder.length).toBe(2) // indices 3, 4
-    state.shuffleOrder.forEach((i) => expect(i).toBeGreaterThanOrEqual(3))
+    // Shuffle order contains ALL indices except current (2) — full queue shuffle
+    expect(state.shuffleOrder.length).toBe(4) // indices 0, 1, 3, 4
+    state.shuffleOrder.forEach((i) => expect(i).not.toBe(2))
+    state.shuffleOrder.forEach((i) => {
+      expect(i).toBeGreaterThanOrEqual(0)
+      expect(i).toBeLessThan(5)
+    })
 
     // previous() with no history: index>0 → decrement
     const prevResult = QueueEngine.previous()
@@ -436,22 +440,23 @@ describe('QueueEngine Shuffle previous() Regression', () => {
     state = QueueEngine._getState()
     expect(state.index).toBe(1)
 
-    // KEY ASSERTION: shuffle order was rebuilt from index 2+ (remaining after new index 1).
-    // Without the fix, shuffleOrder would still be [3,4] (old 2-element order),
-    // causing next() to skip past index 2.
-    expect(state.shuffleOrder.length).toBe(3) // indices 2, 3, 4
+    // KEY ASSERTION: shuffle order was rebuilt with ALL indices except new index 1.
+    expect(state.shuffleOrder.length).toBe(4) // indices 0, 2, 3, 4
     state.shuffleOrder.forEach((i) => {
-      expect(i).toBeGreaterThanOrEqual(2)
+      expect(i).not.toBe(1)
+      expect(i).toBeGreaterThanOrEqual(0)
       expect(i).toBeLessThan(5)
     })
     expect(state.shufflePos).toBe(0)
 
-    // next() should play from the rebuilt shuffle order (index 2+)
+    // next() should play from the rebuilt shuffle order (any index except 1)
     const nextResult = QueueEngine.next()
     expect(nextResult).not.toBeNull()
     state = QueueEngine._getState()
-    // The new index should be one of the remaining tracks (2, 3, or 4)
-    expect(state.index).toBeGreaterThanOrEqual(2)
+    // The new index should be one of the shuffled tracks (not the current 1)
+    expect(state.index).not.toBe(1)
+    expect(state.index).toBeGreaterThanOrEqual(0)
+    expect(state.index).toBeLessThan(5)
     // Without the fix, next() could return index 3 or 4 (from stale [3,4] order),
     // skipping the track at index 2 entirely.
   })
@@ -468,16 +473,20 @@ describe('QueueEngine Shuffle previous() Regression', () => {
     const state = QueueEngine._getState()
     expect(state.index).toBe(4) // last track
 
-    // KEY ASSERTION: shuffle order was rebuilt from index 5 (nothing remaining).
-    // Without the fix, shuffleOrder keeps the old order (indices 1+ shuffled),
-    // causing next() to skip ahead instead of starting a full reshuffle.
-    expect(state.shuffleOrder.length).toBe(0) // nothing after index 4
+    // KEY ASSERTION: shuffle order contains ALL indices except current (4).
+    // Full queue shuffle means every track except the current one is fair game.
+    expect(state.shuffleOrder.length).toBe(4) // indices 0, 1, 2, 3
+    state.shuffleOrder.forEach((i) => {
+      expect(i).not.toBe(4)
+      expect(i).toBeGreaterThanOrEqual(0)
+      expect(i).toBeLessThan(5)
+    })
     expect(state.shufflePos).toBe(0)
 
-    // next() should trigger full reshuffle since shuffleOrder is empty
+    // next() plays from the rebuilt shuffle order
     const nextResult = QueueEngine.next()
     expect(nextResult).not.toBeNull()
-    // repeat-all: full reshuffle plays from the beginning
+    expect(QueueEngine.getCurrentIndex()).not.toBe(4)
     expect(QueueEngine.getCurrentIndex()).toBeGreaterThanOrEqual(0)
     expect(QueueEngine.getCurrentIndex()).toBeLessThan(tracks.length)
   })
