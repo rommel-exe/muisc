@@ -408,10 +408,6 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     // track — the user didn't pause this one.
     userPausedRef.current = false
 
-    // Clear standby to avoid conflict
-    const standby = getStandby()
-    if (standby) { standby.pause(); standby.src = ''; standby.load() }
-
     trackEndedFiredRef.current = false
     setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 

@@ -109,6 +109,15 @@ export class MediaEngine {
     const refreshResolve = (id: string, _opts?: { forceRefresh?: boolean }) =>
       this.api.resolveTrack(id, { forceRefresh: true })
     this._retryPlayback(videoId, refreshResolve, retryOpId)
+      .then(() => {
+        // 🔥 Restore the preloaded next track. _retryPlayback calls loadAndPlay
+        // which clears the standby element. Without preloadNext here, the
+        // standby stays empty until the next track ends — forcing a slow
+        // resolve path (~600ms gap) instead of instant swap.
+        if (this._requestCounter === retryOpId) {
+          this.preloadNext()
+        }
+      })
       .catch(err => {
         if (this._requestCounter !== retryOpId) return
         // All forceRefresh retries failed — advance to next track instead
