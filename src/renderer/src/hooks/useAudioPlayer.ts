@@ -25,6 +25,8 @@ export interface AudioPlayerControls {
   setVolume: (volume: number) => void
   /** Register a callback fired directly from the DOM ended event (not through React state) */
   setOnTrackEnd: (cb: () => void) => void
+  /** Register a callback fired from the DOM error event for mid-playback errors */
+  setOnError(cb: (() => void) | null): void
   /** Return the current audio error message, if any */
   getError: () => string | null
   /** Abort any pending play() on the active element by clearing its src.
@@ -57,6 +59,9 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   const stalledCountRef = useRef(0)
   /** Ref to latest error so memoized getError() always returns current value */
   const errorRef = useRef<string | null>(null)
+  /** Ref-based callback fired from the DOM error event — notifies MediaEngine
+   *  of mid-playback errors so it can retry with a fresh CDN URL. */
+  const onErrorRef = useRef<(() => void) | null>(null)
 
   /** Distinguishes user-initiated pause from buffer-drain auto-pause.
    *  Set true by the pause() control; cleared by onPlay (user pressed play
@@ -162,6 +167,8 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       msg ??= `Unknown audio error (code=${realError?.code ?? 'none'})`
       errorRef.current = msg
       setState((prev) => ({ ...prev, error: msg, loading: false, isPlaying: false }))
+      // Notify MediaEngine of mid-playback error so it can retry with a fresh CDN URL
+      onErrorRef.current?.()
     }
     const fireTrackEnd = (source: string) => {
       if (trackEndedFiredRef.current) return
@@ -532,6 +539,10 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     onTrackEndRef.current = cb
   }, [])
 
+  const setOnError = useCallback((cb: (() => void) | null) => {
+    onErrorRef.current = cb
+  }, [])
+
   const getError = useCallback((): string | null => {
     return errorRef.current
   }, [])
@@ -552,6 +563,6 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
 
   return [
     state,
-    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume, setOnTrackEnd, getError, cancelPendingPlay },
+    { loadAndPlay, preloadNext, swapToNext, play, pause, seek, setVolume, setOnTrackEnd, setOnError, getError, cancelPendingPlay },
   ]
 }

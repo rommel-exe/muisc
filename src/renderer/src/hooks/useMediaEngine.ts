@@ -72,6 +72,7 @@ export function useMediaEngine(logger?: (msg: string) => void): {
     seek: (t) => playerControls.seek(t),
     setVolume: (v) => playerControls.setVolume(v),
     setOnTrackEnd: (cb) => playerControls.setOnTrackEnd(cb),
+    setOnError: (cb) => playerControls.setOnError(cb),
     isNextReady: () => playerStateRef.current.isNextReady,
     isPlaying: () => playerStateRef.current.isPlaying,
     getError: () => playerControls.getError(),

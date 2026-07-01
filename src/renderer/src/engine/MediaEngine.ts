@@ -1,5 +1,5 @@
 import type { AudioBridge, ApiBridge, MediaEngineState, MediaEngineListener, MediaState } from './types'
-import type { Track, RepeatMode, SearchResult } from '../../../shared/types'
+import type { Track, RepeatMode, SearchResult, ResolvedStream } from '../../../shared/types'
 
 const INITIAL_STATE: MediaEngineState = {
   currentTrack: null,
@@ -52,6 +52,10 @@ export class MediaEngine {
   private _truncatedRetries = new Map<string, number>()
   /** Max consecutive truncated-stream replays before giving up and advancing (prevents infinite loop). */
   private readonly MAX_TRUNCATED_RETRIES = 3
+  /** Per-video retry count for mid-playback errors (CDN truncation after play() resolved). */
+  private _midPlaybackErrorCount = new Map<string, number>()
+  /** Max mid-playback retries per track before giving up. */
+  private readonly MAX_MID_PLAYBACK_RETRIES = 3
 
   constructor(
     private audio: AudioBridge,
@@ -59,6 +63,91 @@ export class MediaEngine {
     private logger?: (msg: string) => void
   ) {
     this.audio.setOnTrackEnd(() => this.onTrackEnded())
+  }
+
+  /**
+   * Called when the audio element errors mid-playback (after play() already resolved).
+   * Retries the current track with a fresh CDN URL (forceRefresh) up to MAX_MID_PLAYBACK_RETRIES times.
+   * Cleared during retry loop in _retryPlayback to prevent concurrent retries.
+   */
+  private _onMidPlaybackError = (): void => {
+    const videoId = this._currentVideoId
+    if (!videoId) return
+
+    const errorCount = (this._midPlaybackErrorCount.get(videoId) ?? 0) + 1
+    if (errorCount > this.MAX_MID_PLAYBACK_RETRIES) {
+      this.log(`mid-playback: retry limit reached for ${videoId}, giving up`)
+      this.audio.setOnError(null)
+      this._midPlaybackErrorCount.delete(videoId)
+      this.handleError(new Error(`Playback failed after ${this.MAX_MID_PLAYBACK_RETRIES} mid-playback retries`))
+      return
+    }
+    this._midPlaybackErrorCount.set(videoId, errorCount)
+
+    this.log(`mid-playback error for ${videoId}, retrying (${errorCount}/${this.MAX_MID_PLAYBACK_RETRIES})`)
+
+    // Prevent re-entry — _retryPlayback will re-enable on success
+    this.audio.setOnError(null)
+    const retryOpId = ++this._requestCounter
+    this._retryPlayback(videoId, this.api.resolveTrack.bind(this.api), retryOpId)
+      .catch(err => {
+        if (this._requestCounter !== retryOpId) return
+        this.handleError(err)
+      })
+  }
+
+  /**
+   * Retry playback with forceRefresh + exponential backoff.
+   * Handles the YouTube CDN truncated-stream edge case where a CDN edge
+   * returns a stream that plays ~3s then errors. Each retry gets a fresh
+   * CDN URL (forceRefresh clears the proxy cache), routing to a different
+   * edge. Retries up to 4 times with backoff: 250ms, 500ms, 1000ms, 2000ms
+   * between attempts.
+   *
+   * Returns normally on success. Throws if all attempts fail (caught by
+   * the caller's outer catch).
+   */
+  private async _retryPlayback(
+    videoId: string,
+    resolveFn: (id: string, opts?: { forceRefresh?: boolean }) => Promise<ResolvedStream>,
+    opRequestId: number
+  ): Promise<void> {
+    let lastError: Error | undefined
+
+    // Disable mid-playback error callback during retry loop.
+    // Re-enabled below on success so future mid-playback errors trigger a fresh retry.
+    this.audio.setOnError(null)
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        if (this._requestCounter !== opRequestId) return
+
+        const opts = attempt === 0 ? undefined : { forceRefresh: true }
+        const resolved = await resolveFn(videoId, opts)
+
+        if (this._requestCounter !== opRequestId) return
+        await this.audio.loadAndPlay(resolved.audioUrl)
+
+        if (this._requestCounter !== opRequestId) return
+
+        // Success — enable mid-playback error handler for future CDN truncation errors
+        this.audio.setOnError(this._onMidPlaybackError)
+        return
+      } catch (err) {
+        this.audio.setOnError(null) // Keep disabled on failed attempt
+        lastError = err instanceof Error ? err : new Error(String(err))
+        this.log(`_retryPlayback: attempt ${attempt + 1}/5 failed for ${videoId}`)
+
+        if (this._requestCounter !== opRequestId) return
+        if (attempt < 4) {
+          await new Promise(r => setTimeout(r, 250 * Math.pow(2, attempt)))
+        }
+      }
+    }
+
+    // All attempts exhausted — keep mid-playback error handler disabled
+    this.audio.setOnError(null)
+    throw lastError ?? new Error(`Playback failed after 5 attempts for ${videoId}`)
   }
 
   // ── Public API ──
@@ -133,16 +222,7 @@ export class MediaEngine {
       const resolved = await this.api.resolveTrack(videoId)
       if (this._requestCounter !== opRequestId) return
 
-      // If audio fails, loadAndPlay now throws — caught below.
-      // Retry once with forceRefresh for stale CDN URL recovery.
-      try {
-        await this.audio.loadAndPlay(resolved.audioUrl)
-      } catch {
-        this.log('playFromQueue: retrying with forceRefresh')
-        const retried = await this.api.resolveTrack(videoId, { forceRefresh: true })
-        if (this._requestCounter !== opRequestId) return
-        await this.audio.loadAndPlay(retried.audioUrl)
-      }
+      await this._retryPlayback(videoId, this.api.resolveTrack.bind(this.api), opRequestId)
       if (this._requestCounter !== opRequestId) return
 
       // Re-check the audio element didn't land in error state
@@ -208,7 +288,6 @@ export class MediaEngine {
     this.setMediaState('loading')
 
     try {
-      const resolved = await this.api.resolveTrack(result.videoId)
       if (this._requestCounter !== opRequestId) return
 
       // Fresh manual play — clear any stale truncated-stream retry counter
@@ -224,16 +303,7 @@ export class MediaEngine {
         sourceId: result.videoId,
       }
 
-      // If audio fails, loadAndPlay now throws — caught below.
-      // Retry once with forceRefresh for stale CDN URL recovery.
-      try {
-        await this.audio.loadAndPlay(resolved.audioUrl)
-      } catch {
-        this.log('playSearchResult: retrying with forceRefresh')
-        const retried = await this.api.resolveTrack(result.videoId, { forceRefresh: true })
-        if (this._requestCounter !== opRequestId) return
-        await this.audio.loadAndPlay(retried.audioUrl)
-      }
+      await this._retryPlayback(result.videoId, this.api.resolveTrack.bind(this.api), opRequestId)
       if (this._requestCounter !== opRequestId) return
 
       this._currentVideoId = result.videoId
@@ -287,16 +357,7 @@ export class MediaEngine {
       // Fresh manual play — clear any stale truncated-stream retry counter
       this._truncatedRetries.delete(id)
 
-      // If audio fails, loadAndPlay now throws — caught below.
-      // Retry once with forceRefresh for stale CDN URL recovery.
-      try {
-        await this.audio.loadAndPlay(resolved.audioUrl)
-      } catch {
-        this.log('playCustomId: retrying with forceRefresh')
-        const retried = await this.api.resolveTrack(id, { forceRefresh: true })
-        if (this._requestCounter !== opRequestId) return
-        await this.audio.loadAndPlay(retried.audioUrl)
-      }
+      await this._retryPlayback(id, this.api.resolveTrack.bind(this.api), opRequestId)
       if (this._requestCounter !== opRequestId) return
 
       this._currentVideoId = id

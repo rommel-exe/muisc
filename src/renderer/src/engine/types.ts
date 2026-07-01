@@ -16,6 +16,10 @@ export interface AudioBridge {
   seek(time: number): void
   setVolume(volume: number): void
   setOnTrackEnd(cb: () => void): void
+  /** Register a callback fired when the audio element errors mid-playback
+   *  (after play() already resolved). Used to trigger retry for truncated
+   *  CDN streams. Pass null to clear. */
+  setOnError(cb: (() => void) | null): void
   // Read side — engine needs these for swap/toggle decisions
   isNextReady(): boolean
   isPlaying(): boolean
