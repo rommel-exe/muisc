@@ -50,8 +50,6 @@ export class MediaEngine {
   private _trackStartedAt = 0
   /** Per-video retry count for truncated-stream replay. Reset when a track plays past MIN_PLAY_MS. */
   private _truncatedRetries = new Map<string, number>()
-  /** Max consecutive truncated-stream replays before giving up and advancing (prevents infinite loop). */
-  private readonly MAX_TRUNCATED_RETRIES = 3
   /** Per-video retry count for mid-playback errors (CDN truncation after play() resolved). */
   private _midPlaybackErrorCount = new Map<string, number>()
   /** Max mid-playback retries per track before giving up. Each retry runs
@@ -703,62 +701,18 @@ export class MediaEngine {
       return
     }
 
-    // 🚨 Truncated-stream detection: YouTube CDN can return preview-only
-    // streams that play ~24s then end. If the track played for < 30s,
-    // re-resolve with forceRefresh and retry instead of advancing.
-    //
-    // ⚠️ Capture the videoId at call time. If the user navigates to a
-    // different track during the async re-resolve (clicked a different
-    // search result or queue entry), _currentVideoId changes — the
-    // navigation guard below prevents the stale replay from overriding
-    // the user's selection.
+    // If the track ended very early (<30s), the CDN served a truncated
+    // stream. Don't retry — the mid-playback error handler already tried
+    // force-refresh retries. Advancing to the next track is better UX
+    // than replaying the same truncated snippet from the beginning.
+    // Track ended at a reasonable point — normal auto-advance.
     const MIN_PLAY_MS = 30000
     const elapsed = performance.now() - this._trackStartedAt
-    const truncatedVideoId = this._currentVideoId
-    if (truncatedVideoId && elapsed < MIN_PLAY_MS && this._trackStartedAt > 0) {
-      // ⚠️ Retry limit: if the CDN consistently returns truncated URLs, give up
-      // after MAX_TRUNCATED_RETRIES consecutive replays and advance instead of
-      // looping the same ~24s snippet forever.
-      const retries = (this._truncatedRetries.get(truncatedVideoId) ?? 0) + 1
-      this._truncatedRetries.set(truncatedVideoId, retries)
-      if (retries > this.MAX_TRUNCATED_RETRIES) {
-        this.log(`auto-advance: truncated retry limit (${this.MAX_TRUNCATED_RETRIES}) for ${truncatedVideoId}, advancing`)
-        this._truncatedRetries.delete(truncatedVideoId)
-        this._pendingAdvance = true
-        this.next()
-          .catch((err) => { this.log(`auto-advance error: ${err.message}`) })
-          .finally(() => { this._pendingAdvance = false })
-        return
-      }
-      this.log(`auto-advance: truncated end at ${(elapsed/1000).toFixed(1)}s (retry ${retries}/${this.MAX_TRUNCATED_RETRIES}) — re-resolving ${truncatedVideoId} with forceRefresh`)
+    if (this._currentVideoId && elapsed < MIN_PLAY_MS && this._trackStartedAt > 0) {
+      this.log(`auto-advance: truncated stream (<30s) for ${this._currentVideoId}, advancing`)
       this._pendingAdvance = true
-      this.api.resolveTrack(truncatedVideoId, { forceRefresh: true })
-        .then((resolved) => {
-          // 🚨 Navigation guard: if the user navigated to a different track
-          // during the async re-resolve, discard this stale replay.
-          if (this._currentVideoId !== truncatedVideoId) {
-            this.log('auto-advance: forceRefresh stale — user navigated away')
-            return
-          }
-          return this.audio.loadAndPlay(resolved.audioUrl)
-        })
-        .then(() => {
-          if (this._currentVideoId !== truncatedVideoId) return
-          // ⚠️ Do NOT delete the retry counter on forceRefresh success —
-          // the track may be getting the same truncated CDN URL again.
-          // Only playFromQueue (which gets a fresh non-forceRefresh URL)
-          // resets the counter when it starts playing this videoId.
-          // Without this guard, the truncated-stream retry limit is
-          // never reached and the track loops 2-3s forever.
-          this._trackStartedAt = performance.now()
-          this.log('auto-advance: forceRefresh replay succeeded')
-        })
-        .catch(() => {
-          if (this._currentVideoId !== truncatedVideoId) return
-          this.log('auto-advance: forceRefresh re-resolve failed, advancing')
-          this.next()
-            .catch((err) => { this.log(`auto-advance error: ${err.message}`) })
-        })
+      this.next()
+        .catch((err) => { this.log(`auto-advance error: ${err.message}`) })
         .finally(() => { this._pendingAdvance = false })
       return
     }
