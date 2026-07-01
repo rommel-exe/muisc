@@ -489,7 +489,7 @@ export class MediaEngine {
 
       // Check if preloaded matches — instant swap
       if (videoId === this._preloadedVideoId && this.audio.isNextReady()) {
-        this.log('next: instant swap (preloaded hit)')
+        this.log(`next: instant swap (preloaded hit) — videoId=${videoId}, _preloadedVideoId=${this._preloadedVideoId}, result.track="${(result.track?.title || '').substring(0, 40)}"`)
         const swapped = await this.audio.swapToNext()
         if (swapped) {
           // 🔥 Guard: user may have navigated to a different track while
@@ -533,6 +533,7 @@ export class MediaEngine {
       }
 
       // Fallback: resolve and play
+      this.log(`next: normal resolve path — videoId=${videoId}, idx=${result.index}, track="${(result.track?.title || '').substring(0, 40)}"`)
       await this.playFromQueue(result.index)
 
       // Track failed to play — skip ahead to the next one.
