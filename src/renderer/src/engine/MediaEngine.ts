@@ -695,6 +695,10 @@ export class MediaEngine {
     // streams that play ~24s then end. If the track played for < 30s,
     // re-resolve with forceRefresh and retry instead of advancing.
     //
+    // Also catch near-end truncation: CDN streams can end 20-60s before
+    // the actual track finishes. If the metadata says the track should be
+    // significantly longer (>=30s) and we played <90% of it, force-refresh.
+    //
     // ⚠️ Capture the videoId at call time. If the user navigates to a
     // different track during the async re-resolve (clicked a different
     // search result or queue entry), _currentVideoId changes — the
@@ -703,7 +707,10 @@ export class MediaEngine {
     const MIN_PLAY_MS = 30000
     const elapsed = performance.now() - this._trackStartedAt
     const truncatedVideoId = this._currentVideoId
-    if (truncatedVideoId && elapsed < MIN_PLAY_MS && this._trackStartedAt > 0) {
+    const expectedDuration = this._state.currentTrack?.duration ?? 0
+    const isShortTruncation = elapsed < MIN_PLAY_MS
+    const isNearEndTruncation = expectedDuration >= 30 && elapsed < expectedDuration * 0.9 * 1000
+    if (truncatedVideoId && (isShortTruncation || isNearEndTruncation) && this._trackStartedAt > 0) {
       // ⚠️ Retry limit: if the CDN consistently returns truncated URLs, give up
       // after MAX_TRUNCATED_RETRIES consecutive replays and advance instead of
       // looping the same ~24s snippet forever.
@@ -718,7 +725,8 @@ export class MediaEngine {
           .finally(() => { this._pendingAdvance = false })
         return
       }
-      this.log(`auto-advance: truncated end at ${(elapsed/1000).toFixed(1)}s (retry ${retries}/${this.MAX_TRUNCATED_RETRIES}) — re-resolving ${truncatedVideoId} with forceRefresh`)
+      const truncType = isNearEndTruncation ? 'near-end' : 'short'
+      this.log(`auto-advance: truncated end (${truncType}) at ${(elapsed/1000).toFixed(1)}s/${(expectedDuration || 0).toFixed(0)}s expected (retry ${retries}/${this.MAX_TRUNCATED_RETRIES}) — re-resolving ${truncatedVideoId} with forceRefresh`)
       this._pendingAdvance = true
       this.api.resolveTrack(truncatedVideoId, { forceRefresh: true })
         .then((resolved) => {
