@@ -76,10 +76,16 @@ export class MediaEngine {
 
     const errorCount = (this._midPlaybackErrorCount.get(videoId) ?? 0) + 1
     if (errorCount > this.MAX_MID_PLAYBACK_RETRIES) {
-      this.log(`mid-playback: retry limit reached for ${videoId}, giving up`)
+      this.log(`mid-playback: retry limit reached for ${videoId}, advancing to next track`)
       this.audio.setOnError(null)
       this._midPlaybackErrorCount.delete(videoId)
-      this.handleError(new Error(`Playback failed after ${this.MAX_MID_PLAYBACK_RETRIES} mid-playback retries`))
+      // Advance to the next track instead of entering error state and
+      // waiting ~11s for the poll-based truncated-stream recovery to
+      // detect the stall. When a track's CDN URLs all serve truncated
+      // streams or are consistently expired, the fastest recovery is
+      // to skip it and play the next track in the queue.
+      this.next()
+        .catch((err) => { this.log(`mid-playback: next() after retry limit error: ${err.message}`) })
       return
     }
     this._midPlaybackErrorCount.set(videoId, errorCount)
@@ -102,7 +108,11 @@ export class MediaEngine {
     this._retryPlayback(videoId, refreshResolve, retryOpId)
       .catch(err => {
         if (this._requestCounter !== retryOpId) return
-        this.handleError(err)
+        // All forceRefresh retries failed — advance to next track instead
+        // of entering error state and waiting for slow poll-based recovery.
+        this.log(`mid-playback: all retries exhausted for ${videoId}, advancing — last error: ${err.message}`)
+        this.next()
+          .catch((nextErr) => { this.log(`mid-playback: next() after retry exhaustion error: ${nextErr.message}`) })
       })
   }
 
