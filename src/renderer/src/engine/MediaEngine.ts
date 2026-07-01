@@ -54,8 +54,11 @@ export class MediaEngine {
   private readonly MAX_TRUNCATED_RETRIES = 3
   /** Per-video retry count for mid-playback errors (CDN truncation after play() resolved). */
   private _midPlaybackErrorCount = new Map<string, number>()
-  /** Max mid-playback retries per track before giving up. */
-  private readonly MAX_MID_PLAYBACK_RETRIES = 3
+  /** Max mid-playback retries per track before giving up. Each retry runs
+   *  _retryPlayback with 5 attempts and exponential backoff (total ~3.75s).
+   *  Retrying 3× means up to ~11s of dead backoff before advancing — too slow.
+   *  Set to 1: one retry cycle, then advance to the next track immediately. */
+  private readonly MAX_MID_PLAYBACK_RETRIES = 1
 
   constructor(
     private audio: AudioBridge,
