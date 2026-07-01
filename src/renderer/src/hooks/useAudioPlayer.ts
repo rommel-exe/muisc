@@ -482,13 +482,24 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const active = getActive()
     if (!standby || !active) return false
 
-    // Old active → cleared, becomes new standby
+    // 🔥 Gapless transition: start the NEW track BEFORE stopping the old one.
+    // The preloaded standby element should already have buffered data, so
+    // play() resolves near-instantly while the old track is still audible.
+    // Pausing + clearing the old element first would create a gap of silence.
+    try {
+      await standby.play()
+    } catch (err: any) {
+      if (err.name === 'AbortError') return false
+      setState((prev) => ({ ...prev, error: err.message }))
+      return false
+    }
+
+    // New track is now playing — swap roles and clear the old element quietly
+    activeIsA.current = !activeIsA.current
+
     active.pause()
     active.src = ''
     active.load()
-
-    // Swap the roles
-    activeIsA.current = !activeIsA.current
 
     // 🔥 Reset poll state for the new track. swapToNext is called after
     // the old track ended, so lastCurrentTime/stalledCount are stale.
@@ -500,15 +511,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     userPausedRef.current = false
     setState((prev) => ({ ...prev, isNextReady: false, nextUrl: null, ended: false }))
 
-    // Play the preloaded element
-    try {
-      await standby.play()
-      return true
-    } catch (err: any) {
-      if (err.name === 'AbortError') return false
-      setState((prev) => ({ ...prev, error: err.message }))
-      return false
-    }
+    return true
   }, [])
 
   const play = useCallback(async () => {
