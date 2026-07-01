@@ -19,7 +19,7 @@ async function test(track: string, artist: string, duration: number) {
   })).sort((a, b) => b.score - a.score)
   
   const best = scored[0]
-  const passed = best && best.score >= 0.7
+  const passed = best && best.score >= 0.65
   const cleanedTitle = best ? cleanTitle(best.result.title) : 'N/A'
   console.log(
     `${passed ? '✓' : '✗'} score=${best ? best.score.toFixed(2) : 'N/A'} ` +

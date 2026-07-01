@@ -23,7 +23,7 @@ import type { Track, SpotifyImportProgress, SpotifyImportResult, SpotifyImportSk
 // ── Batch Config ──
 
 const MAX_TRACKS = 1000
-const MATCH_CONFIDENCE_THRESHOLD = 0.7
+const MATCH_CONFIDENCE_THRESHOLD = 0.65
 const CONCURRENCY = 8 // process 8 tracks in parallel for fast imports
 
 // ── Progress Sender ──

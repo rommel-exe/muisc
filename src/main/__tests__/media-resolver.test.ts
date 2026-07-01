@@ -48,12 +48,13 @@ describe('yt-dlp Service', () => {
 
   // ── Test A: URL expiresAt — verify proxy cache has recent cachedAt timestamp ──
   it('should have valid cachedAt timestamp on proxy cache entry', async () => {
-    const proxy = createProxy({ port: 18939 })
+    const port = 18940
+    const proxy = createProxy({ port })
     await proxy.start()
     try {
       // Make a stream request to populate cache
       const res = await fetch(
-        `http://127.0.0.1:18939/stream?v=${TEST_VIDEO_ID}`,
+        `http://127.0.0.1:${port}/stream?v=${TEST_VIDEO_ID}`,
         { signal: AbortSignal.timeout(20000) }
       )
       expect(res.ok || res.status === 206).toBe(true)
@@ -422,6 +423,13 @@ describe('MediaResolver', () => {
         if (r1.title !== 'Loading...' && r2.title !== 'Loading...') break
       }
 
+      // 🔥 Settle delay: the polling loop's last resolver.resolve() may have
+      // triggered a final background resolve (if the cached value was still
+      // 'Loading...'). Wait for all in-flight resolves to settle before checking.
+      for (let i = 0; i < 10; i++) {
+        if (resolver.getPendingResolveCount() === 0) break
+        await new Promise((r) => setTimeout(r, 200))
+      }
       expect(resolver.getPendingResolveCount()).toBe(0)
     } finally {
       await resolver.stop()

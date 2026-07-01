@@ -70,26 +70,78 @@ export interface InnertubeSearchResult {
   channelType: string
 }
 
+// ── yt-dlp search fallback ──
+
+/**
+ * Search YouTube via yt-dlp flat JSON.
+ * Used as a fallback when the Innertube API returns 403.
+ */
+async function searchYouTubeViaYtDlp(
+  query: string,
+  limit: number = 10
+): Promise<InnertubeSearchResult[]> {
+  return new Promise((resolve, reject) => {
+    const { execFile } = require('child_process')
+    const count = Math.min(Math.max(limit, 3), 30)
+    const args = [`ytsearch${count}:${query}`, '--dump-json', '--flat-playlist', '--no-warnings']
+    execFile('yt-dlp', args, { timeout: 15000 }, (err: any, stdout: string, _stderr: string) => {
+      if (err) {
+        reject(new Error(`yt-dlp search failed: ${err.message}`))
+        return
+      }
+      const lines = stdout.trim().split('\n').filter(Boolean)
+      const results: InnertubeSearchResult[] = []
+      for (const line of lines) {
+        try {
+          const item = JSON.parse(line)
+          const videoId: string = item.id || ''
+          const title: string = item.title || ''
+          const duration: number = Math.round(item.duration || 0)
+          const uploader: string = item.uploader || item.channel || item.creator || ''
+          const thumbnail: string = item.thumbnail || ''
+
+          if (!videoId || !title) continue
+
+          results.push({
+            videoId,
+            title,
+            artist: uploader,
+            duration,
+            thumbnail,
+            channelType: uploader.toLowerCase().includes('topic') ? 'verified_topic' : 'user_upload',
+          })
+        } catch {
+          // Skip malformed lines
+        }
+      }
+      resolve(results)
+    })
+  })
+}
+
 // ── Search ──
 
 /**
  * Search YouTube for videos matching a query.
  * Returns normalized search results (no streaming URLs).
  * Filters out non-video results (channels, playlists, etc.).
+ *
+ * Attempts Innertube API first. Falls back to yt-dlp on 403 or failure.
  */
 export async function searchYouTube(
   query: string,
   signal?: AbortSignal
 ): Promise<InnertubeSearchResult[]> {
-  try {
-    if (signal?.aborted) return []
+  if (signal?.aborted) return []
 
+  // ── Primary: Innertube API ──
+  try {
     const yt = await getInstance()
     if (signal?.aborted) return []
 
     const results = await yt.search(query)
 
-    if (!results?.results) return []
+    if (!results?.results) throw new Error('Empty results from Innertube')
 
     const tracks: InnertubeSearchResult[] = []
     for (const item of results.results) {
@@ -121,11 +173,24 @@ export async function searchYouTube(
       })
     }
 
+    if (tracks.length === 0) throw new Error('No video results from Innertube')
+
     // Filter & rank: remove non-song results, sort by quality
     return filterAndRankResults(tracks)
   } catch (err: any) {
     if (err.name === 'AbortError' || signal?.aborted) return []
-    console.warn('[Innertube] Search failed:', err.message)
+    console.warn('[Innertube] Innertube search failed, falling back to yt-dlp:', err.message)
+  }
+
+  // ── Fallback: yt-dlp ──
+  try {
+    console.log('[Innertube] Searching via yt-dlp fallback:', query.substring(0, 60))
+    const tracks = await searchYouTubeViaYtDlp(query)
+    if (signal?.aborted) return []
+    if (tracks.length === 0) return []
+    return filterAndRankResults(tracks)
+  } catch (err: any) {
+    console.warn('[Innertube] yt-dlp fallback also failed:', err.message)
     return []
   }
 }

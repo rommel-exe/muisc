@@ -108,30 +108,58 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       setState((prev) => ({ ...prev, isPlaying: true }))
     }
     const onPause = () => setState((prev) => ({ ...prev, isPlaying: false }))
-    const onError = () => {
-      const el = activeIsA.current ? elA.current : elB.current
-      const mediaError = el?.error
+    const onError = (e: Event) => {
+      // 🔥 Use the element that ACTUALLY fired the event (e.target),
+      // not the current active element (activeIsA.current). After an
+      // instant swap (swapToNext toggles activeIsA), the old active
+      // element now has standby status but may still fire pending
+      // error events. The old code checked activeIsA.current which
+      // points to the NEW active element (no error) — suppressing
+      // real errors and leaving the UI in a stale 'playing' state.
+      const target = e.target as HTMLAudioElement
+      const mediaError = target?.error
       // ⚠️ mediaError can be null even when the 'error' event fires.
       // This happens when a previous load failed, the 'error' event
       // was queued in the event loop, but by the time this handler
       // runs, a new src was set (clearing the element's error state).
-      // In that case el.error is null — the error is stale, ignore it.
+      // In that case target.error is null — the error is stale, ignore it.
+      // Check if the element still has a src to distinguish stale events
+      // from cross-swap errors (where target has a non-empty src but
+      // target.error is transiently null).
       if (!mediaError) {
-        console.warn(`[audio] onError suppressed — element was reloaded (src=${el?.src?.substring(0, 60)})`)
+        if (!target.src || target.src === '' || target.src === window.location.href) {
+          console.warn(`[audio] onError suppressed — element was reloaded (src=${target?.src?.substring(0, 60)})`)
+          return
+        }
+        // Element has a non-empty src but no error? This can happen when
+        // the error event fired on a swapped-out element whose src was
+        // NOT cleared (the swap cleared the OLD active, but the standby
+        // that received the error still has its src). Fall through to
+        // check both elements for any real error.
+        console.warn(`[audio] onError on target with src but no error — checking both elements`)
+      }
+      // Try the target element's error first, then fall back to active
+      let realError = mediaError
+      if (!realError) {
+        const active = activeIsA.current ? elA.current : elB.current
+        realError = active?.error ?? null
+      }
+      if (!realError) {
+        console.warn(`[audio] onError — no error on target or active, suppressing`)
         return
       }
-      let msg = mediaError?.message
-      if (!msg && mediaError?.code) {
+      let msg = realError?.message
+      if (!msg && realError?.code) {
         const codes: Record<number, string> = {
           1: 'Playback aborted',
           2: 'Network error loading audio',
           3: 'Audio decode error',
           4: 'Audio format not supported',
         }
-        msg = codes[mediaError.code] ?? `Unknown audio error (code=${mediaError.code})`
-        console.warn(`[audio] onError code=${mediaError.code} src=${el?.src?.substring(0,60)}`)
+        msg = codes[realError.code] ?? `Unknown audio error (code=${realError.code})`
+        console.warn(`[audio] onError code=${realError.code} target=${target?.src?.substring(0,60)}`)
       }
-      msg ??= `Unknown audio error (code=${mediaError?.code ?? 'none'})`
+      msg ??= `Unknown audio error (code=${realError?.code ?? 'none'})`
       errorRef.current = msg
       setState((prev) => ({ ...prev, error: msg, loading: false, isPlaying: false }))
     }
@@ -227,7 +255,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       }
 
       // 🔥 Stalled playback detection: if audio has been playing but
-      // currentTime hasn't advanced for 3s AND we're not near the end,
+      // currentTime hasn't advanced for 5s AND we're not near the end,
       // the CDN stream was truncated — the audio buffer ran out but
       // the element never fired 'ended' because its duration metadata
       // is longer than the actual data received.
@@ -239,28 +267,28 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // The userPausedRef distinguishes user-initiated pause from buffer
       // drain — only the latter triggers auto-advance.
       //
-      // ⚠️ No el.readyState check! When a CDN stream ends prematurely,
-      // readyState drops to 1 (HAVE_METADATA). With readyState >= 2
-      // required, detection would be entirely skipped.
+      // ⚠️ Run stalled detection for the entire track lifetime. The 5s
+      // counter (10 polls × 500ms) for playing and 7s (14 polls) for
+      // auto-pause provides better protection against false positives
+      // from brief CDN interruptions while still catching truncations.
       //
-      // Run stalled detection for the entire track lifetime. The 3s
-      // counter (6 polls × 500ms) naturally prevents false positives —
-      // currentTime must stop advancing for 3 full seconds before firing.
-      // No near-end exclusion because metadata duration from yt-dlp can
+      // ⚠️ No networkState check in the !el.paused path! YouTube truncated
+      // streams often stay in NETWORK_LOADING (2) forever — the element
+      // keeps trying to fetch more data that will never arrive. Checking
+      // networkState would bypass stall detection entirely. The 5s
+      // threshold handles genuine buffering bursts.
+      //
+      // ⚠️ No near-end exclusion because metadata duration from yt-dlp can
       // be LONGER than the actual stream (proxy streams ending early).
       // Excluding near-end time would create a dead zone where neither
       // stalled detection nor end detection catches the completion.
+      const STALL_TIMEOUT_PLAYING = 10   // 10 polls × 500ms = 5s
+      const STALL_TIMEOUT_PAUSED  = 14   // 14 polls × 500ms = 7s
       if (!el.ended) {
         if (!el.paused) {
-          // ⚠️ No networkState check! YouTube truncated streams often
-          // stay in NETWORK_LOADING (2) forever — the element keeps
-          // trying to fetch more data that will never arrive. Checking
-          // networkState would bypass stall detection entirely.
-          // The 3s threshold (6 polls) handles genuine buffering bursts.
           const diff = Math.abs(el.currentTime - lastCurrentTimeRef.current)
           if (diff < 0.01) {
-            stalledCountRef.current++
-            if (stalledCountRef.current >= 6) {
+            if (++stalledCountRef.current >= STALL_TIMEOUT_PLAYING) {
               console.warn(`[audio] Playback stalled at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, force ending`)
               fireTrackEnd('stalled')
               stalledCountRef.current = 0
@@ -272,16 +300,18 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
           lastCurrentTimeRef.current = el.currentTime
         } else if (lastCurrentTimeRef.current > 0 && !el.ended && !userPausedRef.current) {
           // ⚠️ Element auto-paused mid-track (buffer drained, not user pause).
-          // After 3s of silence, fire auto-advance.
-          stalledCountRef.current++
-          if (stalledCountRef.current >= 6) {
+          // Use a longer threshold (7s) for auto-pause because temporary CDN
+          // interruptions often manifest as browser-initiated pauses, not as
+          // stalled time. The truncation case (stream truly ended) would still
+          // trigger auto-advance after 7s of silence.
+          if (++stalledCountRef.current >= STALL_TIMEOUT_PAUSED) {
             console.warn(`[audio] Buffer drained at ${el.currentTime.toFixed(1)}s/${el.duration.toFixed(1)}s, auto-advancing`)
             fireTrackEnd('buffer-drained')
             stalledCountRef.current = 0
             return
           }
         } else {
-          // User paused — reset stall counter
+          // User paused or no playback history — reset stall counter
           stalledCountRef.current = 0
         }
       }
@@ -293,10 +323,29 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // currentTime >= duration would cause tracks to be skipped mid-song
       // while the audio is still playing. The stalled detection above
       // handles the opposite case (metadata longer than actual stream).
+      //
+      // 🔥 Guard against false time-reached triggers: the metadata duration
+      // can be WRONG (shorter than actual audio). If the element has
+      // buffered data ahead of currentTime, the stream hasn't truly ended
+      // — the pause is a temporary buffer hiccup, not an end condition.
+      // Only fire time-reached if there's NO buffered data ahead.
       if (el.ended) {
         fireTrackEnd('dom-ended-poll')
       } else if (el.currentTime >= el.duration - 0.5 && el.paused && !userPausedRef.current) {
-        fireTrackEnd('time-reached')
+        // Double-check: if the element still has buffered data ahead,
+        // the pause is temporary — don't auto-advance.
+        let hasDataAhead = false
+        try {
+          if (el.buffered.length > 0) {
+            const bufferedEnd = el.buffered.end(el.buffered.length - 1)
+            if (bufferedEnd > el.currentTime + 1) hasDataAhead = true
+          }
+        } catch {
+          // Cross-origin buffered access may throw — proceed without guard
+        }
+        if (!hasDataAhead) {
+          fireTrackEnd('time-reached')
+        }
       }
     }, 500)
 

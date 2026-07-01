@@ -90,21 +90,192 @@ export function generateSearchQueries(track: SpotifyTrack): string[] {
 
 // ── Annotation Category ──
 
-type AnnotationCategory = 'official' | 'derivative' | 'normal'
+type AnnotationCategory = 'official_canonical' | 'official_alternate' | 'remix_edit' | 'live_performance' | 'alternate_version' | 'derivative' | 'unmarked'
+
+// ── Version Marker Detection ──
+
+/**
+ * Version markers detected in RAW YouTube titles that indicate a recording
+ * is NOT the canonical/original version of a track.
+ *
+ * Markers are checked in priority order — the FIRST match wins. This ensures
+ * that ambiguous titles like "Song (Live Remix)" are classified as remix_edit
+ * (the more significant alteration) rather than live_performance.
+ *
+ * Each entry maps a regex pattern to the AnnotationCategory it implies.
+ */
+interface VersionMarkerEntry {
+  pattern: RegExp
+  category: AnnotationCategory
+  description: string
+}
+
+const VERSION_MARKERS: VersionMarkerEntry[] = [
+  // ── Remix/Bootleg (most severe — definitively NOT the original) ──
+  {
+    pattern: /\b(Remix|Bootleg)\b/i,
+    category: 'remix_edit',
+    description: 'Remix or bootleg — alternative version by another producer',
+  },
+  // ── Nightcore / Sped Up (pitched-up fan edits) ──
+  {
+    pattern: /\b(Nightcore|Sped\s*Up)\b/i,
+    category: 'derivative',
+    description: 'Pitched-up fan edit — not the original recording',
+  },
+  // ── Slowed / Reverb (pitch/tempo modified) ──
+  {
+    pattern: /\b(Slowed|Reverb)\b/i,
+    category: 'derivative',
+    description: 'Tempo or pitch modified version',
+  },
+  // ── Loop (extended looped version) ──
+  {
+    pattern: /\b(Loop|10\s*Hours?|1\s*Hour)\b/i,
+    category: 'derivative',
+    description: 'Looped or extended duration version',
+  },
+  // ── Radio Edit / Extended Mix / Video Edit ──
+  {
+    pattern: /\b(Radio\s*Edit|Extended\s*(Mix|Version)|Video\s*Edit|Club\s*Mix|Dub\s*Mix|Original\s*Mix)\b/i,
+    category: 'remix_edit',
+    description: 'Edited version for radio, extended for clubs, or alternative mix',
+  },
+  // ── Live performance markers ──
+  {
+    pattern: /\((Live|Live\s+(at|in|from|concert|performance|session|recording|version|aid))\b/i,
+    category: 'live_performance',
+    description: 'Live/concert recording',
+  },
+  {
+    pattern: /\b(live\s+(at|in|from|concert|performance|session|recording|version|aid))\b/i,
+    category: 'live_performance',
+    description: 'Live/concert recording (un-parenthesized)',
+  },
+  {
+    pattern: /\[(Live|Live\s+(at|in|from|concert|performance))\b/i,
+    category: 'live_performance',
+    description: 'Live recording (bracketed)',
+  },
+  // ── Alternate version markers (Taylor's Version, Anniversary, Re-recorded) ──
+  {
+    pattern: /\w+'s\s+Version\b/i,
+    category: 'alternate_version',
+    description: "Artist's re-recorded version (e.g. Taylor's Version)",
+  },
+  {
+    pattern: /\b(Anniversary\s+(Edition|Version|Remaster)|Re[- ]?recorded)\b/i,
+    category: 'alternate_version',
+    description: 'Anniversary edition or re-recorded version',
+  },
+  {
+    pattern: /\b(Bonus\s+Track|Deluxe\s+Edition|Expanded\s+Edition)\b/i,
+    category: 'alternate_version',
+    description: 'Bonus track or deluxe edition exclusive',
+  },
+  {
+    pattern: /\b(From\s+["]?.*?["]?|From\s+the\s+(Motion\s+)?Picture)\b/i,
+    category: 'alternate_version',
+    description: 'Track from a specific album/movie — not the original single release',
+  },
+  {
+    pattern: /\b(Remaster(ed)?|Remastered\s+\d{4})\b/i,
+    category: 'alternate_version',
+    description: 'Remastered version — sonically different from original',
+  },
+  // ── Teaser / Preview (short snippet, not full track) ──
+  {
+    pattern: /\b(Teaser|Preview|Snippet)\b/i,
+    category: 'alternate_version',
+    description: 'Short preview or teaser — not the full track',
+  },
+  // ── Derivative (lyrics, instrumental, cover, karaoke, audio-only) ──
+  {
+    pattern: /\b(Lyrics?\s*(Video)?)\b/i,
+    category: 'derivative',
+    description: 'Lyrics video — not the actual recording',
+  },
+  {
+    pattern: /\b(Instrumental)\b/i,
+    category: 'derivative',
+    description: 'Instrumental version — no vocals',
+  },
+  {
+    pattern: /\b(Cover|Tribute)\b/i,
+    category: 'derivative',
+    description: 'Cover or tribute — performed by someone else',
+  },
+  {
+    pattern: /\b(Karaoke|Acapella)\b/i,
+    category: 'derivative',
+    description: 'Karaoke or acapella version',
+  },
+  {
+    pattern: /\b(Audio\s+Only)\b/i,
+    category: 'derivative',
+    description: 'Audio-only upload — typically mobile-recorded or low-quality',
+  },
+  {
+    pattern: /\b(Visualizer)\b/i,
+    category: 'derivative',
+    description: 'Visualizer — animated art, not the actual recording',
+  },
+]
+
+/**
+ * Detect version markers in a RAW YouTube title.
+ * Returns the annotation category and severity, or null if no marker matches.
+ * The FIRST matching marker wins (priority order).
+ */
+export function detectVersionMarkers(rawTitle: string): AnnotationCategory | null {
+  for (const entry of VERSION_MARKERS) {
+    if (entry.pattern.test(rawTitle)) {
+      return entry.category
+    }
+  }
+  return null
+}
+
+/**
+ * Get the version-marker penalty for a given annotation category.
+ * This is the "distance from canonical" — higher magnitude = farther from original.
+ * Used by rankByCanonicalness as a secondary scoring signal.
+ */
+export function getVersionPenalty(category: AnnotationCategory): number {
+  switch (category) {
+    case 'remix_edit':          return 0.25  // Definitively not the original
+    case 'live_performance':    return 0.20  // Live alter ego of the track
+    case 'alternate_version':   return 0.10  // Remaster/re-record — sonically different
+    case 'derivative':          return 0.20  // Lyrics/cover — not the original at all
+    case 'official_alternate':  return 0.03  // Slight chance it's not canonical
+    default:                    return 0     // No penalty
+  }
+}
 
 /**
  * Classify a YouTube video's annotation type by examining its raw title
  * (before any cleanup) and channel type.
  *
  * This is the tiebreaker that lets us distinguish "Eminem - Without Me
- * (Official Video)" from "Eminem - Without Me (Lyrics)" — both become
- * "Without Me" after cleanTitle(), but their raw titles tell different
- * stories about whether the upload is official content or a derivative.
+ * (Official Video)" from "Eminem - Without Me (Remix)" — both clean to
+ * "Without Me", but their raw titles tell different stories.
+ *
+ * Detection order (FIRST match wins):
+ *   1. Version markers (remix, live, edit, etc.) — checked against raw title
+ *   2. Official signals (official annotations, topic/verified channels)
+ *   3. Derivative signals (explicit lyrics/cover/karaoke not caught by version markers)
+ *   4. Default: unmarked
  */
 export function getAnnotationCategory(rawTitle: string, channelType?: string): AnnotationCategory {
-  const lower = rawTitle.toLowerCase()
+  // ── Step 1: Version marker check (highest priority) ──
+  // If the raw title contains markers like "Remix", "Live", "Edit", etc.,
+  // classify by the marker regardless of channel type.
+  // This ensures "Song (Remix)" on a verified_artist channel is still
+  // classified as remix_edit, not official_canonical.
+  const marker = detectVersionMarkers(rawTitle)
+  if (marker) return marker
 
-  // Official signals — uploads from the rights holder or auto-generated topics
+  // ── Step 2: Official signals ──
   const hasOfficialAnnotation = /\(official\s+(audio|video|music\s*video|lyric\s*video|4k\s*remaster|hd)\)/i.test(rawTitle)
     || /\[official\s+(audio|video|music\s*video|lyric\s*video|4k\s*remaster|hd)\]/i.test(rawTitle)
     || /\(official\)/i.test(rawTitle)
@@ -112,22 +283,31 @@ export function getAnnotationCategory(rawTitle: string, channelType?: string): A
   const isTopic = channelType === 'verified_topic'
   const isVerifiedArtist = channelType === 'verified_artist'
 
-  if (hasOfficialAnnotation || isTopic || isVerifiedArtist) {
-    return 'official'
+  if (hasOfficialAnnotation || isTopic) {
+    return 'official_canonical'
   }
 
-  // Derivative signals — non-original content
-  const hasLyrics = /\(lyrics?\s*(video)?\)/i.test(lower) || /\[lyrics?\]/i.test(lower)
-  const hasAudioOnly = /\(audio\s*only\)/i.test(lower)
-  const hasInstrumental = /\binstrumental\b/i.test(lower) && !/official\s+instrumental/i.test(lower)
-  const hasCover = /\bcover\b/i.test(lower) && !/official\s+cover/i.test(lower)
-  const hasKaraoke = /\bkaraoke\b/i.test(lower)
-
-  if (hasLyrics || hasAudioOnly || hasInstrumental || hasCover || hasKaraoke) {
-    return 'derivative'
+  if (isVerifiedArtist) {
+    // Verified artist without version markers or official annotation.
+    // Check for parenthetical qualifiers suggesting alternate version
+    // (e.g. "Song (Audio)", "Song (HD)", "Song (Visualizer)").
+    // Skip feat./with/& markers — standard collab versions.
+    const parenMatches = rawTitle.match(/\(([^)]+)\)/g)
+    if (parenMatches && parenMatches.length > 0) {
+      const hasFeatureMarker = parenMatches.some(p => /\b(feat\.?|with|&|and)\b/i.test(p))
+      if (!hasFeatureMarker) {
+        return 'official_alternate'
+      }
+    }
+    return 'official_canonical'
   }
 
-  return 'normal'
+  // ── Step 3: Derivative signals (catch any missed by version markers) ──
+  const lower = rawTitle.toLowerCase()
+  const hasDerivative = /\b(cover|tribute|karaoke|acapella)\b/i.test(lower)
+  if (hasDerivative) return 'derivative'
+
+  return 'unmarked'
 }
 
 // ── Confidence Scoring ──
@@ -136,27 +316,18 @@ export function getAnnotationCategory(rawTitle: string, channelType?: string): A
  * Calculate how closely a candidate result matches the target track.
  * Returns a confidence score between 0.0 and 1.0.
  *
- * DURATION IS THE GATEKEEPER. If duration is within ±1s, the candidate
- * gets a high base score. If duration differs by more than 1s, the
- * candidate is almost certainly the wrong recording and scores very low.
+ * PHASE 1: Duration is the primary gatekeeper with graduated scoring.
+ * PHASE 2: After duration filtering, rankByCanonicalness provides
+ * sophisticated post-duration sorting.
  *
- * This forces the search phase to find the EXACT YouTube upload
- * matching the Spotify track's duration — any remix, karaoke, live,
- * or cover version will have a detectably different duration.
- *
- * Scoring:
- *   Duration (±1s):    0.0 - 0.6   (gatekeeper — strict)
- *   Title match:       0.0 - 0.2   (confirmatory)
- *   Artist/channel:    0.0 - 0.2   (confirmatory)
- *   Annotation quality: -0.10 to +0.04 (tiebreaker)
+ * Scoring breakdown:
+ *   Duration (graduated):   0.00 - 0.50   (primary gate)
+ *   Title match:            0.00 - 0.20   (confirmatory)
+ *   Artist/channel:         0.00 - 0.20   (confirmatory)
+ *   Annotation quality:     -0.15 to +0.10 (contextual)
  *   ─────────────────────────────
- *   Max possible:      1.0
- *   Threshold:         0.7
- *
- * Annotation quality is the tiebreaker when multiple YouTube videos share
- * the same duration and cleaned title. Official uploads get a slight bonus;
- * derivative uploads (lyrics, instrumental, cover, karaoke, audio-only)
- * get a significant penalty because they are almost never the intended match.
+ *   Max possible:           1.00
+ *   Threshold:              0.65
  */
 export function calculateConfidence(
   target: { title: string; artist: string; duration: number },
@@ -166,86 +337,265 @@ export function calculateConfidence(
 
   const deltaT = Math.abs(target.duration - candidate.duration)
 
-  // ═══ 1. Duration Score (gatekeeper — 0.0 to 0.6) ═══
+  // ═══ 1. Graduated Duration Score (gatekeeper — 0.00 to 0.50) ═══
   //
-  // Strict ±1s window. If the YouTube upload doesn't match the Spotify
-  // track's duration within 1 second, it's the wrong recording.
-  // No partial credit — any difference beyond 1s gets 0 from duration.
-  if (deltaT <= 1) {
-    score += 0.6 // Exact recording match
+  // Graduated scoring: exact matches get the maximum, small deviations
+  // get partial credit, but anything beyond 5s gets zero from duration.
+  // This is more nuanced than the old ±1s binary gate — a remix that's
+  // 2s off from the original still gets partial duration credit, but rankByCanonicalness
+  // will rank the exact-match official version above it.
+  if (deltaT <= 0) {
+    score += 0.50  // Exact match — the same recording
+  } else if (deltaT <= 1) {
+    score += 0.40  // Within 1s — very likely the same recording
+  } else if (deltaT <= 2) {
+    score += 0.25  // Within 2s — could be a slightly different master
+  } else if (deltaT <= 3) {
+    score += 0.15  // Within 3s — possibly a different version
+  } else if (deltaT <= 5) {
+    score += 0.05  // Within 5s — marginal chance
   }
-  // else: Δt > 1s → 0 contribution, candidate won't pass threshold
 
-  // ═══ 2. Title Match (0.0 to 0.2) ═══
-  //
-  // Compare cleaned titles. Uses cleanTrackTitle for the target (no
-  // artist prefix removal) and cleanTitle for the candidate (removes
-  // "Artist - " prefix and annotations).
+  // ═══ 2. Title Match (0.00 to 0.20) ═══
   const targetTitle = cleanTrackTitle(target.title).toLowerCase()
   const candidateTitle = cleanTitle(candidate.title).toLowerCase()
-
-  // Also compute normalized versions for fuzzy/Unicode matching
   const targetNorm = normalizeForMatch(target.title)
   const candidateNorm = normalizeForMatch(candidate.title)
 
   if (targetTitle === candidateTitle) {
-    score += 0.2
+    score += 0.20
   } else if (targetNorm === candidateNorm) {
-    // Handles cases where cleanTitle still differs but normalized text matches
-    // e.g., special characters, minor punctuation differences
     score += 0.18
   } else if (targetTitle.includes(candidateTitle) || candidateTitle.includes(targetTitle)) {
     score += 0.15
   } else if (targetNorm.includes(candidateNorm) || candidateNorm.includes(targetNorm)) {
     score += 0.12
   } else {
-    // Partial word overlap
     const targetWords = targetNorm.split(/\s+/).filter(Boolean)
     const candidateWords = candidateNorm.split(/\s+/).filter(Boolean)
     const commonWords = targetWords.filter(w => candidateWords.includes(w))
     if (commonWords.length > 0) {
       const overlap = commonWords.length / Math.max(targetWords.length, candidateWords.length)
-      score += 0.1 * Math.min(1, overlap)
+      score += 0.10 * Math.min(1, overlap)
     }
   }
 
-  // ═══ 3. Artist / Channel Match (0.0 to 0.2) ═══
+  // ═══ 3. Artist / Channel Match (0.00 to 0.20) ═══
   const targetArtist = normalizeForMatch(target.artist)
   const candidateLower = normalizeForMatch(candidate.title)
 
   if (candidate.channelType === 'verified_topic') {
-    // Topic channels are auto-generated by YouTube Music — they always
-    // have the exact artist and track name, making them the most reliable
-    // source for matching.
-    score += 0.2
+    score += 0.20
   } else if (candidateLower.includes(targetArtist)) {
-    // Target artist name appears somewhere in the candidate title
     score += 0.15
   } else if (targetArtist) {
-    // Partial artist match — check individual words
     const artistParts = targetArtist.split(/\s+/).filter(Boolean)
     const artistMatch = artistParts.filter(p => candidateLower.includes(p)).length
     if (artistMatch > 0) {
-      score += 0.1 * (artistMatch / artistParts.length)
+      score += 0.10 * (artistMatch / artistParts.length)
     }
   }
 
-  // ═══ 4. Annotation Quality Score (tiebreaker: -0.10 to +0.04) ═══
-  //
-  // Examines the RAW candidate title (before cleanTitle strips annotations)
-  // to distinguish official uploads from derivative content.
-  //
-  // When two candidates have the same duration, same cleaned title,
-  // and similar artist signals (e.g. lyrics video vs official video),
-  // this is the tiebreaker that pushes official content above derivative.
+  // ═══ 4. Annotation Quality Score (contextual: -0.15 to +0.10) ═══
   const annotationCat = getAnnotationCategory(candidate.title, candidate.channelType)
-  if (annotationCat === 'derivative') {
-    score -= 0.10  // significant penalty for lyrics, instrumental, cover, karaoke, audio-only
-  } else if (annotationCat === 'official') {
-    score += 0.04  // slight bonus for official uploads and verified channels
+  switch (annotationCat) {
+    case 'official_canonical':  score += 0.10; break
+    case 'official_alternate':  score += 0.04; break
+    case 'unmarked':            score += 0.00; break
+    case 'alternate_version':   score -= 0.02; break
+    case 'live_performance':    score -= 0.05; break
+    case 'remix_edit':          score -= 0.08; break
+    case 'derivative':          score -= 0.15; break
   }
 
-  // Clamp to [0, 1]
+  return Math.max(0, Math.min(1, score))
+}
+
+// ── Canonical Ranking (Phase 2 Post-Duration Sorting) ──
+
+/**
+ * Calculate how "canonical" a candidate is — i.e. how close to the original
+ * studio recording. This is the Phase 2 sorting function applied AFTER
+ * duration-based confidence scoring has filtered candidates.
+ *
+ * The canonical score is ADDITIVE to the base confidence score for RANKING
+ * purposes only. It ranges from -0.4 to +0.4.
+ *
+ * Factors:
+ *   Version marker penalty:     -0.25 to 0.00   (remix/live/edit detected in raw title)
+ *   Channel type bonus:          -0.02 to +0.10  (topic > verified > user)
+ *   Title purity:                0.00 to +0.08   (no extra annotations in raw title)
+ *   Duration precision:          0.00 to +0.04   (exact Δt=0 is best)
+ *   Annotation category:         -0.15 to +0.06  (official_canonical > unmarked > derivative)
+ *   ──────────────────────────────────
+ *   Total range:                 -0.40 to +0.40
+ */
+export function rankByCanonicalness(
+  target: { title: string; artist: string; duration: number },
+  candidates: Array<{ baseScore: number; title: string; duration: number; channelType?: string }>
+): Array<{ baseScore: number; canonicalScore: number; combinedScore: number }> {
+  return candidates.map((c) => {
+    let canonicalScore = 0
+
+    const deltaT = Math.abs(target.duration - c.duration)
+    const annotationCat = getAnnotationCategory(c.title, c.channelType)
+
+    // 1. Version marker penalty (-0.25 to 0.00)
+    const markerPenalty = getVersionPenalty(annotationCat)
+    canonicalScore -= markerPenalty
+
+    // 2. Channel type bonus (-0.02 to +0.10)
+    if (c.channelType === 'verified_topic') {
+      canonicalScore += 0.10
+    } else if (c.channelType === 'verified_artist') {
+      canonicalScore += 0.03
+    } else {
+      canonicalScore -= 0.02
+    }
+
+    // 3. Title purity (0.00 to +0.08)
+    // If the raw title, after stripping "Artist - " prefix, has NO remaining
+    // annotation markers (parentheticals, brackets), it's "pure" — just the
+    // track name. Pure titles are more likely canonical.
+    const artistPrefix = target.artist
+    let titleAfterArtist = c.title
+    const artistSepMatch = c.title.match(new RegExp(`^${escapeRegex(artistPrefix)}\\s*[-–—]\\s*(.+)`, 'i'))
+    if (artistSepMatch) {
+      titleAfterArtist = artistSepMatch[1]
+    }
+    const hasExtraAnnotations = /[\(\[{].+[\)\]}]/.test(titleAfterArtist)
+    if (!hasExtraAnnotations) {
+      canonicalScore += 0.08
+    }
+
+    // 4. Duration precision (0.00 to +0.04)
+    if (deltaT <= 0) {
+      canonicalScore += 0.04
+    } else if (deltaT <= 1) {
+      canonicalScore += 0.02
+    }
+
+    // 5. Annotation category bonus/penalty (-0.15 to +0.06)
+    switch (annotationCat) {
+      case 'official_canonical':  canonicalScore += 0.06; break
+      case 'unmarked':            canonicalScore += 0.00; break
+      case 'official_alternate':  canonicalScore -= 0.02; break
+      case 'alternate_version':   canonicalScore -= 0.04; break
+      case 'live_performance':    canonicalScore -= 0.08; break
+      case 'remix_edit':          canonicalScore -= 0.12; break
+      case 'derivative':          canonicalScore -= 0.15; break
+    }
+
+    return {
+      baseScore: c.baseScore,
+      canonicalScore,
+      combinedScore: Math.max(0, Math.min(1, c.baseScore + canonicalScore)),
+    }
+  })
+}
+
+/**
+ * Escape special regex characters in a string for use in RegExp constructor.
+ */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Check whether a target title (from Spotify/incoming track) and a YouTube
+ * candidate title refer to the same track after normalization.
+ *
+ * Both annotations ("(Official Video)", "(Remix)") and artist prefixes
+ * ("Artist - ") are stripped before comparing. Unicode is NFD-normalized
+ * so "Beyoncé" matches "Beyonce" and "JAŸ-Z" matches "Jay-Z".
+ */
+function titlesMatch(targetTitle: string, candidateTitle: string): boolean {
+  const targetClean = cleanTrackTitle(targetTitle).toLowerCase()
+  const candidateClean = cleanTitle(candidateTitle).toLowerCase()
+  const targetNorm = normalizeForMatch(targetTitle)
+  const candidateNorm = normalizeForMatch(candidateTitle)
+
+  return targetClean === candidateClean
+    || targetNorm === candidateNorm
+    || targetClean.includes(candidateClean)
+    || candidateClean.includes(targetClean)
+}
+
+// ── Canonical Score (Phase 1 Primary Ranking) ──
+
+/**
+ * Score how "canonical" a candidate is — how close to the original studio recording.
+ * This is a 0.0–1.0 primary ranking score used AFTER strict duration gating.
+ *
+ * Unlike rankByCanonicalness (which produces an additive -0.4 to +0.4 bonus),
+ * this function produces a standalone 0.0–1.0 score, making it suitable as
+ * the PRIMARY differentiator among duration-gated candidates.
+ *
+ * Factors:
+ *   Channel type:         0.00 to +0.30  (topic > verified > user)
+ *   Title purity:         0.00 to +0.10  (no extra annotations in raw title)
+ *   Official annotation:  0.00 to +0.10  (explicit "Official" keyword in title)
+ *   Category penalty:    -0.30 to +0.00  (remix/live/edit/derivative penalty)
+ *   Duration precision:   0.00 to +0.10  (exact Δt=0 is best)
+ *   Base:                 0.40
+ *   ──────────────────────────────
+ *   Total range:          0.00 to 1.00
+ */
+export function calculateCanonicalScore(
+  target: { title: string; artist: string; duration: number },
+  candidate: { title: string; duration: number; channelType?: string }
+): number {
+  let score = 0.40
+
+  const deltaT = Math.abs(target.duration - candidate.duration)
+  const annotationCat = getAnnotationCategory(candidate.title, candidate.channelType)
+
+  // 1. Channel type (0.00 to +0.30)
+  if (candidate.channelType === 'verified_topic') {
+    score += 0.30
+  } else if (candidate.channelType === 'verified_artist') {
+    score += 0.15
+  }
+
+  // 2. Title purity (0.00 to +0.10)
+  const artistPrefix = target.artist
+  let titleAfterArtist = candidate.title
+  const artistSepMatch = candidate.title.match(new RegExp(`^${escapeRegex(artistPrefix)}\\s*[-–—]\\s*(.+)`, 'i'))
+  if (artistSepMatch) {
+    titleAfterArtist = artistSepMatch[1]
+  }
+  const hasExtraAnnotations = /[\(\[{].+[\)\]}]/.test(titleAfterArtist)
+  if (!hasExtraAnnotations) {
+    score += 0.10
+  }
+
+  // 3. Official annotation present (0.00 to +0.10)
+  const hasOfficialAnnotation = /\(official\s+(audio|video|music\s*video|lyric\s*video|4k\s*remaster|hd)\)/i.test(candidate.title)
+    || /\[official\s+(audio|video|music\s*video|lyric\s*video|4k\s*remaster|hd)\]/i.test(candidate.title)
+    || /\(official\)/i.test(candidate.title)
+    || /\[official\]/i.test(candidate.title)
+  if (hasOfficialAnnotation) {
+    score += 0.10
+  }
+
+  // 4. Annotation category penalty (-0.30 to 0.00)
+  switch (annotationCat) {
+    case 'official_canonical':  score += 0.00; break
+    case 'official_alternate':  score -= 0.03; break
+    case 'unmarked':            score -= 0.05; break
+    case 'alternate_version':   score -= 0.10; break
+    case 'live_performance':    score -= 0.20; break
+    case 'remix_edit':          score -= 0.30; break
+    case 'derivative':          score -= 0.25; break
+  }
+
+  // 5. Duration precision (0.00 to +0.10)
+  if (deltaT <= 0) {
+    score += 0.10
+  } else if (deltaT <= 1) {
+    score += 0.05
+  }
+
   return Math.max(0, Math.min(1, score))
 }
 
@@ -273,6 +623,11 @@ interface MockCandidate {
 /**
  * Resolve a Spotify track to the best YouTube match from a pool of candidates.
  * Used in tests with mock search results; in production the pool comes from SearchEngine.
+ *
+ * THREE-PHASE APPROACH:
+ *   Phase 1: Strict ±2s duration gate → canonical ranking as primary differentiator
+ *   Phase 2: Fallback to graduated scoring + canonical additive ranking
+ *   Phase 3: Return best by base score if it clears minimum threshold
  */
 async function resolveFromCandidates(
   incomingTrack: SpotifyTrack,
@@ -281,16 +636,8 @@ async function resolveFromCandidates(
 ): Promise<ResolvedMatchResult> {
   const scored = candidates.map((c) => {
     const score = calculateConfidence(
-      {
-        title: incomingTrack.title,
-        artist: incomingTrack.artist,
-        duration: incomingTrack.duration,
-      },
-      {
-        title: c.title,
-        duration: c.duration,
-        channelType: c.channelType,
-      }
+      { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
+      { title: c.title, duration: c.duration, channelType: c.channelType }
     )
 
     return {
@@ -303,8 +650,92 @@ async function resolveFromCandidates(
     }
   })
 
-  scored.sort((a, b) => b.confidenceScore - a.confidenceScore)
+  // ═══ Phase 1: Strict Duration Gate (±2s) → Canonical Ranking ═══
+  const DURATION_GATE_S = 2
+  const gated = scored.filter(
+    (c) => Math.abs(c.duration - incomingTrack.duration) <= DURATION_GATE_S
+  )
 
+  if (gated.length > 0) {
+    const canonScored = gated.map((c) => ({
+      ...c,
+      canonicalScore: calculateCanonicalScore(
+        { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
+        { title: c.title, duration: c.duration, channelType: c.channelType }
+      ),
+    }))
+
+    // Only consider candidates where the title actually matches
+    const titleMatched = canonScored.filter((c) =>
+      titlesMatch(incomingTrack.title, c.title)
+    )
+
+    if (titleMatched.length > 0) {
+      titleMatched.sort((a, b) => b.canonicalScore - a.canonicalScore)
+      const bestCanon = titleMatched[0]
+
+      if (bestCanon.canonicalScore >= 0.60 && bestCanon.confidenceScore >= 0.50) {
+        return {
+          id: bestCanon.id,
+          title: bestCanon.title,
+          artist: bestCanon.artist,
+          duration: bestCanon.duration,
+          thumbnailUrl: '',
+          source: 'youtube',
+          sourceId: bestCanon.id,
+          confidenceScore: bestCanon.confidenceScore,
+        }
+      }
+
+      if (bestCanon.canonicalScore >= 0.50 && bestCanon.confidenceScore >= 0.65) {
+        return {
+          id: bestCanon.id,
+          title: bestCanon.title,
+          artist: bestCanon.artist,
+          duration: bestCanon.duration,
+          thumbnailUrl: '',
+          source: 'youtube',
+          sourceId: bestCanon.id,
+          confidenceScore: bestCanon.confidenceScore,
+        }
+      }
+    }
+  }
+
+  // ═══ Phase 2: Fallback — Graduated Scoring + Canonical Additive ═══
+  const viable = scored.filter((s) => s.confidenceScore >= 0.65)
+  if (viable.length > 0) {
+    const ranked = rankByCanonicalness(
+      { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
+      viable.map((v) => ({
+        baseScore: v.confidenceScore,
+        title: v.title,
+        duration: v.duration,
+        channelType: v.channelType,
+      }))
+    )
+
+    const merged = viable.map((v, i) => ({
+      ...v,
+      confidenceScore: ranked[i].combinedScore,
+    }))
+    merged.sort((a, b) => b.confidenceScore - a.confidenceScore)
+
+    const best = merged[0]
+    return {
+      id: best.id,
+      title: best.title,
+      artist: best.artist,
+      duration: best.duration,
+      thumbnailUrl: '',
+      source: 'youtube',
+      sourceId: best.id,
+      confidenceScore: best.confidenceScore,
+    }
+  }
+
+  // Phase 3: Return best base-score candidate if it clears minimum viability (0.5)
+  scored.sort((a, b) => b.confidenceScore - a.confidenceScore)
   const best = scored[0]
 
   return {
@@ -322,27 +753,27 @@ async function resolveFromCandidates(
 /**
  * Search YouTube and try multiple query strategies until a match is found.
  *
- * Strategy:
- *   1. Try each query in order (standard, official, explicit, original, topic)
- *   2. Merge candidates (dedup by videoId)
- *   3. Score all candidates — if highest ≥ threshold, return immediately
- *   4. If exhausted without a match, throw
- *
- * This ensures we find the EXACT YouTube upload for each Spotify track
- * by iterating queries until we find the right duration match.
+ * THREE-PHASE APPROACH:
+ *   Fast-path: Topic channel candidate with exact duration AND exact title
+ *              match — return immediately (canonical YouTube Music upload).
+ *   Phase 1:   Strict ±2s duration gate → canonical ranking as primary
+ *              differentiator. Eliminates false positives from remixes/live
+ *              edits that happen to have similar duration.
+ *   Phase 2a:  Fallback to graduated scoring + canonical additive ranking.
+ *   Phase 2b:  Return best by base score if it clears minimum threshold.
  *
  * @param incomingTrack - The Spotify track to match
- * @param threshold - Minimum confidence score (0-1). Default 0.7.
+ * @param threshold - Minimum confidence score (0-1). Default 0.65.
  */
-async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.7): Promise<Track> {
+async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): Promise<Track> {
   const queries = generateSearchQueries(incomingTrack)
   const seen = new Set<string>()
-  let allCandidates: Array<{ track: Track; score: number }> = []
+  const allCandidates: Array<{ track: Track; score: number }> = []
 
   for (const query of queries) {
     const results = await SearchEngine.search(query)
+    if (!results || results.length === 0) continue
 
-    // Score new candidates
     for (const track of results) {
       if (seen.has(track.id)) continue
       seen.add(track.id)
@@ -353,42 +784,108 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.7): Pr
       )
       allCandidates.push({ track, score })
     }
+  }
 
-    // Sort descending by score
-    allCandidates.sort((a, b) => b.score - a.score)
+  if (allCandidates.length === 0) {
+    throw new Error(
+      `No match for "${incomingTrack.artist} — ${incomingTrack.title}" (no candidates)`
+    )
+  }
 
-    // Early exit: scan candidates top-to-bottom for the first non-derivative
-    // with score ≥ threshold and return it. This handles the case where
-    // the top-scoring candidate is a derivative (lyrics, cover, instrumental)
-    // but a non-derivative candidate in the same query's results also exceeds
-    // threshold — we should return the good match immediately instead of
-    // continuing through remaining queries.
-    //
-    // Only checks candidates that meet threshold — once score drops below,
-    // further candidates won't qualify either (list is sorted descending).
-    if (allCandidates.length > 0 && allCandidates[0].score >= threshold) {
-      for (const candidate of allCandidates) {
-        if (candidate.score < threshold) break
-        const cat = getAnnotationCategory(candidate.track.title, candidate.track.channelType)
-        if (cat !== 'derivative') {
-          return candidate.track
-        }
+  // Fast-path: Topic channel with exact duration + exact title match
+  // This is always the canonical YouTube Music auto-upload.
+  const targetClean = cleanTrackTitle(incomingTrack.title).toLowerCase()
+  for (const c of allCandidates) {
+    if (
+      c.track.channelType === 'verified_topic' &&
+      Math.abs(c.track.duration - incomingTrack.duration) <= 1 &&
+      cleanTitle(c.track.title).toLowerCase() === targetClean
+    ) {
+      return c.track
+    }
+  }
+
+  // ═══ Phase 1: Strict Duration Gate (±2s) → Canonical Ranking ═══
+  //
+  // Duration is the PRIMARY gate. Only candidates within 2s of the target
+  // duration are considered. Among gated candidates, the canonical score
+  // (0.0–1.0) is the PRIMARY differentiator — not an additive bonus.
+  //
+  // This eliminates false positives from remixes/live edits/etc. that happen
+  // to have similar duration but accumulate enough graduated score to pass.
+  const DURATION_GATE_S = 2
+  const gated = allCandidates.filter(
+    (c) => Math.abs(c.track.duration - incomingTrack.duration) <= DURATION_GATE_S
+  )
+
+  if (gated.length > 0) {
+    // Score gated candidates by canonicalness
+    const canonScored = gated.map((c) => ({
+      track: c.track,
+      baseScore: c.score,
+      canonicalScore: calculateCanonicalScore(
+        { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
+        { title: c.track.title, duration: c.track.duration, channelType: c.track.channelType }
+      ),
+    }))
+
+    // Filter to candidates where the title actually matches.
+    // This is critical — without it, a wrong track on topic channel with
+    // the same duration can slip through (baseScore reaches 0.80 from
+    // duration + topic + official bonuses alone, with zero title match).
+    const titleMatched = canonScored.filter((c) =>
+      titlesMatch(incomingTrack.title, c.track.title)
+    )
+
+    if (titleMatched.length > 0) {
+      // Sort by canonical score descending
+      titleMatched.sort((a, b) => b.canonicalScore - a.canonicalScore)
+      const bestCanon = titleMatched[0]
+
+      // Return best title-matched candidate if it meets canonical threshold
+      if (bestCanon.canonicalScore >= 0.60 && bestCanon.baseScore >= 0.50) {
+        return bestCanon.track
+      }
+
+      if (bestCanon.canonicalScore >= 0.50 && bestCanon.baseScore >= threshold) {
+        return bestCanon.track
       }
     }
   }
 
-  // All queries exhausted without finding a clean match above threshold.
-  // Return the best available rather than throwing, as long as it clears
-  // a minimum viability bar (0.5). This effectively requires a duration match
-  // (max score without duration is 0.44 = exact title 0.2 + topic 0.2 + official 0.04),
-  // ensuring we never silently import a completely wrong recording.
-  if (allCandidates.length > 0 && allCandidates[0].score >= 0.5) {
+  // ═══ Phase 2a: Fallback — Graduated Scoring + Canonical Additive ═══
+  const viable = allCandidates.filter((c) => c.score >= threshold)
+  if (viable.length > 0) {
+    const ranked = rankByCanonicalness(
+      { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
+      viable.map((v) => ({
+        baseScore: v.score,
+        title: v.track.title,
+        duration: v.track.duration,
+        channelType: v.track.channelType,
+      }))
+    )
+
+    let bestIdx = 0
+    let bestCombined = ranked[0].combinedScore
+    for (let i = 1; i < ranked.length; i++) {
+      if (ranked[i].combinedScore > bestCombined) {
+        bestCombined = ranked[i].combinedScore
+        bestIdx = i
+      }
+    }
+    return viable[bestIdx].track
+  }
+
+  // Phase 2b: Fallback — return best candidate if it clears minimum viability (0.5)
+  allCandidates.sort((a, b) => b.score - a.score)
+  if (allCandidates[0].score >= 0.5) {
     return allCandidates[0].track
   }
 
   throw new Error(
     `No match for "${incomingTrack.artist} — ${incomingTrack.title}"` +
-    (allCandidates.length > 0 ? ` (best=${allCandidates[0].score.toFixed(2)})` : ' (no candidates)')
+    ` (best=${allCandidates[0].score.toFixed(2)})`
   )
 }
 
@@ -398,5 +895,9 @@ export const TrackIdentityEngine = {
   resolveFromCandidates,
   resolveIdentity,
   calculateConfidence,
+  calculateCanonicalScore,
   getAnnotationCategory,
+  detectVersionMarkers,
+  getVersionPenalty,
+  rankByCanonicalness,
 }
