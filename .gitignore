@@ -40,6 +40,12 @@ yarn-error.log*
 # Deepwork / dev progress
 .slim/
 
+# OMO run continuation state
+.omo/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
 # Generated architecture and audit reports
 muisc-*-report.html
 

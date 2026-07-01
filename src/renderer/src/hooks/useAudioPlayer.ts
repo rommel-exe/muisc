@@ -544,7 +544,13 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   }, [])
 
   const getError = useCallback((): string | null => {
-    return errorRef.current
+    // Read from the active element, not the shared errorRef — the standby's
+    // MEDIA_ELEMENT_ERROR from being cleared can pollute errorRef.
+    const el = getActive()
+    if (el?.error) {
+      return el.error.message || `Audio error code ${el.error.code}`
+    }
+    return null
   }, [])
 
   /** Abort any pending play() promise on the active element by clearing its
