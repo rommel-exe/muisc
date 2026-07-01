@@ -113,10 +113,17 @@ app.whenReady().then(async () => {
   })
 })
 
-// Catch GPU/child process crashes — prevent Electron from quitting.
-// Electron 35+ supports event.preventDefault() on child-process-gone.
+// macOS 26 Sequoia child process crash resilience.
+// On Sequoia, GPU and Utility (network) processes exit with code 15 (SIGTERM)
+// even with --no-sandbox. Electron's built-in cascade quits the app when both
+// GPU and network services go down. We intercept that cascade here.
+let _childCrashed = false
+let _crashTimer: ReturnType<typeof setTimeout> | null = null
+
 app.on('child-process-gone', (event, details) => {
   console.warn(`[App] Child process gone: type=${details.type} reason=${details.reason} exit_code=${details.exitCode}`)
+  _childCrashed = true
+
   // Prevent the crash cascade — the renderer keeps running fine without
   // dedicated helper processes for this app.
   try {
@@ -126,10 +133,29 @@ app.on('child-process-gone', (event, details) => {
   }
 })
 
-// Normal quit — the child-process-gone handler already prevents crash cascades.
+// Intercept quit triggered by child process crash cascade.
+// Electron's internal logic fires will-quit after GPU + network crashes
+// even when child-process-gone.preventDefault() is called.
+const origQuit = app.quit.bind(app)
+app.quit = (() => {
+  if (_childCrashed) {
+    console.warn('[App] quit() suppressed — child process crash cascade prevented')
+    // Clear the crash flag after a delay so repeated quit() calls don't stack
+    if (_crashTimer) clearTimeout(_crashTimer)
+    _crashTimer = setTimeout(() => { _childCrashed = false }, 5000)
+    return
+  }
+  origQuit()
+}) as typeof app.quit
 
-// Clean shutdown on explicit quit
-app.on('will-quit', async () => {
+// Clean shutdown on explicit quit (Cmd+Q, app.quit(), window close)
+app.on('will-quit', async (event) => {
+  // If the quit is caused by a child process crash cascade, prevent it
+  if (_childCrashed) {
+    console.warn('[App] will-quit suppressed — child process crash cascade')
+    try { event.preventDefault() } catch {}
+    return
+  }
   console.warn('[App] will-quit — cleaning up')
   unregisterHandlers()
   await mediaResolver.stop()

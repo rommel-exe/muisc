@@ -752,6 +752,23 @@ export function createProxy(options: ProxyOptions = {}) {
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] CDN TTFB ${videoId}: ${cdnFirstByteMs}ms status=${proxyRes.statusCode} len=${cl} range=${cr} type=${ct}`)
           }
 
+          // 🔥 TRUNCATED STREAM DETECTION: YouTube CDN occasionally returns
+          // truncated streams with Content-Length < 500KB for a full song.
+          // Reject and re-resolve to get a different CDN edge.
+          const MIN_SONG_BYTES = 512 * 1024  // 500KB ≈ ~30s at 128kbps
+          if (proxyRes.headers['content-length']) {
+            const contentLen = parseInt(proxyRes.headers['content-length'], 10)
+            if (contentLen > 0 && contentLen < MIN_SONG_BYTES) {
+              console.warn(`[Proxy] Truncated stream ${videoId}: Content-Length=${contentLen} < ${MIN_SONG_BYTES}, re-resolving...`)
+              streamCache.delete(videoId)
+              const resolveFn = onReResolve ?? resolveStreamUrl
+              resolveFn(videoId)
+                .then((newUrl) => makeRequest(newUrl, redirectCount + 1))
+                .catch(() => { if (!clientRes.headersSent) clientRes.end() })
+              return
+            }
+          }
+
           // Handle 403/410 — stale URL, re-resolve
           if (proxyRes.statusCode === 403 || proxyRes.statusCode === 410) {
             console.log(`[Proxy] CDN returned ${proxyRes.statusCode} for ${videoId}, re-resolving...`)
@@ -991,6 +1008,17 @@ export function createProxy(options: ProxyOptions = {}) {
   }
 
   /**
+   * Clear the prewarm buffer, optionally for a specific video ID.
+   */
+  function clearPrewarmBuffer(videoId?: string): void {
+    if (videoId) {
+      prewarmBuffer.delete(videoId)
+    } else {
+      prewarmBuffer.clear()
+    }
+  }
+
+  /**
    * Get a stream cache entry by video ID.
    */
   function getStreamCacheEntry(videoId: string): StreamCache | undefined {
@@ -1177,6 +1205,7 @@ export function createProxy(options: ProxyOptions = {}) {
     start,
     stop,
     clearCache,
+    clearPrewarmBuffer,
     getStreamCacheEntry,
     setStreamCacheEntry,
     triggerBackgroundResolve,
