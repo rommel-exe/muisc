@@ -23,7 +23,6 @@ import type { Track, SpotifyImportProgress, SpotifyImportResult, SpotifyImportSk
 // ── Batch Config ──
 
 const MAX_TRACKS = 1000
-const MATCH_CONFIDENCE_THRESHOLD = 0.65
 const CONCURRENCY = 8 // process 8 tracks in parallel for fast imports
 
 // ── Progress Sender ──
@@ -135,8 +134,7 @@ export async function importSpotifyPlaylist(
         })
 
         const result = await TrackIdentityEngine.resolveIdentity(
-          { title: track.title, artist: track.artist, duration: track.duration, explicit: track.explicit },
-          MATCH_CONFIDENCE_THRESHOLD
+          { title: track.title, artist: track.artist, duration: track.duration, explicit: track.explicit }
         )
         return { type: 'match' as const, track: result }
       } catch (err: any) {
@@ -268,8 +266,7 @@ export async function rematchPlaylist(
 
       try {
         const result = await TrackIdentityEngine.resolveIdentity(
-          { title: t.title, artist: t.artist, duration: t.duration, explicit: t.explicit },
-          MATCH_CONFIDENCE_THRESHOLD
+          { title: t.title, artist: t.artist, duration: t.duration, explicit: t.explicit }
         )
         return { type: 'match' as const, track: result }
       } catch (err: any) {

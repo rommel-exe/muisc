@@ -90,7 +90,7 @@ export function generateSearchQueries(track: SpotifyTrack): string[] {
 
 // ── Annotation Category ──
 
-type AnnotationCategory = 'official_canonical' | 'official_alternate' | 'remix_edit' | 'live_performance' | 'alternate_version' | 'derivative' | 'unmarked'
+type AnnotationCategory = 'official_canonical' | 'official_alternate' | 'remix_edit' | 'live_performance' | 'alternate_version' | 'lyrics_version' | 'derivative' | 'unmarked'
 
 // ── Version Marker Detection ──
 
@@ -189,12 +189,7 @@ const VERSION_MARKERS: VersionMarkerEntry[] = [
     category: 'alternate_version',
     description: 'Short preview or teaser — not the full track',
   },
-  // ── Derivative (lyrics, instrumental, cover, karaoke, audio-only) ──
-  {
-    pattern: /\b(Lyrics?\s*(Video)?)\b/i,
-    category: 'derivative',
-    description: 'Lyrics video — not the actual recording',
-  },
+  // ── Derivative (instrumental, cover, karaoke, audio-only, visualizer) ──
   {
     pattern: /\b(Instrumental)\b/i,
     category: 'derivative',
@@ -220,6 +215,12 @@ const VERSION_MARKERS: VersionMarkerEntry[] = [
     category: 'derivative',
     description: 'Visualizer — animated art, not the actual recording',
   },
+  // ── Lyrics (acceptable — original recording with overlaid lyrics) ──
+  {
+    pattern: /\b(Lyrics?\s*(Video)?)\b/i,
+    category: 'lyrics_version',
+    description: 'Lyrics video — original recording with overlaid text',
+  },
 ]
 
 /**
@@ -243,12 +244,13 @@ export function detectVersionMarkers(rawTitle: string): AnnotationCategory | nul
  */
 export function getVersionPenalty(category: AnnotationCategory): number {
   switch (category) {
-    case 'remix_edit':          return 0.25  // Definitively not the original
-    case 'live_performance':    return 0.20  // Live alter ego of the track
-    case 'alternate_version':   return 0.10  // Remaster/re-record — sonically different
-    case 'derivative':          return 0.20  // Lyrics/cover — not the original at all
-    case 'official_alternate':  return 0.03  // Slight chance it's not canonical
-    default:                    return 0     // No penalty
+    case 'remix_edit':          return 0.25
+    case 'live_performance':    return 0.20
+    case 'alternate_version':   return 0.10
+    case 'derivative':          return 0.20
+    case 'lyrics_version':      return 0.05
+    case 'official_alternate':  return 0.03
+    default:                    return 0
   }
 }
 
@@ -313,8 +315,11 @@ export function getAnnotationCategory(rawTitle: string, channelType?: string): A
 /**
  * Check whether a candidate's annotation category is acceptable for matching.
  *
- * Acceptable: official_canonical, official_alternate, unmarked
+ * Acceptable: official_canonical, official_alternate, unmarked, lyrics_version
  * Rejected: remix_edit, live_performance, derivative, alternate_version
+ *
+ * "lyrics_version" is acceptable because it's the original recording with
+ * overlaid text — same audio, just visual overlay.
  *
  * "alternate_version" is rejected because remasters/re-recordings/bonus tracks
  * are sonically different from the original studio recording.
@@ -324,6 +329,7 @@ export function isAcceptableVersion(rawTitle: string, channelType?: string): boo
   return category === 'official_canonical'
     || category === 'official_alternate'
     || category === 'unmarked'
+    || category === 'lyrics_version'
 }
 
 // ── Confidence Scoring ──
@@ -418,6 +424,7 @@ export function calculateConfidence(
     case 'official_canonical':  score += 0.10; break
     case 'official_alternate':  score += 0.04; break
     case 'unmarked':            score += 0.00; break
+    case 'lyrics_version':      score -= 0.02; break
     case 'alternate_version':   score -= 0.02; break
     case 'live_performance':    score -= 0.05; break
     case 'remix_edit':          score -= 0.08; break
@@ -495,6 +502,7 @@ export function rankByCanonicalness(
     switch (annotationCat) {
       case 'official_canonical':  canonicalScore += 0.06; break
       case 'unmarked':            canonicalScore += 0.00; break
+      case 'lyrics_version':      canonicalScore -= 0.02; break
       case 'official_alternate':  canonicalScore -= 0.02; break
       case 'alternate_version':   canonicalScore -= 0.04; break
       case 'live_performance':    canonicalScore -= 0.08; break
@@ -599,6 +607,7 @@ export function calculateCanonicalScore(
     case 'official_canonical':  score += 0.00; break
     case 'official_alternate':  score -= 0.03; break
     case 'unmarked':            score -= 0.05; break
+    case 'lyrics_version':      score -= 0.05; break
     case 'alternate_version':   score -= 0.10; break
     case 'live_performance':    score -= 0.20; break
     case 'remix_edit':          score -= 0.30; break
@@ -691,31 +700,15 @@ async function resolveFromCandidates(
     if (titleMatched.length > 0) {
       titleMatched.sort((a, b) => b.canonicalScore - a.canonicalScore)
       const bestCanon = titleMatched[0]
-
-      if (bestCanon.canonicalScore >= 0.60 && bestCanon.confidenceScore >= 0.50) {
-        return {
-          id: bestCanon.id,
-          title: bestCanon.title,
-          artist: bestCanon.artist,
-          duration: bestCanon.duration,
-          thumbnailUrl: '',
-          source: 'youtube',
-          sourceId: bestCanon.id,
-          confidenceScore: bestCanon.confidenceScore,
-        }
-      }
-
-      if (bestCanon.canonicalScore >= 0.50 && bestCanon.confidenceScore >= 0.65) {
-        return {
-          id: bestCanon.id,
-          title: bestCanon.title,
-          artist: bestCanon.artist,
-          duration: bestCanon.duration,
-          thumbnailUrl: '',
-          source: 'youtube',
-          sourceId: bestCanon.id,
-          confidenceScore: bestCanon.confidenceScore,
-        }
+      return {
+        id: bestCanon.id,
+        title: bestCanon.title,
+        artist: bestCanon.artist,
+        duration: bestCanon.duration,
+        thumbnailUrl: '',
+        source: 'youtube',
+        sourceId: bestCanon.id,
+        confidenceScore: bestCanon.confidenceScore,
       }
     }
   }
@@ -740,7 +733,7 @@ async function resolveFromCandidates(
  * @param incomingTrack - The Spotify track to match
  * @param threshold - Minimum confidence score (0-1). Default 0.65.
  */
-async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): Promise<Track> {
+async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
   const queries = generateSearchQueries(incomingTrack)
   const seen = new Set<string>()
   const allCandidates: Array<{ track: Track; score: number }> = []
@@ -804,14 +797,7 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): P
     if (titleMatched.length > 0) {
       titleMatched.sort((a, b) => b.canonicalScore - a.canonicalScore)
       const bestCanon = titleMatched[0]
-
-      if (bestCanon.canonicalScore >= 0.60 && bestCanon.baseScore >= 0.50) {
-        return bestCanon.track
-      }
-
-      if (bestCanon.canonicalScore >= 0.50 && bestCanon.baseScore >= threshold) {
-        return bestCanon.track
-      }
+      return bestCanon.track
     }
   }
 

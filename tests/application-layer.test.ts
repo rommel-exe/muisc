@@ -139,8 +139,8 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     expect(topic).toBeGreaterThanOrEqual(0.7)
   })
 
-  // S4: resolveIdentity with all derivative candidates — should throw (strict version filtering)
-  it('S4: resolveIdentity with only derivative matches should throw', async () => {
+  // S4: resolveIdentity with lyrics (acceptable) and audio-only (derivative)
+  it('S4: resolveIdentity accepts lyrics but rejects audio-only', async () => {
     const originalSearch = await import('../src/application/SearchEngine')
     const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
 
@@ -165,12 +165,12 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
       },
     ])
 
-    await expect(
-      TrackIdentityEngine.resolveIdentity(
-        { title: 'Without Me', artist: 'Eminem', duration: 290 },
-        0.7
-      )
-    ).rejects.toThrow()
+    const result = await TrackIdentityEngine.resolveIdentity(
+      { title: 'Without Me', artist: 'Eminem', duration: 290 }
+    )
+
+    expect(result).toBeDefined()
+    expect(result.sourceId).toBe('yt_lyrics_1')
 
     searchSpy.mockRestore()
   })
@@ -192,7 +192,7 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     expect(TrackIdentityEngine.getAnnotationCategory('Song (Anniversary Edition)', undefined)).toBe('alternate_version')
     expect(TrackIdentityEngine.getAnnotationCategory('Song (2011 Remaster)', undefined)).toBe('alternate_version')
 
-    expect(TrackIdentityEngine.getAnnotationCategory('Song (Lyrics)', undefined)).toBe('derivative')
+    expect(TrackIdentityEngine.getAnnotationCategory('Song (Lyrics)', undefined)).toBe('lyrics_version')
     expect(TrackIdentityEngine.getAnnotationCategory('Song (Piano Cover)', undefined)).toBe('derivative')
     expect(TrackIdentityEngine.getAnnotationCategory('Song (Instrumental)', undefined)).toBe('derivative')
     expect(TrackIdentityEngine.getAnnotationCategory('Song (Audio Only)', undefined)).toBe('derivative')
@@ -261,8 +261,7 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     ])
 
     const result = await TrackIdentityEngine.resolveIdentity(
-      { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 },
-      0.65
+      { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 }
     )
 
     // Topic channel should win over remix on verified_artist
@@ -302,8 +301,7 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     ])
 
     const result = await TrackIdentityEngine.resolveIdentity(
-      { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 },
-      0.65
+      { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 }
     )
 
     expect(result.id).toBe('yt_topic_fast')
@@ -316,12 +314,11 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     searchSpy.mockRestore()
   })
 
-  // N5: All-derivative pool falls back gracefully — NOW REJECTED (strict version filtering)
-  it('N5: all-derivative candidates should be rejected even if they have high graduated scores', async () => {
+  // N5: Lyrics are acceptable — should return the lyrics candidate
+  it('N5: lyrics candidates should be accepted', async () => {
     const originalSearch = await import('../src/application/SearchEngine')
     const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
 
-    // Only derivative results — no acceptable versions
     searchSpy.mockResolvedValue([
       {
         id: 'yt_lyrics_1',
@@ -334,13 +331,12 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
       },
     ])
 
-    // Should throw — only derivative candidates, none acceptable
-    await expect(
-      TrackIdentityEngine.resolveIdentity(
-        { title: 'Without Me', artist: 'Eminem', duration: 290 },
-        0.65
-      )
-    ).rejects.toThrow()
+    const result = await TrackIdentityEngine.resolveIdentity(
+      { title: 'Without Me', artist: 'Eminem', duration: 290 }
+    )
+
+    expect(result).toBeDefined()
+    expect(result.sourceId).toBe('yt_lyrics_1')
 
     searchSpy.mockRestore()
   })
@@ -403,8 +399,7 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
 
     await expect(
       TrackIdentityEngine.resolveIdentity(
-        { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 },
-        0.65
+        { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 }
       )
     ).rejects.toThrow()
 
@@ -430,8 +425,7 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     ])
 
     const result = await TrackIdentityEngine.resolveIdentity(
-      { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 },
-      0.65
+      { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 }
     )
 
     expect(result).toBeDefined()
@@ -499,19 +493,13 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     ).rejects.toThrow()
   })
 
-  // V4: Lyrics/instrumental candidates must be rejected
-  it('V4: resolveFromCandidates rejects lyrics and instrumental candidates', async () => {
+  // V4: Instrumental candidates must be rejected (lyrics are acceptable)
+  it('V4: resolveFromCandidates rejects instrumental candidates but accepts lyrics', async () => {
+    // Instrumental should be rejected
     await expect(
       TrackIdentityEngine.resolveFromCandidates(
         { title: 'Shape of You', artist: 'Ed Sheeran', duration: 234 },
         [
-          {
-            youtubeId: 'yt_lyrics',
-            title: 'Ed Sheeran - Shape of You (Lyrics)',
-            duration: 234,
-            channelType: 'user_upload',
-            fingerprintHash: 'hash_lyrics',
-          },
           {
             youtubeId: 'yt_instrumental',
             title: 'Ed Sheeran - Shape of You (Instrumental)',
@@ -520,9 +508,25 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
             fingerprintHash: 'hash_instr',
           },
         ],
-        'hash_lyrics'
+        'hash_instr'
       )
     ).rejects.toThrow()
+
+    // Lyrics should be accepted
+    const result = await TrackIdentityEngine.resolveFromCandidates(
+      { title: 'Shape of You', artist: 'Ed Sheeran', duration: 234 },
+      [
+        {
+          youtubeId: 'yt_lyrics',
+          title: 'Ed Sheeran - Shape of You (Lyrics)',
+          duration: 234,
+          channelType: 'user_upload',
+          fingerprintHash: 'hash_lyrics',
+        },
+      ],
+      'hash_lyrics'
+    )
+    expect(result.id).toBe('yt_lyrics')
   })
 
   // ── Official Audio Preference Tests (O1-O3) ──
