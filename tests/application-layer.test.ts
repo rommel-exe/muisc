@@ -139,9 +139,8 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     expect(topic).toBeGreaterThanOrEqual(0.7)
   })
 
-  // S4: resolveIdentity with all derivative candidates — should return best, not throw
-  it('S4: resolveIdentity with only derivative matches should return best candidate instead of throwing', async () => {
-    // Mock SearchEngine.search to return only derivative results
+  // S4: resolveIdentity with all derivative candidates — should throw (strict version filtering)
+  it('S4: resolveIdentity with only derivative matches should throw', async () => {
     const originalSearch = await import('../src/application/SearchEngine')
     const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
 
@@ -166,20 +165,12 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
       },
     ])
 
-    // Should not throw — should return best available
-    const result = await TrackIdentityEngine.resolveIdentity(
-      { title: 'Without Me', artist: 'Eminem', duration: 290 },
-      0.7
-    )
-
-    expect(result).toBeDefined()
-    expect(result.id).toBeTruthy()
-    // Both derivatives score identically — the important assertion is
-    // that resolveIdentity returns a candidate instead of throwing.
-    // The specific candidate chosen depends on canonical ranking tiebreakers,
-    // so we only assert that a valid result was returned.
-    expect(result.sourceId).toBeTruthy()
-    expect(['yt_lyrics_1', 'yt_audio_2']).toContain(result.sourceId)
+    await expect(
+      TrackIdentityEngine.resolveIdentity(
+        { title: 'Without Me', artist: 'Eminem', duration: 290 },
+        0.7
+      )
+    ).rejects.toThrow()
 
     searchSpy.mockRestore()
   })
@@ -325,35 +316,293 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
     searchSpy.mockRestore()
   })
 
-  // N5: All-derivative pool falls back gracefully
-  it('N5: all-derivative between 0.5 and 0.65 should return best via fallback instead of throwing', async () => {
+  // N5: All-derivative pool falls back gracefully — NOW REJECTED (strict version filtering)
+  it('N5: all-derivative candidates should be rejected even if they have high graduated scores', async () => {
     const originalSearch = await import('../src/application/SearchEngine')
     const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
 
-    // Mock results where duration is off by 1s:
-    // duration(0.40) + title(0.20) + artist(0.15) + derivative(-0.15) = 0.60
-    // 0.60 < 0.65 (threshold) and 0.60 ≥ 0.5 (fallback) → Phase 2b fallback
+    // Only derivative results — no acceptable versions
     searchSpy.mockResolvedValue([
       {
-        id: 'yt_fallback_1',
+        id: 'yt_lyrics_1',
         title: 'Eminem - Without Me (Lyrics)',
         artist: 'Eminem',
-        duration: 291, // 1s off from target 290 → duration score = 0.40
+        duration: 290,
         thumbnailUrl: '',
         source: 'youtube' as const,
-        sourceId: 'yt_fallback_1',
+        sourceId: 'yt_lyrics_1',
+      },
+    ])
+
+    // Should throw — only derivative candidates, none acceptable
+    await expect(
+      TrackIdentityEngine.resolveIdentity(
+        { title: 'Without Me', artist: 'Eminem', duration: 290 },
+        0.65
+      )
+    ).rejects.toThrow()
+
+    searchSpy.mockRestore()
+  })
+
+  // ── Strict Duration Gate Tests (D1-D3) ──
+
+  // D1: Candidates >2s off must be rejected in resolveFromCandidates
+  it('D1: resolveFromCandidates rejects candidates more than 2s off even with high scores', async () => {
+    await expect(
+      TrackIdentityEngine.resolveFromCandidates(
+        { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 },
+        [
+          {
+            youtubeId: 'yt_official_5s',
+            title: 'The Weeknd - Blinding Lights (Official Audio)',
+            duration: 205, // 5s off — exceeds ±2s gate
+            channelType: 'verified_topic',
+            fingerprintHash: 'hash_official',
+          },
+          {
+            youtubeId: 'yt_remix_exact',
+            title: 'The Weeknd - Blinding Lights (Remix)',
+            duration: 200, // exact duration but remix
+            channelType: 'verified_artist',
+            fingerprintHash: 'hash_remix',
+          },
+        ],
+        'hash_official'
+      )
+    ).rejects.toThrow()
+  })
+
+  // D2: resolveIdentity should throw when all candidates are >2s off
+  it('D2: resolveIdentity throws when all candidates exceed ±2s duration gate', async () => {
+    const originalSearch = await import('../src/application/SearchEngine')
+    const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
+
+    searchSpy.mockResolvedValue([
+      {
+        id: 'yt_far_1',
+        title: 'The Weeknd - Blinding Lights',
+        artist: 'The Weeknd',
+        duration: 210, // 10s off — way beyond ±2s
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_far_1',
+        channelType: 'verified_topic',
+      },
+      {
+        id: 'yt_far_2',
+        title: 'The Weeknd - Blinding Lights',
+        artist: 'The Weeknd',
+        duration: 190, // 10s off other direction
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_far_2',
+        channelType: 'verified_topic',
+      },
+    ])
+
+    await expect(
+      TrackIdentityEngine.resolveIdentity(
+        { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 },
+        0.65
+      )
+    ).rejects.toThrow()
+
+    searchSpy.mockRestore()
+  })
+
+  // D3: resolveIdentity should accept candidates within ±2s
+  it('D3: resolveIdentity accepts candidates within ±2s duration gate', async () => {
+    const originalSearch = await import('../src/application/SearchEngine')
+    const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
+
+    searchSpy.mockResolvedValue([
+      {
+        id: 'yt_close_1',
+        title: 'The Weeknd - Blinding Lights',
+        artist: 'The Weeknd',
+        duration: 201, // 1s off — within ±2s
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_close_1',
+        channelType: 'verified_topic',
       },
     ])
 
     const result = await TrackIdentityEngine.resolveIdentity(
-      { title: 'Without Me', artist: 'Eminem', duration: 290 },
+      { title: 'Blinding Lights', artist: 'The Weeknd', duration: 200 },
       0.65
     )
 
     expect(result).toBeDefined()
-    expect(result.sourceId).toBe('yt_fallback_1')
+    expect(result.sourceId).toBe('yt_close_1')
 
     searchSpy.mockRestore()
+  })
+
+  // ── Version Rejection Tests (V1-V4) ──
+
+  // V1: Remix candidates must be rejected
+  it('V1: resolveFromCandidates rejects remix candidates', async () => {
+    await expect(
+      TrackIdentityEngine.resolveFromCandidates(
+        { title: 'Levitating', artist: 'Dua Lipa', duration: 203 },
+        [
+          {
+            youtubeId: 'yt_remix',
+            title: 'Dua Lipa - Levitating (Remix)',
+            duration: 203, // exact duration
+            channelType: 'verified_artist',
+            fingerprintHash: 'hash_remix',
+          },
+        ],
+        'hash_remix'
+      )
+    ).rejects.toThrow()
+  })
+
+  // V2: Live performance candidates must be rejected
+  it('V2: resolveFromCandidates rejects live performance candidates', async () => {
+    await expect(
+      TrackIdentityEngine.resolveFromCandidates(
+        { title: 'Someone Like You', artist: 'Adele', duration: 285 },
+        [
+          {
+            youtubeId: 'yt_live',
+            title: 'Adele - Someone Like You (Live at Royal Albert Hall)',
+            duration: 285, // exact duration
+            channelType: 'verified_artist',
+            fingerprintHash: 'hash_live',
+          },
+        ],
+        'hash_live'
+      )
+    ).rejects.toThrow()
+  })
+
+  // V3: Cover/tribute candidates must be rejected
+  it('V3: resolveFromCandidates rejects cover/tribute candidates', async () => {
+    await expect(
+      TrackIdentityEngine.resolveFromCandidates(
+        { title: 'Bohemian Rhapsody', artist: 'Queen', duration: 355 },
+        [
+          {
+            youtubeId: 'yt_cover',
+            title: 'Bohemian Rhapsody (Piano Cover)',
+            duration: 355, // exact duration
+            channelType: 'user_upload',
+            fingerprintHash: 'hash_cover',
+          },
+        ],
+        'hash_cover'
+      )
+    ).rejects.toThrow()
+  })
+
+  // V4: Lyrics/instrumental candidates must be rejected
+  it('V4: resolveFromCandidates rejects lyrics and instrumental candidates', async () => {
+    await expect(
+      TrackIdentityEngine.resolveFromCandidates(
+        { title: 'Shape of You', artist: 'Ed Sheeran', duration: 234 },
+        [
+          {
+            youtubeId: 'yt_lyrics',
+            title: 'Ed Sheeran - Shape of You (Lyrics)',
+            duration: 234,
+            channelType: 'user_upload',
+            fingerprintHash: 'hash_lyrics',
+          },
+          {
+            youtubeId: 'yt_instrumental',
+            title: 'Ed Sheeran - Shape of You (Instrumental)',
+            duration: 234,
+            channelType: 'user_upload',
+            fingerprintHash: 'hash_instr',
+          },
+        ],
+        'hash_lyrics'
+      )
+    ).rejects.toThrow()
+  })
+
+  // ── Official Audio Preference Tests (O1-O3) ──
+
+  // O1: Official audio should win over unmarked when both within ±2s
+  it('O1: official_canonical wins over unmarked when both are within ±2s', async () => {
+    const result = await TrackIdentityEngine.resolveFromCandidates(
+      { title: 'Shape of You', artist: 'Ed Sheeran', duration: 234 },
+      [
+        {
+          youtubeId: 'yt_unmarked',
+          title: 'Ed Sheeran - Shape of You',
+          duration: 234,
+          channelType: 'user_upload',
+          fingerprintHash: 'hash_unmarked',
+        },
+        {
+          youtubeId: 'yt_official',
+          title: 'Ed Sheeran - Shape of You (Official Audio)',
+          duration: 234,
+          channelType: 'verified_topic',
+          fingerprintHash: 'hash_official',
+        },
+      ],
+      'hash_official'
+    )
+
+    expect(result.id).toBe('yt_official')
+  })
+
+  // O2: Official audio should win over verified_artist non-official
+  it('O2: official_canonical on topic wins over verified_artist without official annotation', async () => {
+    const result = await TrackIdentityEngine.resolveFromCandidates(
+      { title: 'Watermelon Sugar', artist: 'Harry Styles', duration: 174 },
+      [
+        {
+          youtubeId: 'yt_artist',
+          title: 'Harry Styles - Watermelon Sugar',
+          duration: 174,
+          channelType: 'verified_artist',
+          fingerprintHash: 'hash_artist',
+        },
+        {
+          youtubeId: 'yt_topic_official',
+          title: 'Harry Styles - Watermelon Sugar (Official Audio)',
+          duration: 174,
+          channelType: 'verified_topic',
+          fingerprintHash: 'hash_topic',
+        },
+      ],
+      'hash_topic'
+    )
+
+    expect(result.id).toBe('yt_topic_official')
+  })
+
+  // O3: Topic channel should win over user_upload with same content
+  it('O3: topic channel wins over user_upload when both are within ±2s and acceptable', async () => {
+    const result = await TrackIdentityEngine.resolveFromCandidates(
+      { title: 'Stay', artist: 'The Kid LAROI, Justin Bieber', duration: 141 },
+      [
+        {
+          youtubeId: 'yt_user',
+          title: 'The Kid LAROI, Justin Bieber - Stay',
+          duration: 141,
+          channelType: 'user_upload',
+          fingerprintHash: 'hash_user',
+        },
+        {
+          youtubeId: 'yt_topic',
+          title: 'The Kid LAROI, Justin Bieber - Stay',
+          duration: 141,
+          channelType: 'verified_topic',
+          fingerprintHash: 'hash_topic',
+        },
+      ],
+      'hash_topic'
+    )
+
+    expect(result.id).toBe('yt_topic')
   })
 })
 

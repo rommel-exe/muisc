@@ -310,6 +310,22 @@ export function getAnnotationCategory(rawTitle: string, channelType?: string): A
   return 'unmarked'
 }
 
+/**
+ * Check whether a candidate's annotation category is acceptable for matching.
+ *
+ * Acceptable: official_canonical, official_alternate, unmarked
+ * Rejected: remix_edit, live_performance, derivative, alternate_version
+ *
+ * "alternate_version" is rejected because remasters/re-recordings/bonus tracks
+ * are sonically different from the original studio recording.
+ */
+export function isAcceptableVersion(rawTitle: string, channelType?: string): boolean {
+  const category = getAnnotationCategory(rawTitle, channelType)
+  return category === 'official_canonical'
+    || category === 'official_alternate'
+    || category === 'unmarked'
+}
+
 // ── Confidence Scoring ──
 
 /**
@@ -624,16 +640,19 @@ interface MockCandidate {
  * Resolve a Spotify track to the best YouTube match from a pool of candidates.
  * Used in tests with mock search results; in production the pool comes from SearchEngine.
  *
- * THREE-PHASE APPROACH:
- *   Phase 1: Strict ±2s duration gate → canonical ranking as primary differentiator
- *   Phase 2: Fallback to graduated scoring + canonical additive ranking
- *   Phase 3: Return best by base score if it clears minimum threshold
+ * STRICT MATCHING:
+ *   - Duration must be within ±2s (absolute gate, no fallback)
+ *   - Version must be acceptable (official_canonical, official_alternate, or unmarked)
+ *   - Remixes, live performances, covers, derivatives are always rejected
+ *   - Among acceptable candidates, canonical score is the primary differentiator
  */
 async function resolveFromCandidates(
   incomingTrack: SpotifyTrack,
   candidates: MockCandidate[],
   _fingerprintHash: string
 ): Promise<ResolvedMatchResult> {
+  const DURATION_GATE_S = 2
+
   const scored = candidates.map((c) => {
     const score = calculateConfidence(
       { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
@@ -650,14 +669,14 @@ async function resolveFromCandidates(
     }
   })
 
-  // ═══ Phase 1: Strict Duration Gate (±2s) → Canonical Ranking ═══
-  const DURATION_GATE_S = 2
-  const gated = scored.filter(
+  // Strict filter: ±2s duration AND acceptable version
+  const acceptable = scored.filter(
     (c) => Math.abs(c.duration - incomingTrack.duration) <= DURATION_GATE_S
+      && isAcceptableVersion(c.title, c.channelType)
   )
 
-  if (gated.length > 0) {
-    const canonScored = gated.map((c) => ({
+  if (acceptable.length > 0) {
+    const canonScored = acceptable.map((c) => ({
       ...c,
       canonicalScore: calculateCanonicalScore(
         { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
@@ -665,7 +684,6 @@ async function resolveFromCandidates(
       ),
     }))
 
-    // Only consider candidates where the title actually matches
     const titleMatched = canonScored.filter((c) =>
       titlesMatch(incomingTrack.title, c.title)
     )
@@ -702,65 +720,22 @@ async function resolveFromCandidates(
     }
   }
 
-  // ═══ Phase 2: Fallback — Graduated Scoring + Canonical Additive ═══
-  const viable = scored.filter((s) => s.confidenceScore >= 0.65)
-  if (viable.length > 0) {
-    const ranked = rankByCanonicalness(
-      { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
-      viable.map((v) => ({
-        baseScore: v.confidenceScore,
-        title: v.title,
-        duration: v.duration,
-        channelType: v.channelType,
-      }))
-    )
-
-    const merged = viable.map((v, i) => ({
-      ...v,
-      confidenceScore: ranked[i].combinedScore,
-    }))
-    merged.sort((a, b) => b.confidenceScore - a.confidenceScore)
-
-    const best = merged[0]
-    return {
-      id: best.id,
-      title: best.title,
-      artist: best.artist,
-      duration: best.duration,
-      thumbnailUrl: '',
-      source: 'youtube',
-      sourceId: best.id,
-      confidenceScore: best.confidenceScore,
-    }
-  }
-
-  // Phase 3: Return best base-score candidate if it clears minimum viability (0.5)
-  scored.sort((a, b) => b.confidenceScore - a.confidenceScore)
-  const best = scored[0]
-
-  return {
-    id: best.id,
-    title: best.title,
-    artist: best.artist,
-    duration: best.duration,
-    thumbnailUrl: '',
-    source: 'youtube',
-    sourceId: best.id,
-    confidenceScore: best.confidenceScore,
-  }
+  throw new Error(
+    `No acceptable match for "${incomingTrack.artist} — ${incomingTrack.title}"` +
+    ` (${scored.length} candidates, ${acceptable.length} within ±2s & acceptable version)`
+  )
 }
 
 /**
  * Search YouTube and try multiple query strategies until a match is found.
  *
- * THREE-PHASE APPROACH:
+ * STRICT MATCHING:
  *   Fast-path: Topic channel candidate with exact duration AND exact title
  *              match — return immediately (canonical YouTube Music upload).
- *   Phase 1:   Strict ±2s duration gate → canonical ranking as primary
- *              differentiator. Eliminates false positives from remixes/live
- *              edits that happen to have similar duration.
- *   Phase 2a:  Fallback to graduated scoring + canonical additive ranking.
- *   Phase 2b:  Return best by base score if it clears minimum threshold.
+ *   Phase 1:   Strict ±2s duration gate + acceptable version filter.
+ *              Only official_canonical, official_alternate, or unmarked pass.
+ *              Remixes, live, covers, derivatives are always rejected.
+ *   No fallback: If no candidates pass both gates, throw.
  *
  * @param incomingTrack - The Spotify track to match
  * @param threshold - Minimum confidence score (0-1). Default 0.65.
@@ -805,22 +780,15 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): P
     }
   }
 
-  // ═══ Phase 1: Strict Duration Gate (±2s) → Canonical Ranking ═══
-  //
-  // Duration is the PRIMARY gate. Only candidates within 2s of the target
-  // duration are considered. Among gated candidates, the canonical score
-  // (0.0–1.0) is the PRIMARY differentiator — not an additive bonus.
-  //
-  // This eliminates false positives from remixes/live edits/etc. that happen
-  // to have similar duration but accumulate enough graduated score to pass.
+  // Strict filter: ±2s duration AND acceptable version
   const DURATION_GATE_S = 2
-  const gated = allCandidates.filter(
+  const acceptable = allCandidates.filter(
     (c) => Math.abs(c.track.duration - incomingTrack.duration) <= DURATION_GATE_S
+      && isAcceptableVersion(c.track.title, c.track.channelType)
   )
 
-  if (gated.length > 0) {
-    // Score gated candidates by canonicalness
-    const canonScored = gated.map((c) => ({
+  if (acceptable.length > 0) {
+    const canonScored = acceptable.map((c) => ({
       track: c.track,
       baseScore: c.score,
       canonicalScore: calculateCanonicalScore(
@@ -829,20 +797,14 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): P
       ),
     }))
 
-    // Filter to candidates where the title actually matches.
-    // This is critical — without it, a wrong track on topic channel with
-    // the same duration can slip through (baseScore reaches 0.80 from
-    // duration + topic + official bonuses alone, with zero title match).
     const titleMatched = canonScored.filter((c) =>
       titlesMatch(incomingTrack.title, c.track.title)
     )
 
     if (titleMatched.length > 0) {
-      // Sort by canonical score descending
       titleMatched.sort((a, b) => b.canonicalScore - a.canonicalScore)
       const bestCanon = titleMatched[0]
 
-      // Return best title-matched candidate if it meets canonical threshold
       if (bestCanon.canonicalScore >= 0.60 && bestCanon.baseScore >= 0.50) {
         return bestCanon.track
       }
@@ -853,39 +815,9 @@ async function resolveIdentity(incomingTrack: SpotifyTrack, threshold = 0.65): P
     }
   }
 
-  // ═══ Phase 2a: Fallback — Graduated Scoring + Canonical Additive ═══
-  const viable = allCandidates.filter((c) => c.score >= threshold)
-  if (viable.length > 0) {
-    const ranked = rankByCanonicalness(
-      { title: incomingTrack.title, artist: incomingTrack.artist, duration: incomingTrack.duration },
-      viable.map((v) => ({
-        baseScore: v.score,
-        title: v.track.title,
-        duration: v.track.duration,
-        channelType: v.track.channelType,
-      }))
-    )
-
-    let bestIdx = 0
-    let bestCombined = ranked[0].combinedScore
-    for (let i = 1; i < ranked.length; i++) {
-      if (ranked[i].combinedScore > bestCombined) {
-        bestCombined = ranked[i].combinedScore
-        bestIdx = i
-      }
-    }
-    return viable[bestIdx].track
-  }
-
-  // Phase 2b: Fallback — return best candidate if it clears minimum viability (0.5)
-  allCandidates.sort((a, b) => b.score - a.score)
-  if (allCandidates[0].score >= 0.5) {
-    return allCandidates[0].track
-  }
-
   throw new Error(
-    `No match for "${incomingTrack.artist} — ${incomingTrack.title}"` +
-    ` (best=${allCandidates[0].score.toFixed(2)})`
+    `No acceptable match for "${incomingTrack.artist} — ${incomingTrack.title}"` +
+    ` (${allCandidates.length} candidates, ${acceptable.length} within ±2s & acceptable version)`
   )
 }
 
@@ -900,4 +832,5 @@ export const TrackIdentityEngine = {
   detectVersionMarkers,
   getVersionPenalty,
   rankByCanonicalness,
+  isAcceptableVersion,
 }
