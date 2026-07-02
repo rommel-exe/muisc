@@ -124,7 +124,7 @@ async function main(): Promise<void> {
     console.log(`Testing ${uniqueIds.length} unique tracks`)
     console.log()
 
-    // Warmup: use a videoId NOT in the test set to avoid prewarm HIT on track 1
+    // Warmup: use a videoId NOT in the test set to avoid cache HIT on track 1
     const WARMUP_ID = 'Mk1Hpgoqfxo'
     console.log('  [warmup] Pre-resolving warmup track to settle daemon...')
     await resolver.warmupVideo(WARMUP_ID).catch(() => {})

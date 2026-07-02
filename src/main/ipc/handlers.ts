@@ -80,8 +80,7 @@ export function registerHandlers(resolver: MediaResolver): void {
    * Returns lightweight search results (no streaming URLs).
    *
    * After returning results, speculatively pre-resolves the FIRST result's
-   * stream URL and prewarm chunk so the handler can serve from cache or
-   * from RAM when the user clicks play.
+   * stream URL so the handler can serve from cache when the user clicks play.
    */
   ipcMain.handle(
     IPC_CHANNELS.MUSIC_SEARCH,
@@ -91,9 +90,8 @@ export function registerHandlers(resolver: MediaResolver): void {
       }
       const results = await searchYouTube(query)
 
-      // 🔥 Speculative pre-resolution: start daemon + chunk download for
-      // the first result. By the time the user clicks play, the stream URL
-      // is cached and the prewarm chunk may be in RAM, enabling sub-1s playback.
+      // Speculative pre-resolution: start daemon for the first result.
+      // By the time the user clicks play, the stream URL is cached.
       if (results.length > 0) {
         resolver.warmupVideo(results[0].videoId).catch(() => {
           // Errors are logged inside triggerBackgroundResolve

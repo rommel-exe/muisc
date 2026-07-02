@@ -3,7 +3,6 @@
 import http from 'node:http'
 import https from 'node:https'
 import { URL } from 'node:url'
-import dns from 'node:dns'
 import { PROXY_PORT } from '../../shared/constants'
 import { getVideoInfo, getStreamUrl as subprocessGetUrl, type YTDlpInfo, YTDlpError } from './yt-dlp'
 import { getDaemon } from './yt-dlp-daemon'
@@ -68,251 +67,7 @@ export function createProxy(options: ProxyOptions = {}) {
   const backgroundUrlResolves = new Map<string, Promise<string>>()
   const pendingControllers = new Map<string, AbortController>()
 
-  /** Track in-flight chunk downloads so the handler can await them.
-   *  The handler resolves the stream URL first, then waits for the chunk download
-   *  to complete so it can serve from RAM (prewarm HIT) instead of piping the CDN. */
-  const chunkDownloads = new Map<string, Promise<void>>()
 
-  /** Check whether the client's Range request (if any) starts within the prewarm buffer.
-   *  If the browser is seeking to a byte offset beyond our buffered chunk, serving from
-   *  prewarm would send an empty body with a broken Content-Range header. In that case
-   *  we skip prewarm and fall through to proxyStream, which forwards the Range correctly. */
-  function isRangeInPrewarm(req: http.IncomingMessage, bufferLen: number): boolean {
-    const rangeHeader = req.headers['range']
-    if (!rangeHeader) return true // no Range = full file request
-    const start = parseInt(rangeHeader.replace(/bytes=/, '').split('-')[0], 10)
-    return start < bufferLen
-  }
-
-  /** Serve a prewarm buffer chunk from RAM, then pipe the CDN tail.
-   *  Called from both the early HIT path (chunk already in buffer) and the
-   *  delayed HIT path (chunk downloaded while handler was resolving URL).
-   *  Writing the already-buffered data to `res` lets the browser start parsing
-   *  immediately while the CDN tail fetch runs in parallel. */
-  async function servePrewarmHit(
-    pb: { data: Buffer; contentType: string; totalLength?: number },
-    videoId: string,
-    req: http.IncomingMessage,
-    res: http.ServerResponse,
-    handlerT0: number
-  ): Promise<void> {
-    const MAX_TAIL_RETRIES = 1
-    prewarmBuffer.delete(videoId)
-    const prewarmDataLen = pb.data.length
-    if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm HIT ${videoId}: ${prewarmDataLen} bytes`)
-
-    // ⚠️ Register client disconnect handler before any async operation.
-    // Without this, if the client disconnects during resolveStreamUrl (500ms-2s),
-    // the CDN tail fetch still runs and leaks the connection until timeout (10s).
-    let clientGone = false
-    res.on('close', () => { clientGone = true })
-
-    const rangeHeader = req.headers['range']
-    if (rangeHeader) {
-      const parts = rangeHeader.replace(/bytes=/, '').split('-')
-      const start = parseInt(parts[0], 10)
-      const end = parts[1] ? Math.min(parseInt(parts[1], 10), prewarmDataLen - 1) : prewarmDataLen - 1
-      const chunk = pb.data.subarray(start, end + 1)
-      // Unknown total size (`*`) so browser continues requesting data
-      const totalLen = pb.totalLength ?? '*'
-      res.writeHead(206, {
-        'Content-Type': pb.contentType,
-        'Content-Range': `bytes ${start}-${end}/${totalLen}`,
-        'Content-Length': chunk.length.toString(),
-        'Access-Control-Allow-Origin': '*',
-      })
-      res.write(chunk)
-      if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${chunk.length}b (range ${start}-${end}) in ${Date.now()-handlerT0}ms`)
-      // Pipe CDN tail so audio continues past the prewarm buffer.
-      const tailUrl = await resolveStreamUrl(videoId)
-      if (tailUrl && !clientGone) {
-        doTailFetch(videoId, tailUrl, end + 1, res, handlerT0, MAX_TAIL_RETRIES)
-      } else if (!res.destroyed) {
-        res.end()
-      }
-      return
-    }
-
-    res.writeHead(200, {
-      'Content-Type': pb.contentType,
-      'Access-Control-Allow-Origin': '*',
-      'Transfer-Encoding': 'chunked',
-    })
-    res.write(pb.data)
-    if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm SENT ${videoId}: ${prewarmDataLen}b in ${Date.now()-handlerT0}ms`)
-
-    // Resolve stream URL for the CDN tail fetch (1s daemon should now be cache hit).
-    // If this throws, we've already sent the prewarm chunk — the browser will play
-    // whatever it buffered and the stream will eventually end on its own.
-    let streamUrl: string | null = null
-    try {
-      streamUrl = await resolveStreamUrl(videoId)
-    } catch (err: any) {
-      console.warn(`[Proxy] Prewarm tail resolve error for ${videoId}:`, err.message)
-    }
-    if (!streamUrl) {
-      console.error(`[Proxy] Prewarm tail resolve failed for ${videoId}`)
-      if (!res.destroyed) res.end()
-      return
-    }
-
-    if (clientGone) {
-      // Client disconnected during resolveStreamUrl — skip tail fetch to
-      // avoid leaking the CDN connection until timeout.
-      if (!res.destroyed) res.end()
-      return
-    }
-
-    doTailFetch(videoId, streamUrl, prewarmDataLen, res, handlerT0, MAX_TAIL_RETRIES)
-  }
-
-  /** Fetch the CDN tail (Range from tailStartByte-end) and pipe to response.
-   *  Handles 403/410 stale URLs via re-resolve & retry.
-   *  Handles connection errors with one retry attempt.
-   *  Has a 10s timeout on the tail request to prevent indefinite hangs when
-   *  the CDN range request stalls mid-transfer (YouTube edge timeout). */
-  function doTailFetch(
-    videoId: string,
-    tailUrl: string,
-    tailStartByte: number,
-    res: http.ServerResponse,
-    tBase: number,
-    maxTailRetries: number,
-    tailAttempt = 0
-  ): void {
-    const parsedTailUrl = new URL(tailUrl)
-    const tailTransport = parsedTailUrl.protocol === 'https:' ? https : http
-    /** Guards against double-retry from both timeout + error handlers. */
-    let handled = false
-    const retryOrEnd = () => {
-      if (handled) return
-      handled = true
-      if (tailAttempt < maxTailRetries) {
-        console.warn(`[Proxy] Prewarm TAIL ${videoId} failed (attempt ${tailAttempt + 1}), retrying...`)
-        streamCache.delete(videoId)
-        resolveStreamUrl(videoId)
-          .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
-          .catch(() => {
-            console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
-            if (!res.destroyed) res.end()
-          })
-      } else {
-        console.error(`[Proxy] Prewarm TAIL ${videoId} failed after retries`)
-        if (!res.destroyed) res.end()
-      }
-    }
-
-    const tailReq = tailTransport.get(tailUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-        'Referer': 'https://www.youtube.com/',
-        'Range': `bytes=${tailStartByte}-`,
-      },
-      agent: parsedTailUrl.protocol === 'https:' ? cdnAgent : undefined,
-    }, (tailRes) => {
-      // Ten seconds: if no data arrives for 10s, treat it as a CDN stall.
-      // This catches YouTube edges that accept TCP, send headers (206), then
-      // never send body data — the request socket appears "active" because
-      // TCP keepalive is healthy, but the audio stream is effectively dead.
-      //
-      // Instead of giving up immediately, retry with a fresh resolve (clears
-      // the stale cache entry). This handles the common case where the cached
-      // CDN URL expires between search-time prewarm and play-time tail fetch.
-      tailRes.setTimeout(10000, () => {
-        if (handled) return
-        handled = true
-        console.warn(`[Proxy] Prewarm TAIL ${videoId}: data stalled 10s, retrying with fresh resolve...`)
-        tailRes.destroy()
-        if (tailAttempt < maxTailRetries) {
-          streamCache.delete(videoId)
-          const resolveFn = onReResolve ?? resolveStreamUrl
-          resolveFn(videoId)
-            .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
-            .catch(() => {
-              console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
-              if (!res.destroyed) res.end()
-            })
-        } else {
-          if (!res.destroyed) res.end()
-        }
-      })
-      if (PROXY_TIMING_LOGS) console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN TTFB=${Date.now()-tBase}ms status=${tailRes.statusCode}`)
-
-      // 403/410 — stale CDN URL, re-resolve and retry fresh
-      if (tailRes.statusCode === 403 || tailRes.statusCode === 410) {
-        console.log(`[Proxy] Prewarm TAIL ${videoId}: CDN returned ${tailRes.statusCode}, re-resolving...`)
-        tailRes.destroy()
-        if (tailAttempt < maxTailRetries) {
-          handled = true
-          streamCache.delete(videoId)
-          const resolveFn = onReResolve ?? resolveStreamUrl
-          resolveFn(videoId)
-            .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
-            .catch(() => {
-              console.error(`[Proxy] Prewarm TAIL re-resolve failed for ${videoId}`)
-              if (!res.destroyed) res.end()
-            })
-        } else {
-          if (!res.destroyed) res.end()
-        }
-        return
-      }
-
-      // Pipe the CDN tail — audio resumes from the prewarm buffer's end
-      tailRes.on('error', (tailErr) => {
-        if (handled) return
-        console.warn(`[Proxy] Prewarm TAIL stream error for ${videoId}:`, tailErr.message)
-        if (!res.destroyed) res.end()
-      })
-      // ⚠️ Also handle response-side errors (e.g. client disconnects mid-pipe).
-      // Without this, a destroyed res silently breaks tailRes.pipe() and the
-      // tail fetch keeps buffering CDN data in memory indefinitely.
-      res.on('error', () => {
-        if (handled) return
-        handled = true
-        tailReq.destroy()
-      })
-      tailRes.pipe(res)
-    })
-
-    // ⚠️ Timeout on the request itself (before response headers arrive).
-    // This is separate from the response body timeout above — it handles the
-    // case where the CDN edge accepts TCP but never sends HTTP response headers.
-    // Retry with a fresh resolve, same as the body timeout.
-    tailReq.setTimeout(10000, () => {
-      if (handled) return
-      handled = true
-      console.warn(`[Proxy] Prewarm TAIL ${videoId}: request timeout, retrying with fresh resolve...`)
-      tailReq.destroy()
-      if (tailAttempt < maxTailRetries) {
-        streamCache.delete(videoId)
-        const resolveFn = onReResolve ?? resolveStreamUrl
-        resolveFn(videoId)
-          .then((newUrl) => doTailFetch(videoId, newUrl, tailStartByte, res, tBase, maxTailRetries, tailAttempt + 1))
-          .catch(() => {
-            console.error(`[Proxy] Prewarm TAIL retry resolve failed for ${videoId}`)
-            if (!res.destroyed) res.end()
-          })
-      } else {
-        if (!res.destroyed) res.end()
-      }
-    })
-
-    tailReq.on('error', () => {
-      // If already handled (timeout or close), ignore the 'error' that
-      // req.destroy() fires asynchronously.
-      if (handled) return
-      retryOrEnd()
-    })
-
-    // Clean up tail fetch when client disconnects (navigates away, closes tab).
-    // Without this, tailRes keeps buffering data from the CDN that nobody reads.
-    res.on('close', () => {
-      if (handled) return
-      handled = true
-      tailReq.destroy()
-    })
-  }
 
   const server = http.createServer(async (req, res) => {
     // CORS headers on every response
@@ -358,17 +113,6 @@ export function createProxy(options: ProxyOptions = {}) {
           if (rangeStart > 0) streamCache.delete(videoId)
         }
 
-        // ── Fast path: prewarm buffer HIT (chunk already in RAM) ──
-        const pb = prewarmBuffer.get(videoId)
-        if (pb && isRangeInPrewarm(req, pb.data.length)) {
-          // Claim atomically — delete before await so concurrent requests
-          // for the same videoId don't both try to serve the same buffer.
-          prewarmBuffer.delete(videoId)
-          await servePrewarmHit(pb, videoId, req, res, handlerT0)
-          return
-        }
-        console.log(`[Proxy] Prewarm MISS ${videoId} — buffer has ${prewarmBuffer.size} entries`)
-
         // ── Resolve stream URL via daemon + subprocess fallback ──
         const streamUrl = await resolveStreamUrl(videoId)
         if (!streamUrl) {
@@ -376,24 +120,10 @@ export function createProxy(options: ProxyOptions = {}) {
         }
         if (PROXY_TIMING_LOGS) console.log(`[Proxy] HANDLER ${videoId}: resolve=${Date.now()-handlerT0}ms`)
 
-        // 🔥 Re-check prewarm buffer: if speculative pre-resolution (search IPC)
-        // populated the buffer, serve from RAM + CDN tail — the browser starts
-        // playing immediately because moov + audio frames are in the chunk.
-        const prewarmHit = prewarmBuffer.get(videoId)
-        if (prewarmHit && isRangeInPrewarm(req, prewarmHit.data.length)) {
-          prewarmBuffer.delete(videoId)
-          await servePrewarmHit(prewarmHit, videoId, req, res, handlerT0)
-          return
-        }
-
-        // ── Normal path (no prewarm buffer — fall through) ──
         if (PROXY_TIMING_LOGS) console.log(`[Proxy] HANDLER ${videoId}: proxyStream after ${Date.now()-handlerT0}ms`)
         proxyStream(streamUrl, videoId, req, res)
       } catch (err: any) {
         console.error(`[Proxy] Failed to stream ${videoId}:`, err.message)
-        // Headers may already be sent if servePrewarmHit wrote the prewarm
-        // chunk before its internal resolveStreamUrl threw. In that case we
-        // can't send an error status — just close the response.
         if (res.headersSent) {
           if (!res.destroyed) res.end()
           return
@@ -484,7 +214,6 @@ export function createProxy(options: ProxyOptions = {}) {
           cachedAt: Date.now(),
           contentType: 'audio/mp4',
         })
-        downloadAudioChunk(videoId, url)
       }
       return url
     })
@@ -511,8 +240,6 @@ export function createProxy(options: ProxyOptions = {}) {
             cachedAt: Date.now(),
             contentType: 'audio/mp4',
           })
-          // 🔥 Start prewarm chunk download
-          downloadAudioChunk(videoId, url)
           return url
         }
         throw new ProxyError('No stream URL returned', 'STREAM_NOT_FOUND')
@@ -578,7 +305,6 @@ export function createProxy(options: ProxyOptions = {}) {
             cachedAt: Date.now(),
             contentType: 'audio/mp4',
           })
-          downloadAudioChunk(videoId, url)
         }
         return url
       } catch (subErr: any) {
@@ -599,11 +325,6 @@ export function createProxy(options: ProxyOptions = {}) {
           cachedAt: Date.now(),
           contentType: 'audio/webm',
         })
-        // 🔥 Download first PREWARM_CHUNK_SIZE bytes into prewarm buffer.
-        // Fire-and-forget — the chunk download completes in background.
-        // The handler will check for the prewarm buffer and serve from RAM if ready,
-        // otherwise fall through to direct proxyStream.
-        downloadAudioChunk(videoId, url)
         return url
       }
       // Daemon returned empty URL — fall back to subprocess
@@ -651,8 +372,6 @@ export function createProxy(options: ProxyOptions = {}) {
             cachedAt: Date.now(),
             contentType: `audio/${f.ext}`,
           })
-          // 🔥 Prewarm CDN connection — otherwise skip hits cold CDN TTFB (~540ms)
-          downloadAudioChunk(videoId, f.url)
           return f.url
         }
         return ''
@@ -752,23 +471,6 @@ export function createProxy(options: ProxyOptions = {}) {
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] CDN TTFB ${videoId}: ${cdnFirstByteMs}ms status=${proxyRes.statusCode} len=${cl} range=${cr} type=${ct}`)
           }
 
-          // 🔥 TRUNCATED STREAM DETECTION: YouTube CDN occasionally returns
-          // truncated streams with Content-Length < 500KB for a full song.
-          // Reject and re-resolve to get a different CDN edge.
-          const MIN_SONG_BYTES = 512 * 1024  // 500KB ≈ ~30s at 128kbps
-          if (proxyRes.headers['content-length']) {
-            const contentLen = parseInt(proxyRes.headers['content-length'], 10)
-            if (contentLen > 0 && contentLen < MIN_SONG_BYTES) {
-              console.warn(`[Proxy] Truncated stream ${videoId}: Content-Length=${contentLen} < ${MIN_SONG_BYTES}, re-resolving...`)
-              streamCache.delete(videoId)
-              const resolveFn = onReResolve ?? resolveStreamUrl
-              resolveFn(videoId)
-                .then((newUrl) => makeRequest(newUrl, redirectCount + 1))
-                .catch(() => { if (!clientRes.headersSent) clientRes.end() })
-              return
-            }
-          }
-
           // Handle 403/410 — stale URL, re-resolve
           if (proxyRes.statusCode === 403 || proxyRes.statusCode === 410) {
             console.log(`[Proxy] CDN returned ${proxyRes.statusCode} for ${videoId}, re-resolving...`)
@@ -816,39 +518,15 @@ export function createProxy(options: ProxyOptions = {}) {
 
           let dataStartMs = 0
           let dataBytes = 0
-          // 🔥 Buffer the first PREWARM_CHUNK_SIZE bytes into the prewarm
-          // buffer as a side effect of the main CDN stream. This eliminates
-          // the duplicate CDN connection from downloadAudioChunk — the
-          // prewarm chunk is harvested from the same data the browser is
-          // already receiving.
-          const prewarmChunks: Buffer[] = []
-          let prewarmTotal = 0
-          let prewarmDone = false
-          const ct = proxyRes.headers['content-type'] ?? 'audio/mpeg'
-          const totalContentLength = parseInt(proxyRes.headers['content-length'] ?? '', 10) || undefined
           proxyRes.on('data', (chunk: Buffer) => {
             if (dataStartMs === 0) {
               dataStartMs = Date.now()
               if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA START ${videoId}: +${dataStartMs - tStart}ms redirects=${redirectCount}`)
             }
             dataBytes += chunk.length
-            // Buffer chunk for prewarm (first 1MB)
-            if (!prewarmDone) {
-              prewarmChunks.push(chunk)
-              prewarmTotal += chunk.length
-              if (prewarmTotal >= PREWARM_CHUNK_SIZE) {
-                prewarmDone = true
-                prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct, totalLength: totalContentLength })
-                evictPrewarmBuffer()
-              }
-            }
           })
           proxyRes.on('end', () => {
             if (PROXY_TIMING_LOGS) console.log(`[Proxy] DATA END ${videoId}: ${dataBytes} bytes transferred`)
-            if (!prewarmDone && prewarmTotal > 0) {
-              prewarmBuffer.set(videoId, { data: Buffer.concat(prewarmChunks), contentType: ct, totalLength: totalContentLength })
-              evictPrewarmBuffer()
-            }
           })
           // ⚠️ Handle CDN response stream errors (ECONNRESET mid-stream).
           // Without this, proxyRes.pipe(clientRes) does NOT forward errors,
@@ -988,8 +666,6 @@ export function createProxy(options: ProxyOptions = {}) {
     backgroundUrlResolves.clear()
     pendingControllers.clear()
     pendingInfoResolves.clear()
-    chunkDownloads.clear()
-    prewarmBuffer.clear()
     streamCache.clear()
     return new Promise((resolve) => {
       server.close(() => resolve())
@@ -1008,17 +684,6 @@ export function createProxy(options: ProxyOptions = {}) {
   }
 
   /**
-   * Clear the prewarm buffer, optionally for a specific video ID.
-   */
-  function clearPrewarmBuffer(videoId?: string): void {
-    if (videoId) {
-      prewarmBuffer.delete(videoId)
-    } else {
-      prewarmBuffer.clear()
-    }
-  }
-
-  /**
    * Get a stream cache entry by video ID.
    */
   function getStreamCacheEntry(videoId: string): StreamCache | undefined {
@@ -1032,90 +697,7 @@ export function createProxy(options: ProxyOptions = {}) {
     streamCache.set(videoId, entry)
   }
 
-  /** Prewarm audio buffer: videoId → first N KB of CDN audio bytes */
-  const prewarmBuffer = new Map<string, { data: Buffer; contentType: string; totalLength?: number }>()
-  /** Max tracks to keep in prewarm buffer (evict oldest).
-   *  Matches MediaResolver's MAX_RESOLVE (50) so all pre-resolved tracks
-   *  retain their prewarm chunk and serve from RAM on click. */
-  const MAX_PREWARM = 50
-  /** Bytes to pre-buffer for instant serve — 256KB gives ~16s of audio at 128kbps,
-   *  enough time for the CDN tail fetch (separate HTTPS connection + Range request) to
-   *  establish and start streaming replacement data before stall detection fires.
-   *  At CDN speed ~1.4MB/s this downloads in ~180ms.
-   *  50 tracks × 256KB = 12.5MB peak RAM. */
-  const PREWARM_CHUNK_SIZE = 256 * 1024
 
-  function evictPrewarmBuffer(): void {
-    if (prewarmBuffer.size <= MAX_PREWARM) return
-    const oldest = prewarmBuffer.keys().next().value
-    if (oldest) prewarmBuffer.delete(oldest)
-  }
-
-  /**
-   * Download the first PREWARM_CHUNK_SIZE bytes of CDN audio into the
-   * prewarm buffer. Also warms the CDN keep-alive connection.
-   *
-   * Returns a Promise that resolves when the chunk is buffered (or on error),
-   * stored in chunkDownloads so the handler can await it before serving the response.
-   * This lets the handler serve from RAM (prewarm HIT) instead of piping the CDN,
-   * eliminating browser buffering latency (~800ms → ~50ms).
-   */
-  function downloadAudioChunk(videoId: string, url: string): Promise<void> {
-    const existing = chunkDownloads.get(videoId)
-    if (existing) return existing
-
-    const t0 = Date.now()
-    const hostname = new URL(url).hostname
-    try { dns.resolve(hostname, () => {}) } catch {}
-
-    const promise = new Promise<void>((resolve) => {
-      const chunks: Buffer[] = []
-      let total = 0
-      let done = false
-      const req = https.get(url, {
-        agent: cdnAgent,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
-          'Referer': 'https://www.youtube.com/',
-        },
-      }, (res) => {
-        const ct = res.headers['content-type'] ?? 'audio/mpeg'
-        const totalLen = parseInt(res.headers['content-length'] ?? '', 10) || undefined
-        res.on('data', (chunk: Buffer) => {
-          if (done) return
-          chunks.push(chunk)
-          total += chunk.length
-          if (total >= PREWARM_CHUNK_SIZE) {
-            done = true
-            req.destroy()
-            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct, totalLength: totalLen })
-            if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes in ${Date.now()-t0}ms`)
-            evictPrewarmBuffer()
-            resolve()
-          }
-        })
-        res.on('end', () => {
-          if (!done && total > 0) {
-            prewarmBuffer.set(videoId, { data: Buffer.concat(chunks), contentType: ct, totalLength: totalLen })
-            if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk buffered ${videoId}: ${total} bytes (complete) in ${Date.now()-t0}ms`)
-            evictPrewarmBuffer()
-          }
-          resolve()
-        })
-      })
-      req.on('error', (err) => {
-        if (!done) console.warn(`[Proxy] Chunk download error for ${videoId}:`, err.message)
-        resolve() // resolve anyway so the handler doesn't block forever
-      })
-      req.setTimeout(8000, () => { if (!done) { req.destroy(); resolve() } })
-    }).finally(() => {
-      chunkDownloads.delete(videoId)
-    })
-
-    chunkDownloads.set(videoId, promise)
-    if (PROXY_TIMING_LOGS) console.log(`[Proxy] Chunk START ${videoId}: url=${url.substring(0,60)}...`)
-    return promise
-  }
 
   /**
    * Background video resolution using a direct subprocess (NOT the serial daemon).
@@ -1129,8 +711,8 @@ export function createProxy(options: ProxyOptions = {}) {
    * --get-url extraction completes in ~500ms. The longer timeout ensures
    * cold subprocesses succeed without timing out.
    *
-   * Populates streamCache + starts prewarm chunk download so the proxy handler
-   * can serve cached content from RAM when the user clicks.
+   * Populates streamCache so the proxy handler can serve cached content
+   * when the user clicks.
    *
    * Fire-and-forget: errors are logged but never thrown.
    * Called from MediaResolver.resolveQueue() for background pre-resolution.
@@ -1150,7 +732,7 @@ export function createProxy(options: ProxyOptions = {}) {
     try {
       // Use subprocess directly (NOT triggerResolve) to avoid clogging the
       // daemon's serial FIFO queue. The subprocess runs independently and
-      // populates streamCache + prewarm buffer on success.
+      // populates streamCache on success.
       const url = await subprocessGetUrl(videoId, { timeoutMs: 30000 })
       if (!url) return
 
@@ -1159,8 +741,6 @@ export function createProxy(options: ProxyOptions = {}) {
         cachedAt: Date.now(),
         contentType: 'audio/mp4',
       })
-      // Start prewarm chunk download — the chunk stays in RAM for instant serve
-      downloadAudioChunk(videoId, url)
     } catch (err: any) {
       // Subprocess failed — this is expected for cold imports. The foreground
       // resolve (triggerResolve → daemon) will handle the click when the user
@@ -1170,48 +750,16 @@ export function createProxy(options: ProxyOptions = {}) {
     }
   }
 
-  /**
-   * Pre-warm the CDN connection for a video: resolve CDN URL via
-   * triggerResolve (daemon + subprocess fallback), cache it, then
-   * pre-buffer the first chunk into RAM for instant serve.
-   * Fire-and-forget — called at startup for the first queue track.
-   *
-   * If streamCache already has a URL (e.g. populated by Innertube from
-   * MediaResolver's resolve()), it uses that directly and skips the
-   * daemon entirely — critical for <1s cold play.
-   */
-  async function prewarmCdn(videoId: string): Promise<void> {
-    try {
-      // Fast path: URL already cached (e.g. from Innertube resolve) —
-      // downloadAudioChunk starts the 1MB prewarm buffer immediately.
-      const cached = streamCache.get(videoId)
-      if (cached?.streamUrl) {
-        downloadAudioChunk(videoId, cached.streamUrl)
-        return
-      }
-
-      // Slow path: resolve via daemon + subprocess fallback
-      const url = await triggerResolve(videoId)
-      if (!url) return
-
-      downloadAudioChunk(videoId, url)
-    } catch (err: any) {
-      console.warn(`[Proxy] Prewarm CDN failed for ${videoId}:`, err?.message ?? err)
-    }
-  }
-
   return {
     server,
     start,
     stop,
     clearCache,
-    clearPrewarmBuffer,
     getStreamCacheEntry,
     setStreamCacheEntry,
     triggerBackgroundResolve,
     backgroundResolve,
     getPendingResolveCount,
-    prewarmCdn,
     streamCache,
   }
 }

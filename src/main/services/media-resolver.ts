@@ -307,14 +307,7 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
   }
 
   /**
-   * Pre-warm the CDN connection for a video by pre-resolving its URL
-   * and immediately making a small HTTPS GET. The shared keep-alive
-   * agent maintains the TCP+TLS connection for subsequent proxy requests.
-   * Fire-and-forget — called at startup for the first queue track.
    */
-  async function prewarmCdn(videoId: string): Promise<void> {
-    return proxy.prewarmCdn(videoId)
-  }
 
   /**
    * Batch-resolve track URLs so they're cached when the user clicks.
@@ -364,8 +357,6 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     corruptCache,
     /** Number of in-flight resolve operations (delegates to proxy) */
     getPendingResolveCount: proxy.getPendingResolveCount,
-    /** Pre-warm CDN connection for a video ID */
-    prewarmCdn,
     /**
      * Batch-resolve all tracks in a queue so streamCache is warm.
      * Fire-and-forget: resolves are staggered (4 concurrent, 100ms spacing)
@@ -375,13 +366,12 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     resolveQueue,
 
     /**
-     * Speculatively pre-resolve a video ID so the stream URL and prewarm
-     * chunk are ready when the user clicks play. Fire-and-forget.
+     * Speculatively pre-resolve a video ID so the stream URL is ready
+     * when the user clicks play. Fire-and-forget.
      *
      * Call this when search results appear, before the user clicks:
-     * the daemon extraction (~500ms) and chunk download (~200ms) run
-     * in the background. By the time the user clicks, the handler
-     * serves from cache or finds the prewarm buffer populated.
+     * the daemon extraction (~500ms) runs in the background. By the time
+     * the user clicks, the handler serves from cache.
      */
     warmupVideo: proxy.triggerBackgroundResolve,
   }
