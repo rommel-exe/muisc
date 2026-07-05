@@ -11,6 +11,7 @@
 import { SearchEngine, cleanTitle, cleanTrackTitle } from './SearchEngine'
 import type { Track } from '../shared/types'
 import type { SpotifyTrack, MockCandidate, ResolvedMatchResult, NormalizedCandidate, AnnotationCategory } from './types'
+import { compareTitles } from './title-identity-engine'
 
 // ── Layer Imports ──
 import { normalizeSpotifyMetadata } from './layers/metadata-normalization'
@@ -313,24 +314,9 @@ export function calculateConfidence(
     score += 0.05
   }
 
-  // Title Match (0.00 to 0.20)
-  const targetTitle = cleanTrackTitle(target.title).toLowerCase()
-  const candidateTitle = cleanTitle(candidate.title).toLowerCase()
-  const targetNorm = normalizeForMatch(target.title)
-  const candidateNorm = normalizeForMatch(candidate.title)
-
-  if (targetTitle === candidateTitle) {
+  // Title Match (0.00 to 0.20) — token equality gate
+  if (compareTitles(target.title, candidate.title) !== 'title_mismatch') {
     score += 0.20
-  } else if (targetNorm === candidateNorm) {
-    score += 0.18
-  } else {
-    const targetWords = targetNorm.split(/\s+/).filter(Boolean)
-    const candidateWords = candidateNorm.split(/\s+/).filter(Boolean)
-    const commonWords = targetWords.filter(w => candidateWords.includes(w))
-    if (commonWords.length > 0) {
-      const overlap = commonWords.length / Math.max(targetWords.length, candidateWords.length)
-      score += 0.10 * Math.min(1, overlap)
-    }
   }
 
   // Artist / Channel Match (-0.15 to +0.20)
@@ -514,13 +500,7 @@ export function rankByCanonicalness(
 // ═══════════════════════════════════════════════
 
 function titlesMatch(targetTitle: string, candidateTitle: string): boolean {
-  const targetClean = cleanTrackTitle(targetTitle).toLowerCase()
-  const candidateClean = cleanTitle(candidateTitle).toLowerCase()
-  const targetNorm = normalizeForMatch(targetTitle)
-  const candidateNorm = normalizeForMatch(candidateTitle)
-
-  return targetClean === candidateClean
-    || targetNorm === candidateNorm
+  return compareTitles(targetTitle, candidateTitle) !== 'title_mismatch'
 }
 
 // ═══════════════════════════════════════════════
@@ -641,7 +621,20 @@ async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
     // Use old-style getAnnotationCategory for acceptable-version check
     // (backward compat: Audio Only → derivative, not unmarked)
     const cat = getAnnotationCategory(c.rawTitle, c.channelType)
-    if (cat === 'official_canonical' || cat === 'official_alternate' || cat === 'unmarked' || cat === 'lyrics_version') return true
+    if (cat === 'official_canonical' || cat === 'official_alternate' || cat === 'unmarked' || cat === 'lyrics_version') {
+      // 🔥 Reject candidates with (feat. ...) / (ft. ...) / (with ...) when the target
+      // track has no featurings in its title or artist metadata. A YouTube video titled
+      // "Song (feat. DifferentArtists)" is a different recording (remix, collab, cover)
+      // that happens to share the same canonical title — e.g. "Shivers (feat. Jessi, SUNMI)"
+      // should not match the original "Shivers" by Ed Sheeran.
+      const targetHasFeaturing =
+        /\((?:feat\.?|ft\.?|with)\s+.*?\)/i.test(normalized.rawTitle) ||
+        normalized.featuring.length > 0
+      const candidateHasFeat = /\((?:feat\.?|ft\.?|with)\s+.*?\)/i.test(c.rawTitle)
+      if (candidateHasFeat && !targetHasFeaturing) return false
+
+      return true
+    }
 
     // For variant tracks, accept same-category matches
     if (isVariant && incomingMarker) return cat === incomingMarker
