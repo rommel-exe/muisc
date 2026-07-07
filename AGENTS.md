@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Greenfield Electron desktop music player. Free YouTube streaming via yt-dlp + Innertube API. Phases 1–3 (Core, Search, Brain) and Phase 5 substeps (Spotify import, CI/CD) are built. Phase 4 (UI) is not started beyond wireframes. Project builds and typechecks.
+Greenfield Electron desktop music player. Free YouTube streaming via yt-dlp + Innertube API. Phases 1–3 (Core, Search, Brain) and Phase 5 substeps (Spotify import, CI/CD) are built. Phase 4 (UI) is not started beyond wireframes. Project builds (~399 files, ~29K lines) and typechecks.
 
 ## Source of Truth
 
@@ -15,7 +15,7 @@ Greenfield Electron desktop music player. Free YouTube streaming via yt-dlp + In
 - Innertube API (`youtubei.js`) for search (no API key)
 - better-sqlite3 for local storage (v0 — schema designed, NOT yet implemented; all state is in-memory)
 - electron-builder + electron-updater (auto-update via GitHub Releases)
-- React 19 frontend (monolithic App.tsx — no subcomponents yet)
+- React 19 frontend (App.tsx + useMediaEngine/useAudioPlayer hooks + MediaEngine class)
 
 ## Project Structure (actual — update as you build)
 
@@ -23,48 +23,47 @@ This section reflects the **actual** codebase structure. When you add, move, ren
 
 ```
 src/
-├── application/    ← Application Layer engines (pure TS, no Electron deps)
-│   ├── QueueEngine.ts    ← Queue state machine: list, index, history, repeat, shuffle
+├── application/    ← Application Layer engines — pure TS, zero Electron deps → see src/application/AGENTS.md
+│   ├── QueueEngine.ts         ← Queue state machine: list, index, history, repeat, shuffle
 │   ├── TrackIdentityEngine.ts ← Weighted matching & confidence scoring for track resolution
-│   ├── SearchEngine.ts   ← Search normalization: Innertube wrapper, title/duration parsing
-│   └── PlaylistEngine.ts ← Playlist CRUD + Spotify source metadata (in-memory; no SQLite yet)
+│   ├── SearchEngine.ts        ← Search normalization: Innertube wrapper, title/duration parsing
+│   └── PlaylistEngine.ts      ← Playlist CRUD + Spotify source metadata (in-memory; no SQLite yet)
 ├── main/           ← Electron main process (Node context)
 │   ├── index.ts       ← BrowserWindow creation, app lifecycle (+ no-sandbox flag)
 │   ├── __tests__/     ← Pipeline diagnostics: resolve, verify, test scripts
 │   ├── ipc/
-│   │   └── handlers.ts   ← 19 IPC channel registrations + queue navigation
-│   └── services/
+│   │   └── handlers.ts   ← 19 IPC channel registrations + queue navigation + Spotify import
+│   └── services/     ← Core backend services → see src/main/services/AGENTS.md
 │       ├── innertube.ts       ← YouTube search via youtubei.js (no API key)
 │       ├── media-resolver.ts  ← Stream resolution orchestration: yt-dlp, proxy, cache, prewarm
 │       ├── proxy.ts           ← Local HTTP proxy with LRU cache + 403/410 retry
 │       ├── spotify.ts         ← Spotify TOTP auth + web player API client
-│       ├── spotify-importer.ts ← Spotify playlist import: fetch, match, save
+│       ├── spotify-importer.ts ← Spotify playlist import: fetch, match, save (CONCURRENCY=10)
 │       ├── yt-dlp.ts          ← yt-dlp subprocess wrapper
-│       └── yt-dlp-daemon.ts   ← Persistent yt-dlp daemon (keep module imports warm)
+│       └── yt-dlp-daemon.ts   ← Persistent yt-dlp Python daemon
 ├── preload/        ← Preload scripts (contextBridge)
 │   ├── index.ts       ← Exposes electronAPI to renderer (17 channels)
-│   └── index.d.ts     ← Type declarations for renderer
+│   └── index.d.ts     ← Type declarations for renderer (mirrors src/shared/types.ts)
 ├── renderer/       ← Frontend (React, browser context)
 │   ├── index.html     ← Vite HTML entry
 │   └── src/
 │       ├── main.tsx   ← React root mount
-│       ├── App.tsx    ← Monolithic root component (678 lines — no subcomponents)
+│       ├── App.tsx    ← Monolithic root component (678 lines — no subcomponents yet)
 │       ├── env.d.ts   ← Vite client types
+│       ├── engine/
+│       │   ├── MediaEngine.ts  ← EventEmitter-based bridge: IPC ↔ AudioPlayer (821 lines)
+│       │   └── types.ts        ← AudioBridge, ApiBridge, MediaEngineState interfaces
 │       ├── hooks/
-│       │   └── useAudioPlayer.ts  ← Dual-element audio with next-track preload + swap
-│       ├── components/ ← (empty — App.tsx is monolithic)
-│       └── wireframes/ ← Static high-fidelity UI mockups (design reference, not wired)
-│           ├── index.tsx
-│           ├── MainLayout.tsx   ← Sidebar + Now Playing + Queue drawer layout
-│           ├── SearchResults.tsx
-│           ├── QueueDrawerOpen.tsx
-│           ├── LibrarySongs.tsx
-│           ├── LibraryPlaylists.tsx
-│           ├── PlaylistDetail.tsx
+│       │   ├── useAudioPlayer.ts  ← Dual HTMLAudioElement with next-track preload + swap (573 lines)
+│       │   └── useMediaEngine.ts  ← React hook wrapping MediaEngine, exposes engineState + controls
+│       ├── components/ ← (empty — App.tsx is monolithic, .gitkeep only)
+│       └── wireframes/ ← Static high-fidelity UI mockups (design reference, NOT wired into App.tsx)
+│           ├── index.tsx, MainLayout.tsx, SearchResults.tsx, QueueDrawerOpen.tsx
+│           ├── LibrarySongs.tsx, LibraryPlaylists.tsx, PlaylistDetail.tsx
 │           └── NowPlayingExpanded.tsx
-└── shared/         ← Types, constants (imported by main + renderer)
-    ├── types.ts       ← Track, Playlist, Queue, PlaybackState interfaces
-    └── constants.ts   ← IPC channel names, config defaults
+└── shared/         ← Types, constants → see src/shared/AGENTS.md
+    ├── types.ts       ← Track, Playlist, Queue, PlaybackState, SearchResult, SpotifyImport* interfaces
+    └── constants.ts   ← IPC channel names (IPC_CHANNELS), DEFAULT_VOLUME, PROXY_PORT, DB_FILENAME
 
 build/
 └── entitlements.mac.plist ← macOS notarization entitlements
@@ -73,9 +72,9 @@ scripts/
 └── yt-dlp-daemon.py ← Python daemon (keeps yt-dlp module imports warm)
 
 tests/
-├── application-layer.test.ts ← Unit tests (QueueEngine, TrackIdentityEngine, SearchEngine, PlaylistEngine)
-├── import-test-full.ts       ← Full 332-track Spotify import + YouTube match integration test
-├── import-test.ts            ← Quick smoke test
+├── application-layer.test.ts ← Vitest unit tests (QueueEngine, TrackIdentityEngine, SearchEngine, PlaylistEngine)
+├── import-test-full.ts       ← Full 332-track Spotify import + YouTube match integration test (npx tsx)
+├── import-test.ts            ← Quick smoke test (npx tsx)
 └── failing-tracks-test.ts    ← Edge case diagnostics for low-confidence matches
 
 .github/workflows/

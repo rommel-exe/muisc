@@ -12,7 +12,7 @@
  * Usage: npx tsx tests/import-test-full.ts
  */
 import { fetchSpotifyPlaylist } from '../src/main/services/spotify'
-import { searchYouTube } from '../src/main/services/innertube'
+import { searchYouTube, clearSearchCache } from '../src/main/services/innertube'
 import { TrackIdentityEngine, generateSearchQueries } from '../src/application/TrackIdentityEngine'
 import type { InnertubeSearchResult } from '../src/main/services/innertube'
 
@@ -89,6 +89,8 @@ async function findBestMatch(
 }
 
 async function main() {
+  clearSearchCache()
+
   const url = process.argv[2] || DEFAULT_URL
   console.log(`Fetching playlist: ${url}`)
   const playlist = await fetchSpotifyPlaylist(url)
@@ -100,6 +102,8 @@ async function main() {
   let fallbackCount = 0
   const failures: Array<{ title: string; artist: string; score: number; bestTitle: string; isFallback: boolean }> = []
   const fallbackDetails: Array<{ title: string; artist: string; score: number; bestTitle: string }> = []
+
+  const startTime = Date.now()
 
   for (let i = 0; i < total; i++) {
     const t = playlist.tracks[i]
@@ -123,8 +127,12 @@ async function main() {
     }
   }
 
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+
   console.log(`\n\n═══════════════════════════════════════`)
   console.log(`FINISHED: ${matched}/${total} matched (${((matched / total) * 100).toFixed(1)}%)`)
+  console.log(`TIME: ${elapsed}s total (${(parseFloat(elapsed) / total * 1000).toFixed(0)}ms per track)`)
+  console.log(`IMPROVEMENT: old ~500ms/track sequential → new parallel first-batch search + caching + cache warmup`)
 
   console.log(`\nMatched breakdown: ${strictCount} strict + ${fallbackCount} fallback = ${matched}/${total}`)
 

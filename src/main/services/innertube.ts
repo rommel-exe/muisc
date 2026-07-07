@@ -9,6 +9,78 @@
 import { Innertube } from 'youtubei.js'
 import type Format from 'youtubei.js/dist/src/parser/classes/misc/Format.js'
 
+// ── LRU Search Cache ──
+// Prevents redundant YouTube searches during Spotify playlist import
+// (same query often hits from different tracks in the same playlist).
+
+interface CacheEntry {
+  results: InnertubeSearchResult[]
+  timestamp: number
+}
+
+const SEARCH_CACHE = new Map<string, CacheEntry>()
+const CACHE_MAX_SIZE = 500
+const CACHE_TTL_MS = 600_000
+
+/** Clear the search result cache. Useful when the user explicitly requests a fresh search. */
+export function clearSearchCache(): void {
+  SEARCH_CACHE.clear()
+}
+
+// ── Multi-Instance Search Pool ──
+// Rate limits are per-session, not per-IP. Multiple sessions multiply throughput.
+const SEARCH_INSTANCE_COUNT = 1
+let _searchInstances: Innertube[] = []
+let _searchInitPromise: Promise<void> | null = null
+let _rrIndex = 0
+
+async function ensureSearchInstances(): Promise<void> {
+  if (_searchInstances.length === SEARCH_INSTANCE_COUNT) return
+  if (_searchInitPromise) return _searchInitPromise
+  _searchInitPromise = (async () => {
+    const results = await Promise.allSettled(
+      Array.from({ length: SEARCH_INSTANCE_COUNT }, () =>
+        Innertube.create({ enable_safety_mode: false })
+      )
+    )
+    _searchInstances = results
+      .filter((r): r is PromiseFulfilledResult<Innertube> => r.status === 'fulfilled')
+      .map((r) => r.value)
+    if (_searchInstances.length === 0) {
+      _searchInitPromise = null
+      throw new Error('Failed to create any Innertube search instance')
+    }
+    if (_searchInstances.length < SEARCH_INSTANCE_COUNT) {
+      console.warn(`[Innertube] Only ${_searchInstances.length}/${SEARCH_INSTANCE_COUNT} search instances created`)
+    }
+  })()
+  return _searchInitPromise
+}
+
+function getSearchInstance(): Innertube {
+  const idx = _rrIndex % _searchInstances.length
+  _rrIndex++
+  return _searchInstances[idx]
+}
+
+let _inflightSearches = 0
+const MAX_CONCURRENT_SEARCHES = 10
+
+async function acquireSearchSlot(signal?: AbortSignal): Promise<void> {
+  while (true) {
+    if (signal?.aborted) return
+    if (_inflightSearches < MAX_CONCURRENT_SEARCHES) {
+      _inflightSearches++
+      return
+    }
+    await new Promise(r => setTimeout(r, 50))
+  }
+}
+
+function releaseSearchSlot(): void {
+  _inflightSearches = Math.max(0, _inflightSearches - 1)
+}
+
 // ── Singleton ──
 
 let instance: Innertube | null = null
@@ -68,6 +140,8 @@ export interface InnertubeSearchResult {
   thumbnail: string
   /** YouTube channel type: 'verified_topic' for auto-generated Topic channels */
   channelType: string
+  /** View count for popularity-based ranking */
+  viewCount?: number
 }
 
 // ── yt-dlp search fallback ──
@@ -99,6 +173,7 @@ async function searchYouTubeViaYtDlp(
           const duration: number = Math.round(item.duration || 0)
           const uploader: string = item.uploader || item.channel || item.creator || ''
           const thumbnail: string = item.thumbnail || ''
+          const viewCount: number | undefined = typeof item.view_count === 'number' ? item.view_count : undefined
 
           if (!videoId || !title) continue
 
@@ -109,6 +184,7 @@ async function searchYouTubeViaYtDlp(
             duration,
             thumbnail,
             channelType: uploader.toLowerCase().includes('topic') ? 'verified_topic' : 'user_upload',
+            viewCount,
           })
         } catch {
           // Skip malformed lines
@@ -126,7 +202,8 @@ async function searchYouTubeViaYtDlp(
  * Returns normalized search results (no streaming URLs).
  * Filters out non-video results (channels, playlists, etc.).
  *
- * Attempts Innertube API first. Falls back to yt-dlp on 403 or failure.
+ * Attempts Innertube API first with retry on rate limit (403).
+ * Falls back to yt-dlp on persistent failure.
  */
 export async function searchYouTube(
   query: string,
@@ -134,52 +211,108 @@ export async function searchYouTube(
 ): Promise<InnertubeSearchResult[]> {
   if (signal?.aborted) return []
 
-  // ── Primary: Innertube API ──
-  try {
-    const yt = await getInstance()
+  // ── LRU cache hit? ──
+  const cached = SEARCH_CACHE.get(query)
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.results
+  }
+
+  // ── Primary: Innertube API (with 403 retry) ──
+  // Retry delays escalate so rate limits cool down between attempts.
+  const RETRY_DELAYS_MS = [1000, 3000]
+
+  // Ensure search instances are ready
+  await ensureSearchInstances()
+
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     if (signal?.aborted) return []
 
-    const results = await yt.search(query)
+    await acquireSearchSlot(signal)
+    if (signal?.aborted) return []
 
-    if (!results?.results) throw new Error('Empty results from Innertube')
-
-    const tracks: InnertubeSearchResult[] = []
-    for (const item of results.results) {
+    try {
+      const yt = getSearchInstance()
       if (signal?.aborted) return []
-      if (item.type !== 'Video') continue
 
-      const video = item as any
-      const rawTitle: string = video.title?.text ?? ''
-      const durationText: string = video.length_text?.text ?? '0:00'
+      const results = await yt.search(query)
 
-      // Detect channel type from author info
-      const authorName: string = video.author?.name ?? ''
-      const badges: Array<{ type?: string }> = video.author?.badges ?? []
-      const badgeTypes = badges.map((b) => b.type ?? '')
-      const channelType =
-        authorName.toLowerCase().endsWith(' - topic')
-          ? 'verified_topic'
-          : badgeTypes.includes('BADGE_STYLE_TYPE_VERIFIED_ARTIST')
-            ? 'verified_artist'
-            : 'user_upload'
+      if (!results?.results) throw new Error('Empty results from Innertube')
 
-      tracks.push({
-        videoId: video.video_id,
-        title: rawTitle,
-        artist: authorName,
-        duration: parseDurationText(durationText),
-        thumbnail: video.thumbnails?.[0]?.url ?? '',
-        channelType,
-      })
+      const tracks: InnertubeSearchResult[] = []
+      for (const item of results.results) {
+        if (signal?.aborted) return []
+        if (item.type !== 'Video') continue
+
+        const video = item as any
+        const rawTitle: string = video.title?.text ?? ''
+        const durationText: string = video.length_text?.text ?? '0:00'
+
+        // Extract view count (varies by API version: view_count, views.text, or short_view_count)
+        let viewCount: number | undefined
+        if (typeof video.view_count === 'number') {
+          viewCount = video.view_count
+        } else if (video.views?.text) {
+          viewCount = parseViewCount(video.views.text)
+        } else if (video.short_view_count?.text) {
+          viewCount = parseViewCount(video.short_view_count.text)
+        }
+
+        // Detect channel type from author info
+        const authorName: string = video.author?.name ?? ''
+        const badges: Array<{ type?: string }> = video.author?.badges ?? []
+        const badgeTypes = badges.map((b) => b.type ?? '')
+        const channelType =
+          authorName.toLowerCase().endsWith(' - topic')
+            ? 'verified_topic'
+            : badgeTypes.includes('BADGE_STYLE_TYPE_VERIFIED_ARTIST')
+              ? 'verified_artist'
+              : 'user_upload'
+
+        tracks.push({
+          videoId: video.video_id,
+          title: rawTitle,
+          artist: authorName,
+          duration: parseDurationText(durationText),
+          thumbnail: video.thumbnails?.[0]?.url ?? '',
+          channelType,
+          viewCount,
+        })
+      }
+
+      if (tracks.length === 0) throw new Error('No video results from Innertube')
+
+      // Filter & rank: remove non-song results, sort by quality
+      const finalResults = filterAndRankResults(tracks)
+
+      // Cache for subsequent identical queries (Innertube path only — not yt-dlp fallback)
+      if (SEARCH_CACHE.size >= CACHE_MAX_SIZE) {
+        const oldest = SEARCH_CACHE.keys().next().value
+        if (oldest !== undefined) SEARCH_CACHE.delete(oldest)
+      }
+      SEARCH_CACHE.set(query, { results: finalResults, timestamp: Date.now() })
+
+      return finalResults
+    } catch (err: any) {
+      if (err.name === 'AbortError' || signal?.aborted) return []
+
+      // Detect rate limit (403) — retry with backoff before falling to yt-dlp
+      const errMsg = err.message ?? ''
+      const isRateLimit = errMsg.includes('403') || errMsg.includes('status code 403') || errMsg.includes('Too Many Requests') || errMsg.includes('429')
+
+      if (isRateLimit && attempt < RETRY_DELAYS_MS.length) {
+        console.warn(
+          `[Innertube] Rate limited (attempt ${attempt + 1}/${RETRY_DELAYS_MS.length}), ` +
+          `retrying "${query.substring(0, 50)}" in ${RETRY_DELAYS_MS[attempt]}ms...`
+        )
+        await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt]))
+        continue
+      }
+
+      console.warn('[Innertube] Innertube search failed, falling back to yt-dlp:', errMsg)
+      break
+    } finally {
+      releaseSearchSlot()
     }
-
-    if (tracks.length === 0) throw new Error('No video results from Innertube')
-
-    // Filter & rank: remove non-song results, sort by quality
-    return filterAndRankResults(tracks)
-  } catch (err: any) {
-    if (err.name === 'AbortError' || signal?.aborted) return []
-    console.warn('[Innertube] Innertube search failed, falling back to yt-dlp:', err.message)
   }
 
   // ── Fallback: yt-dlp ──
@@ -234,6 +367,8 @@ const NON_SONG_PATTERNS: RegExp[] = [
 
   // Not the original recording
   /\bcover\b/i, /\binstrumental\b/i, /\bkaraoke\b/i, /\bacapella\b/i,
+  /\bband\s+version\b/i,
+  /\(band\s+version\)/i,
   /\breaction\b/i, /\btutorial\b/i, /\blesson\b/i, /\bhow to play\b/i,
   /\bsung by\b/i, /\bperformed by\b/i, /\btribute\b/i, /\bcast\b/i,
   /\bpiano (version|cover|remix|tutorial)\b/i,
@@ -318,6 +453,7 @@ function filterAndRankResults(results: InnertubeSearchResult[]): InnertubeSearch
   const maxCluster = Math.max(...clusterWeight.values(), 1)
 
   // ── Step 3: Score each result ──
+  const maxViews = Math.max(...pool.map(r => r.viewCount ?? 0), 1)
   const scored: ScoredResult[] = pool.map((r) => {
     // 3a. Duration cluster proximity (0-50 points)
     //     Results near the most common song length get a big boost.
@@ -348,9 +484,22 @@ function filterAndRankResults(results: InnertubeSearchResult[]): InnertubeSearch
       : r.duration < 60 ? 3
       : 6
 
+    // 3e. Popularity (0-30 points)
+    //     Logarithmic scale so 1B views beats 10M, but 10M doesn't crush 1M.
+    const views = r.viewCount ?? 0
+    const popularityPoints = views > 0
+      ? (Math.log10(views) / Math.log10(maxViews)) * 30
+      : 0
+
+    // 3f. Channel type bonus (0-20 points)
+    //     Verified artist and topic channels are the canonical uploads.
+    const channelBonus = r.channelType === 'verified_topic' ? 20
+      : r.channelType === 'verified_artist' ? 15
+      : 0
+
     return {
       result: r,
-      score: clusterPoints + titleStructurePoints + artistPoints + lengthPoints,
+      score: clusterPoints + titleStructurePoints + artistPoints + lengthPoints + popularityPoints + channelBonus,
     }
   })
 
@@ -370,6 +519,17 @@ function parseDurationText(text: string): number {
     return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10)
   }
   return parseInt(text, 10) || 0
+}
+
+/** Parse view count strings like "1,234,567 views" or "1.2M views" to number */
+function parseViewCount(text: string): number | undefined {
+  const cleaned = text.replace(/[,.\s]/g, '').toLowerCase()
+  const match = cleaned.match(/(\d+[km]?)\s*views?/)
+  if (!match) return undefined
+  let num = parseInt(match[1], 10)
+  if (match[1].endsWith('k')) num = parseInt(match[1], 10) * 1000
+  if (match[1].endsWith('m')) num = parseInt(match[1], 10) * 1000000
+  return isNaN(num) ? undefined : num
 }
 
 // ── Resolver ──

@@ -27,7 +27,7 @@ export const ANNOTATION_PATTERNS: RegExp[] = [
   /\(Visualizer\)/gi,
   /\(4K\s*(Remaster)?\)/gi,
   /\(HD\)/gi,
-  /\[Official\s+(Audio|Video|Music\s*Video)\]/gi,
+  /\[Official\s+(Audio|Video|Music\s*Video|Lyric\s*Video)\]/gi,
   /\[HD\]/gi,
   /\[4K\]/gi,
   /\[Lyrics?\]/gi,
@@ -43,6 +43,12 @@ export const ANNOTATION_PATTERNS: RegExp[] = [
   /\s*[-–—]\s*(Bonus\s+Track|From\s+.+?)\s*$/gi,
   // Also handle parenthesized version markers: "(Remix)" and "(Seeb Remix)"
   /\((.+?\s+)?(Remix|Radio\s*Edit|Extended\s*Mix|Instrumental|Acoustic)\s*\)/gi,
+  // Parenthetical context that isn't part of the core title
+  /\(from\s+[^)]+\)/gi,                  // (from Kung Fu Panda 4)
+  /\(\w+[']\s*Version\)/gi,              // (Taylor's Version), (Artist's Version)
+  /\((Expanded|Deluxe|Anniversary)\s+Edition\)/gi, // album edition markers
+  // Also strip bare "- From ..." suffix on the target title for matching
+  /\s*[-–—]\s*From\s+.+?$/gi,
   /\s{2,}/g,
 ]
 

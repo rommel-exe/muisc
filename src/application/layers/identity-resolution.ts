@@ -39,13 +39,21 @@ export function isCandidateContradictory(
   if (!primaryArtist) return false
   const primary = primaryArtist.toLowerCase()
 
-  // Channel check 1: Topic/verified channels are never contradictory
-  if (candidate.channelType === 'verified_topic' || candidate.channelType === 'verified_artist') {
-    return false
+  // Channel check 1: Topic channels are NOT automatically exempt. The uploader
+  // name (minus " - Topic" suffix) must match or contain the primary artist.
+  // e.g. "Imagine Dragons - Topic" matches "Imagine Dragons" → fine.
+  //      "James Major - Topic" does NOT match "Imagine Dragons" → contradictory.
+  if (candidate.channelType === 'verified_topic') {
+    const topicArtist = candidate.uploader.toLowerCase().replace(/\s*[-–—]\s*topic\s*$/i, '').trim()
+    if (topicArtist === primary || primary.includes(topicArtist) || topicArtist.includes(primary)) {
+      return false // Correct Topic channel for this artist
+    }
+    return true // Wrong-artist Topic channel — contradictory
   }
 
   // Check 1: Title prefix contradicts
   const titleArtist = extractArtistFromTitle(candidate.rawTitle)
+  let titlePrefixContradicts = false
   if (titleArtist) {
     const canonicalLower = candidate.canonicalTitle.toLowerCase()
     // Avoid flagging "Believer - James Major" where the prefix is the song title itself
@@ -58,21 +66,26 @@ export function isCandidateContradictory(
       !titleArtist.includes(primary) &&
       !primary.includes(titleArtist)
     ) {
-      return true // Title starts with a different artist name
+      titlePrefixContradicts = true
     }
   }
 
   // Check 2: Uploader name doesn't match and looks like a specific channel
   const uploader = candidate.uploader.toLowerCase()
   if (!uploader.includes(primary) && !primary.includes(uploader)) {
-    const genericTerms = ['vevo', 'official', 'music', 'records', 'topic', 'channel', 'uploads', 'entertainment']
+    const genericTerms = ['vevo', 'official', 'music', 'records', 'topic', 'uploads', 'entertainment']
     const isGeneric = genericTerms.some(t => uploader.includes(t))
     const hasNameFormat = uploader.split(/\s+/).filter(w => w.length > 2).length >= 2
 
     if (hasNameFormat && !isGeneric) {
-      return true // Uploader is a specific person/channel that differs from primary
+      return true
     }
+  } else if (titlePrefixContradicts) {
+    // Uploader matches primary — title is reversed "Song - Artist" format
+    return false
   }
+
+  if (titlePrefixContradicts) return true
 
   return false
 }
@@ -168,6 +181,7 @@ export function scoreArtistMatch(incomingArtists: string[], candidates: Normaliz
 
   let bestScore = -10 // sentinel: no positive evidence found yet
   let anyContradiction = false
+  let nonContradictoryNoEvidence = 0 // candidates that aren't contradictory but have no artist evidence
 
   for (const c of candidates) {
     const uploader = c.uploader.toLowerCase()
@@ -212,13 +226,27 @@ export function scoreArtistMatch(incomingArtists: string[], candidates: Normaliz
         continue
       }
     }
+
+    nonContradictoryNoEvidence++
   }
 
   // Found at least one non-contradictory candidate with positive evidence
   if (bestScore > -10) return bestScore
 
   // All candidates are contradictory → heavy penalty (Patch 1+6)
-  if (anyContradiction) return -0.75
+  if (anyContradiction && nonContradictoryNoEvidence === 0) return -0.75
+
+  // Mixed: some contradictory, others have no evidence → moderate penalty (Patch 2)
+  // When the cluster contains candidates that positively identify a different artist,
+  // the cluster should not be treated as neutral — the contradictory signal penalizes it.
+  if (anyContradiction && nonContradictoryNoEvidence > 0) return -0.40
+
+  // Channel-type bonuses (Patch 4): topic/verified channels get a positive signal
+  // even without explicit artist evidence — YouTube auto-generated or verified official channels
+  for (const c of candidates) {
+    if (c.channelType === 'verified_topic' || c.isTopic) return 0.30
+    if (c.channelType === 'verified_artist' || c.channelVerified) return 0.25
+  }
 
   // No evidence either way
   return 0.0
@@ -371,11 +399,14 @@ export function resolveIdentityForCluster(
   // If the incoming title is a short generic word (e.g. "Believer", "Stay")
   // and artist evidence is weak (<0.6, i.e. no uploader or title match),
   // apply a penalty — it's likely a wrong-artist upload.
+  // Penalty is reduced when other signals (title + duration) are strong,
+  // to avoid rejecting correct-but-low-evidence matches for obscure artists. (Bug C)
   const tokenCount = incoming.canonicalTitle.split(/\s+/).filter(Boolean).length
   const isGenericTitle = tokenCount <= 2 && GENERIC_TITLES.has(incoming.canonicalTitle.toLowerCase())
-  const effectiveArtistScore = isGenericTitle && artistScore < 0.6
-    ? artistScore - 0.30
-    : artistScore
+  const genericPenalty = isGenericTitle && artistScore < 0.6
+    ? (titleScore >= 0.9 && durationScore >= 0.8 ? 0.15 : 0.30)
+    : 0
+  const effectiveArtistScore = genericPenalty > 0 ? artistScore - genericPenalty : artistScore
 
   // Combine and transform (Patch 5: short titles get doubled artist weight)
   const raw = combineConfidence(titleScore, classScore, durationScore, effectiveArtistScore, releaseScore, tokenCount)

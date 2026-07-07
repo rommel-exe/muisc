@@ -194,17 +194,11 @@ function next(): QueueTrack | null {
       state.shufflePos++
       return state.list[state.index]
     }
-    // End of shuffle order
-    if (state.repeatMode === 'all') {
-      // Re-shuffle all tracks and restart (not just remaining indices)
-      buildShuffleOrder(true)
-      state.index = state.shuffleOrder[0] ?? 0
-      state.shufflePos = 1
-      return state.list[state.index] ?? null
-    }
-    // No repeat — stop
-    state.index = state.list.length
-    return null
+    // End of shuffle order — ALWAYS reshuffle (unlimited queue)
+    buildShuffleOrder(true)
+    state.index = state.shuffleOrder[0] ?? 0
+    state.shufflePos = 1
+    return state.list[state.index] ?? null
   }
 
   if (state.index < state.list.length - 1) {
@@ -329,9 +323,6 @@ function peekNext(): Track | null {
   if (state.shuffleActive) {
     if (state.shufflePos < state.shuffleOrder.length) {
       return state.list[state.shuffleOrder[state.shufflePos]]?.track ?? null
-    }
-    if (state.repeatMode === 'all') {
-      return state.list[0]?.track ?? null // will reshuffle
     }
     return null
   }

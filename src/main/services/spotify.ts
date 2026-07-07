@@ -362,14 +362,25 @@ async function resolveAllTrackMetadata(
   token: string,
   signal?: AbortSignal
 ): Promise<SpotifyTrack[]> {
-  const allTracks: SpotifyTrack[] = []
-
+  // Build batches of BATCH_SIZE URIs each
+  const batches: string[][] = []
   for (let i = 0; i < uris.length; i += BATCH_SIZE) {
-    if (signal?.aborted) throw new Error('Import cancelled')
+    batches.push(uris.slice(i, i + BATCH_SIZE))
+  }
 
-    const batch = uris.slice(i, i + BATCH_SIZE)
-    const resolved = await resolveBatch(batch, token, signal)
+  // Fire all GraphQL batch requests in parallel (each batch resolves up to 50 URIs)
+  // This replaces the sequential loop so a 300-track playlist resolves all 6 batches
+  // simultaneously instead of one-at-a-time.
+  const resolvedMaps = await Promise.all(
+    batches.map((batch) => resolveBatch(batch, token, signal))
+  )
 
+  if (signal?.aborted) throw new Error('Import cancelled')
+
+  const allTracks: SpotifyTrack[] = []
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b]
+    const resolved = resolvedMaps[b]
     for (const uri of batch) {
       const track = resolved.get(uri)
       if (track) {
