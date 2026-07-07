@@ -10,7 +10,7 @@ import {
   isCandidateContradictory,
   GENERIC_TITLES,
 } from '../src/application/layers/identity-resolution'
-import type { NormalizedCandidate } from '../src/application/types'
+import type { NormalizedCandidate, CandidateCluster } from '../src/application/types'
 
 // ── Mock Track Data ──
 
@@ -880,19 +880,103 @@ describe('TrackIdentityEngine Artist Matching Edge Cases', () => {
     expect(result).toBeGreaterThanOrEqual(0.5)
   })
 
-  it('P1+P6: scoreArtistMatch does NOT penalize verified_topic for uploader mismatch', () => {
+  it('P1+P6: scoreArtistMatch does NOT penalize verified_topic when uploader matches primary artist', () => {
     const result = scoreArtistMatch(
       ['Imagine Dragons'],
       [makeCandidate({
         rawTitle: 'Believer',
-        uploader: 'Some Random Channel',
+        uploader: 'Imagine Dragons - Topic',
         isTopic: true,
         channelType: 'verified_topic',
         channelVerified: true,
       })]
     )
-    // Verified topic should not be contradictory — it's auto-generated
+    // Topic channel whose uploader matches the primary artist is NOT contradictory
     expect(result).not.toBe(-0.75)
+  })
+
+  it('P1+P6: isCandidateContradictory does NOT flag Song-Artist format when uploader confirms artist', () => {
+    // Bug A regression: "Hello - Adele" has prefix "hello" not matching "adele",
+    // but uploader "AdeleVEVO" confirms the artist — should NOT be contradictory.
+    const result = isCandidateContradictory(
+      makeCandidate({
+        rawTitle: 'Hello - Adele',
+        uploader: 'AdeleVEVO',
+      }),
+      'Adele'
+    )
+    expect(result).toBe(false)
+  })
+
+  it('P1+P6: isCandidateContradictory DOES flag Artist-Song format when both title and uploader differ', () => {
+    // "James Major - Believer" by JamesMajorVEVO: prefix "james major" differs from
+    // primary "imagine dragons", and uploader "jamesmajorvevo" doesn't match either.
+    const result = isCandidateContradictory(
+      makeCandidate({
+        rawTitle: 'James Major - Believer',
+        uploader: 'JamesMajorVEVO',
+      }),
+      'Imagine Dragons'
+    )
+    expect(result).toBe(true)
+  })
+
+  // ── Patch 2: Mixed contradictory+no-evidence penalty ──
+
+  it('P2: scoreArtistMatch returns -0.40 when contradictory and no-evidence candidates coexist', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [
+        makeCandidate({ rawTitle: 'James Major - Believer', uploader: 'James Major' }),
+        makeCandidate({ rawTitle: 'Believer', uploader: 'SomeChannel' }),
+      ]
+    )
+    // Only contradictory + no-evidence → cluster should not be treated as neutral
+    expect(result).toBe(-0.40)
+  })
+
+  it('P2: scoreArtistMatch still returns positive when contradictory and evidence-based candidates coexist', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [
+        makeCandidate({ rawTitle: 'James Major - Believer', uploader: 'James Major' }),
+        makeCandidate({ rawTitle: 'Believer', uploader: 'imagine dragons' }),
+      ]
+    )
+    // Uploader match (0.85) should still win despite contradictory presence
+    expect(result).toBeGreaterThanOrEqual(0.85)
+  })
+
+  // ── Patch 4: Channel-type bonuses for topic/verified channels ──
+
+  it('P4: scoreArtistMatch returns 0.85 for correct-artist verified_topic channel (uploader + channel bonus)', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [makeCandidate({
+        rawTitle: 'Believer',
+        uploader: 'Imagine Dragons - Topic',
+        isTopic: true,
+        channelType: 'verified_topic',
+        channelVerified: true,
+      })]
+    )
+    // Correct-artist Topic channel: uploader "Imagine Dragons - Topic" matches primary artist
+    // (0.50 uploader match) + channel-type bonus (0.35 implicit) = 0.85
+    expect(result).toBe(0.85)
+  })
+
+  it('P4: scoreArtistMatch returns 0.25 for verified_artist channel with no artist evidence', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [makeCandidate({
+        rawTitle: 'Believer',
+        uploader: 'MusicUploads',
+        channelType: 'verified_artist',
+        channelVerified: true,
+      })]
+    )
+    // Verified artist channel gets +0.25 bonus (single-word uploader avoids contradiction)
+    expect(result).toBe(0.25)
   })
 
   // ── Patch 7: Artist prefix bonus ──
@@ -953,6 +1037,33 @@ describe('TrackIdentityEngine Artist Matching Edge Cases', () => {
       expect(GENERIC_TITLES.has(t)).toBe(true)
     }
     expect(GENERIC_TITLES.has('Bohemian Rhapsody')).toBe(false)
+  })
+
+  it('P3: generic title penalty applies when artistScore is low', async () => {
+    const { resolveIdentityForCluster } = await import('../src/application/layers/identity-resolution')
+    const cluster: CandidateCluster = {
+      id: 'test_cluster',
+      label: 'believer',
+      recordingClass: 'studio',
+      candidates: [makeCandidate({ rawTitle: 'Believer', uploader: 'SomeChannel' })],
+    }
+    // Incoming "Believer" by "Imagine Dragons" — generic title, no artist evidence in candidate
+    const incoming: import('../src/application/types').NormalizedMetadata = {
+      canonicalTitle: 'believer',
+      rawTitle: 'Believer',
+      primaryArtist: 'Imagine Dragons',
+      artists: ['Imagine Dragons'],
+      featuring: [],
+      album: '',
+      duration: 200,
+      explicit: false,
+    }
+    const result = resolveIdentityForCluster(cluster, incoming)
+    // Low artistScore + generic title → penalty applied (reduced because title+duration both 1.0)
+    // effectiveArtistScore = 0.0 - 0.15 = -0.15
+    // combineConfidence(1.0, 1.0, 1.0, -0.15, 0.5, 1) = 0.54 → transform → 0.61 (manual_review)
+    expect(result.confidence).toBe(0.61)
+    expect(result.confidenceLabel).toBe('manual_review')
   })
 
   // ── Patch 4: Verified artist bonus in calculateConfidence ──
@@ -1049,6 +1160,7 @@ describe('TrackIdentityEngine Artist Matching Edge Cases', () => {
     const originalSearch = await import('../src/application/SearchEngine')
     const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
 
+    // Both user_upload (no fast-path) — tests the actual identity resolution pipeline
     searchSpy.mockResolvedValue([
       {
         id: 'yt_correct',
@@ -1058,7 +1170,7 @@ describe('TrackIdentityEngine Artist Matching Edge Cases', () => {
         thumbnailUrl: '',
         source: 'youtube' as const,
         sourceId: 'yt_correct',
-        channelType: 'verified_topic',
+        channelType: 'user_upload',
       },
       {
         id: 'yt_wrong',
