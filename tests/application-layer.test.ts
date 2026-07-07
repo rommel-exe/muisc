@@ -3,6 +3,14 @@ import { QueueEngine } from '../src/application/QueueEngine'
 import { TrackIdentityEngine } from '../src/application/TrackIdentityEngine'
 import { SearchEngine } from '../src/application/SearchEngine'
 import { PlaylistEngine } from '../src/application/PlaylistEngine'
+import {
+  scoreArtistMatch,
+  combineConfidence,
+  extractArtistFromTitle,
+  isCandidateContradictory,
+  GENERIC_TITLES,
+} from '../src/application/layers/identity-resolution'
+import type { NormalizedCandidate } from '../src/application/types'
 
 // ── Mock Track Data ──
 
@@ -202,6 +210,12 @@ describe('TrackIdentityEngine Annotation Quality Scoring', () => {
 
     // No annotation — should be unmarked
     expect(TrackIdentityEngine.getAnnotationCategory('Song', undefined)).toBe('unmarked')
+  })
+
+  it('should reject acoustic versions as alternate_version', () => {
+    expect(TrackIdentityEngine.getAnnotationCategory('OneRepublic - Run (Acoustic)', undefined)).toBe('alternate_version')
+    expect(TrackIdentityEngine.getAnnotationCategory('Song (Acoustic Version)', undefined)).toBe('alternate_version')
+    expect(TrackIdentityEngine.isAcceptableVersion('OneRepublic - Run (Acoustic)', undefined)).toBe(false)
   })
 
   // N2: Canonical ranking with version markers
@@ -742,5 +756,395 @@ describe('QueueEngine Shuffle previous() Regression', () => {
     expect(QueueEngine.getCurrentIndex()).not.toBe(4)
     expect(QueueEngine.getCurrentIndex()).toBeGreaterThanOrEqual(0)
     expect(QueueEngine.getCurrentIndex()).toBeLessThan(tracks.length)
+  })
+})
+
+describe('QueueEngine Unlimited Shuffle', () => {
+  const tracks = [
+    { id: '1', title: 'Track A', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '1' },
+    { id: '2', title: 'Track B', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '2' },
+    { id: '3', title: 'Track C', artist: 'Artist', duration: 100, thumbnailUrl: '', source: 'youtube' as const, sourceId: '3' },
+  ]
+
+  beforeEach(() => {
+    QueueEngine.clear()
+  })
+
+  it('should reshuffle and continue when shuffle exhausts with repeatMode=none', () => {
+    QueueEngine.setQueue(tracks, 0)
+    QueueEngine.setRepeatMode('none')
+    QueueEngine.setShuffleActive(true)
+
+    let state = QueueEngine._getState()
+    const totalSlots = state.shuffleOrder.length
+
+    for (let i = 0; i < totalSlots; i++) {
+      const next = QueueEngine.next()
+      expect(next).not.toBeNull()
+    }
+
+    state = QueueEngine._getState()
+    expect(state.shufflePos).toBe(totalSlots)
+    expect(state.shuffleOrder.length).toBe(totalSlots)
+
+    const nextAfterExhaust = QueueEngine.next()
+    expect(nextAfterExhaust).not.toBeNull()
+    state = QueueEngine._getState()
+    expect(state.shufflePos).toBe(1)
+    expect(QueueEngine.getCurrentIndex()).toBeGreaterThanOrEqual(0)
+    expect(QueueEngine.getCurrentIndex()).toBeLessThan(tracks.length)
+  })
+
+  it('should reshuffle and continue when shuffle exhausts with repeatMode=all', () => {
+    QueueEngine.setQueue(tracks, 0)
+    QueueEngine.setRepeatMode('all')
+    QueueEngine.setShuffleActive(true)
+
+    let state = QueueEngine._getState()
+    const totalSlots = state.shuffleOrder.length
+
+    for (let i = 0; i < totalSlots; i++) {
+      const next = QueueEngine.next()
+      expect(next).not.toBeNull()
+    }
+
+    state = QueueEngine._getState()
+    expect(state.shufflePos).toBe(totalSlots)
+
+    const nextAfterExhaust = QueueEngine.next()
+    expect(nextAfterExhaust).not.toBeNull()
+    state = QueueEngine._getState()
+    expect(state.shufflePos).toBe(1)
+    expect(QueueEngine.getCurrentIndex()).toBeGreaterThanOrEqual(0)
+    expect(QueueEngine.getCurrentIndex()).toBeLessThan(tracks.length)
+  })
+
+  it('peekNext should return null when shuffle is exhausted (reshuffle happens on next())', () => {
+    QueueEngine.setQueue(tracks, 0)
+    QueueEngine.setRepeatMode('none')
+    QueueEngine.setShuffleActive(true)
+
+    let state = QueueEngine._getState()
+    const totalSlots = state.shuffleOrder.length
+
+    for (let i = 0; i < totalSlots; i++) {
+      QueueEngine.next()
+    }
+
+    const peeked = QueueEngine.peekNext()
+    expect(peeked).toBeNull()
+  })
+})
+
+// ── Test Suite 5: Artist Matching Edge Cases (7 Patches) ──
+
+describe('TrackIdentityEngine Artist Matching Edge Cases', () => {
+  // Helper to create a minimal NormalizedCandidate
+  function makeCandidate(overrides: Partial<NormalizedCandidate> & { rawTitle: string }): NormalizedCandidate {
+    return {
+      videoId: 'test_vid',
+      canonicalTitle: overrides.rawTitle.replace(/^(.+?)\s*[-–—]\s*(.+)/, '$2').trim(),
+      tokenCount: 0,
+      uploader: overrides.uploader ?? 'Test Channel',
+      uploaderType: 'user_upload',
+      duration: 200,
+      recordingType: 'studio' as const,
+      channelVerified: false,
+      isTopic: false,
+      isOfficial: false,
+      metadataQuality: 0.5,
+      channelType: 'user_upload',
+      ...overrides,
+    }
+  }
+
+  // ── Patch 1+6: Contradictory artist detection ──
+
+  it('P1+P6: scoreArtistMatch returns -0.75 when ALL candidates have contradictory artist', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [makeCandidate({ rawTitle: 'James Major - Believer', uploader: 'James Major' })]
+    )
+    expect(result).toBe(-0.75)
+  })
+
+  it('P1+P6: scoreArtistMatch returns positive when contradictory and correct candidates coexist', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [
+        makeCandidate({ rawTitle: 'James Major - Believer', uploader: 'James Major' }),
+        makeCandidate({ rawTitle: 'Imagine Dragons - Believer', uploader: 'Imagine Dragons' }),
+      ]
+    )
+    // Should find the non-contradictory correct match
+    expect(result).toBeGreaterThanOrEqual(0.5)
+  })
+
+  it('P1+P6: scoreArtistMatch does NOT penalize verified_topic for uploader mismatch', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [makeCandidate({
+        rawTitle: 'Believer',
+        uploader: 'Some Random Channel',
+        isTopic: true,
+        channelType: 'verified_topic',
+        channelVerified: true,
+      })]
+    )
+    // Verified topic should not be contradictory — it's auto-generated
+    expect(result).not.toBe(-0.75)
+  })
+
+  // ── Patch 7: Artist prefix bonus ──
+
+  it('P7: scoreArtistMatch returns 1.0 when candidate title starts with target artist', () => {
+    const result = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [makeCandidate({ rawTitle: 'Imagine Dragons - Believer', uploader: 'Imagine Dragons' })]
+    )
+    expect(result).toBe(1.0)
+  })
+
+  it('P7: scoreArtistMatch returns 0.70 when target artist appears in raw title body but not canonical title', () => {
+    const result = scoreArtistMatch(
+      ['Eminem'],
+      [makeCandidate({
+        rawTitle: 'Awesome Song (Eminem Remix)',
+        uploader: 'SomeChannel',
+        canonicalTitle: 'Awesome Song', // Artist only appears in raw title parens
+      })]
+    )
+    expect(result).toBe(0.70)
+  })
+
+  it('P7: scoreArtistMatch favors artist prefix (1.0) over uploader match (0.85)', () => {
+    const prefixMatch = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [makeCandidate({ rawTitle: 'Imagine Dragons - Believer', uploader: 'SomeChannel' })]
+    )
+    const uploaderMatch = scoreArtistMatch(
+      ['Imagine Dragons'],
+      [makeCandidate({ rawTitle: 'Believer', uploader: 'Imagine Dragons' })]
+    )
+    expect(prefixMatch).toBe(1.0)
+    expect(uploaderMatch).toBe(0.85)
+    expect(prefixMatch).toBeGreaterThan(uploaderMatch)
+  })
+
+  // ── Patch 2: Conflicting artist names in title body ──
+  // (Covered by P1+P6 — extractArtistFromTitle catches prefix mismatches)
+
+  it('P2: extractArtistFromTitle detects artist prefix in standard format', () => {
+    expect(extractArtistFromTitle('Imagine Dragons - Believer')).toBe('imagine dragons')
+    expect(extractArtistFromTitle('Eminem – Without Me')).toBe('eminem')
+    expect(extractArtistFromTitle('Adele — Hello')).toBe('adele')
+  })
+
+  it('P2: extractArtistFromTitle returns null for titles without separators', () => {
+    expect(extractArtistFromTitle('Believer')).toBeNull()
+    expect(extractArtistFromTitle('Hello')).toBeNull()
+  })
+
+  // ── Patch 3: Generic titles need stronger artist evidence ──
+
+  it('P3: GENERIC_TITLES includes all specified titles', () => {
+    for (const t of ['stay', 'home', 'hello', 'believer', 'enemy', 'monster',
+                     'alive', 'hero', 'lost', 'run', 'fire', 'broken']) {
+      expect(GENERIC_TITLES.has(t)).toBe(true)
+    }
+    expect(GENERIC_TITLES.has('Bohemian Rhapsody')).toBe(false)
+  })
+
+  // ── Patch 4: Verified artist bonus in calculateConfidence ──
+
+  it('P4: calculateConfidence gives verified_artist higher score than user_upload', () => {
+    const target = { title: 'Believer', artist: 'Imagine Dragons', duration: 204 }
+
+    const verifiedArtist = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Imagine Dragons - Believer',
+      duration: 204,
+      channelType: 'verified_artist',
+    })
+    const userUpload = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Imagine Dragons - Believer',
+      duration: 204,
+      channelType: undefined,
+    })
+
+    expect(verifiedArtist).toBeGreaterThan(userUpload)
+  })
+
+  it('P4: calculateConfidence gives verified_topic +0.30 bonus', () => {
+    const target = { title: 'Believer', artist: 'Imagine Dragons', duration: 204 }
+
+    const topic = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Believer',
+      duration: 204,
+      channelType: 'verified_topic',
+    })
+    const user = TrackIdentityEngine.calculateConfidence(target, {
+      title: 'Believer',
+      duration: 204,
+      channelType: undefined,
+    })
+
+    expect(topic).toBeGreaterThan(user)
+  })
+
+  // ── Patch 5: combineConfidence weight doubling for short titles ──
+
+  it('P5: combineConfidence doubles artist weight for short titles (≤2 tokens)', () => {
+    // All identical scores except artist — short title should amplify the difference
+    const shortTitleArtistHigh = combineConfidence(1.0, 1.0, 1.0, 1.0, 0.5, 1)
+    const shortTitleArtistLow = combineConfidence(1.0, 1.0, 1.0, 0.0, 0.5, 1)
+    const normalTitleArtistHigh = combineConfidence(1.0, 1.0, 1.0, 1.0, 0.5, 5)
+    const normalTitleArtistLow = combineConfidence(1.0, 1.0, 1.0, 0.0, 0.5, 5)
+
+    // For short titles, the gap between high and low artist score should be larger
+    const shortGap = shortTitleArtistHigh - shortTitleArtistLow
+    const normalGap = normalTitleArtistHigh - normalTitleArtistLow
+    expect(shortGap).toBeGreaterThan(normalGap)
+  })
+
+  it('P5: combineConfidence negative artist score is amplified for short titles', () => {
+    const withNegArtist = combineConfidence(0.8, 0.8, 0.8, -0.75, 0.5, 1)
+    const withZeroArtist = combineConfidence(0.8, 0.8, 0.8, 0.0, 0.5, 1)
+
+    // Negative artist should drag down confidence significantly
+    expect(withNegArtist).toBeLessThan(withZeroArtist)
+    // Verify the math: 0.8*0.25 + 0.8*0.15 + 0.8*0.20 + (-0.75)*0.40 + 0.5*0.00
+    // = 0.20 + 0.12 + 0.16 - 0.30 + 0.00 = 0.18
+    expect(withNegArtist).toBeCloseTo(0.18, 2)
+  })
+
+  // ── Integration: Wrong-artist candidate loses ──
+
+  it('P1+P6 INTEGRATION: resolveFromCandidates rejects wrong-artist candidate with same title+duration', async () => {
+    const result = await TrackIdentityEngine.resolveFromCandidates(
+      { title: 'Believer', artist: 'Imagine Dragons', duration: 204 },
+      [
+        {
+          youtubeId: 'yt_wrong',
+          title: 'James Major - Believer',
+          duration: 204,
+          channelType: 'user_upload',
+          fingerprintHash: 'hash_wrong',
+        },
+        {
+          youtubeId: 'yt_correct',
+          title: 'Imagine Dragons - Believer',
+          duration: 204,
+          channelType: 'verified_topic',
+          fingerprintHash: 'hash_correct',
+        },
+      ],
+      'hash_correct'
+    )
+
+    expect(result.id).toBe('yt_correct')
+    expect(result.id).not.toBe('yt_wrong')
+  })
+
+  it('P1+P6 INTEGRATION: resolveIdentity should score correct-artist cluster higher than wrong-artist cluster', async () => {
+    const originalSearch = await import('../src/application/SearchEngine')
+    const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
+
+    searchSpy.mockResolvedValue([
+      {
+        id: 'yt_correct',
+        title: 'Imagine Dragons - Believer',
+        artist: 'Imagine Dragons',
+        duration: 204,
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_correct',
+        channelType: 'verified_topic',
+      },
+      {
+        id: 'yt_wrong',
+        title: 'James Major - Believer',
+        artist: 'James Major',
+        duration: 204,
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_wrong',
+        channelType: 'user_upload',
+      },
+    ])
+
+    const result = await TrackIdentityEngine.resolveIdentity(
+      { title: 'Believer', artist: 'Imagine Dragons', duration: 204 }
+    )
+
+    expect(result).toBeDefined()
+    // The correct-artist candidate should win over the wrong-artist one
+    expect(result.sourceId).toBe('yt_correct')
+    expect(result.title).toContain('Imagine Dragons')
+
+    searchSpy.mockRestore()
+  })
+
+  it('P7 INTEGRATION: resolveIdentity favors artist-prefix candidate', async () => {
+    const originalSearch = await import('../src/application/SearchEngine')
+    const searchSpy = vi.spyOn(originalSearch.SearchEngine, 'search')
+
+    searchSpy.mockResolvedValue([
+      {
+        id: 'yt_bare',
+        title: 'Believer',
+        artist: 'Imagine Dragons',
+        duration: 204,
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_bare',
+        channelType: 'user_upload',
+      },
+      {
+        id: 'yt_prefix',
+        title: 'Imagine Dragons - Believer',
+        artist: 'Imagine Dragons',
+        duration: 204,
+        thumbnailUrl: '',
+        source: 'youtube' as const,
+        sourceId: 'yt_prefix',
+        channelType: 'user_upload',
+      },
+    ])
+
+    const result = await TrackIdentityEngine.resolveIdentity(
+      { title: 'Believer', artist: 'Imagine Dragons', duration: 204 }
+    )
+
+    // The artist-prefix candidate should win
+    expect(result).toBeDefined()
+    // Both are user_upload with no duration gate — the one with artist prefix should win
+    // The bare "Believer" without artist context should score lower on artist match
+    expect(result.sourceId).toBe('yt_prefix')
+
+    searchSpy.mockRestore()
+  })
+
+  // ── Old calculateConfidence penalty tests ──
+
+  it('P1 OLD: calculateConfidence applies -0.50 artist mismatch penalty', () => {
+    const target = { title: 'Believer', artist: 'Imagine Dragons', duration: 204 }
+    const candidate = { title: 'Believer', duration: 204, channelType: undefined, artist: 'James Major' }
+
+    const score = TrackIdentityEngine.calculateConfidence(target, candidate)
+    // Duration exact: +0.50, Title match: +0.20, Artist mismatch: -0.50
+    // Expected: 0.50 + 0.20 - 0.50 = 0.20
+    expect(score).toBeCloseTo(0.20, 2)
+  })
+
+  it('P1 OLD: calculateConfidence penalty is indeed -0.50 (not -0.15)', () => {
+    const target = { title: 'Believer', artist: 'Imagine Dragons', duration: 204 }
+    const candidateNoArtist = { title: 'Believer', duration: 204, channelType: undefined }
+    const candidateWrongArtist = { title: 'Believer', duration: 204, channelType: undefined, artist: 'James Major' }
+
+    const scoreNoArtist = TrackIdentityEngine.calculateConfidence(target, candidateNoArtist)
+    const scoreWrongArtist = TrackIdentityEngine.calculateConfidence(target, candidateWrongArtist)
+
+    // The gap should be at least 0.50 (our new penalty)
+    expect(scoreNoArtist - scoreWrongArtist).toBeGreaterThanOrEqual(0.45)
   })
 })

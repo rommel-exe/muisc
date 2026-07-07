@@ -319,15 +319,17 @@ export function calculateConfidence(
     score += 0.20
   }
 
-  // Artist / Channel Match (-0.15 to +0.20)
+  // Artist / Channel Match (-0.30 to +0.30)
   const targetArtist = normalizeForMatch(target.artist)
   const candidateArtist = candidate.artist ? normalizeForMatch(candidate.artist) : null
   const candidateStr = candidateArtist || normalizeForMatch(candidate.title)
 
   if (candidate.channelType === 'verified_topic') {
-    score += 0.20
+    score += 0.30
+  } else if (candidate.channelType === 'verified_artist') {
+    score += 0.25
   } else if (candidateStr.includes(targetArtist)) {
-    score += 0.15
+    score += 0.20
   } else if (targetArtist) {
     const artistParts = targetArtist.split(/\s+/).filter(Boolean)
     const artistMatch = artistParts.filter(p => candidateStr.includes(p)).length
@@ -336,7 +338,7 @@ export function calculateConfidence(
     }
   }
 
-  // Artist MISMATCH penalty
+  // Artist MISMATCH penalty — heavy penalty for clearly different artist
   if (
     candidateArtist &&
     candidate.channelType !== 'verified_topic' &&
@@ -346,7 +348,7 @@ export function calculateConfidence(
     const artistParts = targetArtist.split(/\s+/).filter(Boolean)
     const anyPartMatch = artistParts.some(p => candidateArtist!.includes(p))
     if (!anyPartMatch) {
-      score -= 0.15
+      score -= 0.50
     }
   }
 
