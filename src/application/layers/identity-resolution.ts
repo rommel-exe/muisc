@@ -20,7 +20,10 @@ export const GENERIC_TITLES = new Set([
  */
 export function extractArtistFromTitle(title: string): string | null {
   const match = title.match(/^(.+?)\s*[-–—]\s*(.+)/)
-  if (match) return match[1].trim().toLowerCase()
+  if (match) {
+    // Strip leading special characters (►, ★, etc.) that aren't part of artist names
+    return match[1].trim().toLowerCase().replace(/^[^\w]+/, '').trim()
+  }
   return null
 }
 
@@ -56,10 +59,12 @@ export function isCandidateContradictory(
   let titlePrefixContradicts = false
   if (titleArtist) {
     const canonicalLower = candidate.canonicalTitle.toLowerCase()
-    // Avoid flagging "Believer - James Major" where the prefix is the song title itself
-    const prefixIsSongTitle =
-      canonicalLower.includes(titleArtist) ||
-      titleArtist.split(/\s+/).every(w => canonicalLower.includes(w))
+    // The prefix is the SONG title (not an artist) only when it matches the
+    // canonical song title. The old check used token-subset membership, which
+    // let "Believer - James Major" slip through (both "james" and "major"
+    // appear in the canonical title) and wrongly treated the prefix as the song.
+    // Now the prefix must equal the canonical title to be the song itself.
+    const prefixIsSongTitle = canonicalLower === titleArtist
 
     if (
       !prefixIsSongTitle &&
@@ -71,8 +76,14 @@ export function isCandidateContradictory(
   }
 
   // Check 2: Uploader name doesn't match and looks like a specific channel
+  // BUT: if the title prefix already matches the primary artist, don't flag —
+  // "Imagine Dragons - Believer (Lyrics)" on "Urban Trip" is fine because
+  // the title itself identifies the artist.
   const uploader = candidate.uploader.toLowerCase()
-  if (!uploader.includes(primary) && !primary.includes(uploader)) {
+  const titlePrefixMatchesArtist = titleArtist &&
+    (titleArtist.includes(primary) || primary.includes(titleArtist))
+
+  if (!titlePrefixMatchesArtist && !uploader.includes(primary) && !primary.includes(uploader)) {
     const genericTerms = ['vevo', 'official', 'music', 'records', 'topic', 'uploads', 'entertainment']
     const isGeneric = genericTerms.some(t => uploader.includes(t))
     const hasNameFormat = uploader.split(/\s+/).filter(w => w.length > 2).length >= 2
