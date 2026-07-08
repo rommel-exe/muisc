@@ -10,7 +10,7 @@
 
 import { SearchEngine, cleanTitle, cleanTrackTitle } from './SearchEngine'
 import type { Track } from '../shared/types'
-import type { SpotifyTrack, MockCandidate, ResolvedMatchResult, NormalizedCandidate, AnnotationCategory } from './types'
+import type { SpotifyTrack, MockCandidate, ResolvedMatchResult, NormalizedCandidate, AnnotationCategory, IdentityResult } from './types'
 import { compareTitles } from './title-identity-engine'
 
 // ── Layer Imports ──
@@ -19,7 +19,7 @@ import { collectCandidates } from './layers/candidate-collection'
 import { normalizeTrackCandidate } from './layers/candidate-normalization'
 import { classifyRecording } from './layers/recording-classification'
 import { clusterCandidates } from './layers/candidate-clustering'
-import { resolveBestIdentity } from './layers/identity-resolution'
+import { resolveBestIdentity, isCandidateContradictory } from './layers/identity-resolution'
 
 // ═══════════════════════════════════════════════
 // BACKWARD-COMPAT HELPER FUNCTIONS (verbatim from old engine)
@@ -575,7 +575,35 @@ async function resolveFromCandidates(
 
 // ═══════════════════════════════════════════════
 // NEW resolveIdentity — 10-layer pipeline
-// ═══════════════════════════════════════════════
+// ═════════════════════════════════════════════
+
+/**
+ * Resolve the best identity from a candidate pool, but NEVER accept a candidate
+ * whose artist contradicts the target track. This is the guard that prevents
+ * wrong-artist matches (e.g. "Believer" by James Major instead of Imagine Dragons)
+ * from winning when the correct-artist candidates happen to be dropped by a tight
+ * duration gate or rate-limited search.
+ *
+ * Returns the winning IdentityResult, or null if no non-contradictory candidate
+ * survives the supplied gate.
+ */
+function resolveNonContradictory(
+  pool: NormalizedCandidate[],
+  incomingTrack: SpotifyTrack,
+  normalized: ReturnType<typeof normalizeSpotifyMetadata>,
+  gateS: number
+): IdentityResult | null {
+  const accepted = pool.filter((c) => {
+    if (Math.abs(c.duration - incomingTrack.duration) > gateS) return false
+    if (isCandidateContradictory(c, incomingTrack.artist)) return false
+    return true
+  })
+  if (accepted.length === 0) return null
+
+  const clusters = clusterCandidates(accepted)
+  if (clusters.length === 0) return null
+  return resolveBestIdentity(clusters, normalized)
+}
 
 async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
   // ── L1: Metadata Normalization ──
@@ -611,8 +639,20 @@ async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
       Math.abs(nc.duration - incomingTrack.duration) <= 1 &&
       cleanTitle(nc.rawTitle).toLowerCase() === targetClean
     ) {
-      const fastTrack = tracks.find(t => t.id === nc.videoId)
-      if (fastTrack) return fastTrack
+      // 🔥 Verify the Topic channel belongs to the target artist.
+      // A Topic channel like "James Major Dude - Topic" should NOT match
+      // "Imagine Dragons" even if the title is identical.
+      const topicArtist = nc.uploader.toLowerCase().replace(/\s*[-–—]\s*topic\s*$/i, '').trim()
+      const targetArtist = incomingTrack.artist.toLowerCase()
+      const artistMatches =
+        topicArtist === targetArtist ||
+        targetArtist.includes(topicArtist) ||
+        topicArtist.includes(targetArtist)
+
+      if (artistMatches) {
+        const fastTrack = tracks.find(t => t.id === nc.videoId)
+        if (fastTrack) return fastTrack
+      }
     }
   }
 
@@ -652,11 +692,28 @@ async function resolveIdentity(incomingTrack: SpotifyTrack): Promise<Track> {
     )
   }
 
-  // ── L7: Candidate Clustering ──
-  const clusters = clusterCandidates(filtered)
+  // ── L7+L8: Artist-safe Identity Resolution ──
+  // Never return a candidate whose artist contradicts the target track.
+  // Primary: resolve within the normal duration gate using only
+  // non-contradictory candidates (correct-artist matches).
+  let identityResult = resolveNonContradictory(filtered, incomingTrack, normalized, DURATION_GATE_S)
 
-  // ── L8: Identity Resolution (score all clusters, pick best) ──
-  const identityResult = resolveBestIdentity(clusters, normalized)
+  // Fallback: the correct-artist candidates may have been dropped by the tight
+  // ±2s gate (e.g. a 209s Imagine Dragons upload when Spotify reports 204s).
+  // Relax the gate against the full collected pool to recover them before
+  // giving up — this avoids both a wrong-artist match and an unnecessary skip.
+  if (!identityResult) {
+    const WIDE_GATE_S = 10
+    identityResult = resolveNonContradictory(normCandidates, incomingTrack, normalized, WIDE_GATE_S)
+  }
+
+  if (!identityResult) {
+    throw new Error(
+      `No acceptable match for "${incomingTrack.artist} — ${incomingTrack.title}"` +
+      ` (${normCandidates.length} candidates, ${filtered.length} within ±${DURATION_GATE_S}s & acceptable version,` +
+      ` all contradicting target artist)`
+    )
+  }
 
   // Best candidate from the winning cluster
   const bestCandidate = identityResult.cluster.candidates[0]
