@@ -400,6 +400,47 @@ const NON_SONG_PATTERNS: RegExp[] = [
   // from finding their corresponding YouTube upload.
 ]
 
+/**
+ * Detect whether a result's title indicates it is NOT the original studio recording
+ * (i.e., a music video, lyric video, or official audio upload).
+ *
+ * Returns a penalty score (negative points) applied in the ranking algorithm.
+ * Studio recordings (bare "Artist - Title") get 0 penalty.
+ */
+function getVersionPenalty(title: string): number {
+  const t = title.toLowerCase()
+
+  // Music video annotations — these are visual-first versions, not pure audio
+  if (
+    /\(official\s+(music\s+)?video\)/i.test(t) ||
+    /\(music\s+video\)/i.test(t) ||
+    /\(mv\)/i.test(t) ||
+    /\[mv\]/i.test(t) ||
+    /\(video\s+clip\)/i.test(t)
+  ) return -35
+
+  // Lyric video annotations — not the original recording
+  if (
+    /\(official\s+lyric\s+video\)/i.test(t) ||
+    /\(lyric\s+video\)/i.test(t) ||
+    /\(lyrics?\)/i.test(t)
+  ) return -25
+
+  // Visualizer — not the original audio recording
+  if (
+    /\(visualizer\)/i.test(t) ||
+    /\(official\s+visualizer\)/i.test(t)
+  ) return -20
+
+  // "Official Audio" or bare "(Audio)" — still the actual recording, mild penalty
+  if (
+    /\(official\s+audio\)/i.test(t) ||
+    /\(audio\)/i.test(t)
+  ) return -10
+
+  return 0
+}
+
 interface ScoredResult {
   result: InnertubeSearchResult
   score: number
@@ -491,15 +532,22 @@ function filterAndRankResults(results: InnertubeSearchResult[]): InnertubeSearch
       ? (Math.log10(views) / Math.log10(maxViews)) * 30
       : 0
 
-    // 3f. Channel type bonus (0-20 points)
-    //     Verified artist and topic channels are the canonical uploads.
-    const channelBonus = r.channelType === 'verified_topic' ? 20
+    // 3f. Channel type bonus (0-40 points)
+    //     Topic channels are the gold standard for studio recordings (YouTube auto-generates
+    //     these from label-delivered content). Verified artist channels are good but many host
+    //     music videos rather than the pure audio.
+    const channelBonus = r.channelType === 'verified_topic' ? 40
       : r.channelType === 'verified_artist' ? 15
       : 0
 
+    // 3g. Version penalty (0 to -35 points)
+    //     Penalize titles that explicitly denote a non-studio version (music video, lyric video,
+    //     visualizer, official audio). Topic channel results rarely have these annotations.
+    const versionPenalty = getVersionPenalty(r.title)
+
     return {
       result: r,
-      score: clusterPoints + titleStructurePoints + artistPoints + lengthPoints + popularityPoints + channelBonus,
+      score: clusterPoints + titleStructurePoints + artistPoints + lengthPoints + popularityPoints + channelBonus + versionPenalty,
     }
   })
 
