@@ -116,13 +116,15 @@ export class MediaEngine {
           this.preloadNext()
         }
       })
-      .catch(err => {
+      .catch((err: any) => {
+        if (err?.message === 'STALE_OPERATION') {
+          this.log('Retry abandoned — new operation started')
+          return
+        }
         if (this._requestCounter !== retryOpId) return
-        // All forceRefresh retries failed — advance to next track instead
-        // of entering error state and waiting for slow poll-based recovery.
-        this.log(`mid-playback: all retries exhausted for ${videoId}, advancing — last error: ${err.message}`)
+        this.log(`mid-playback: all retries exhausted for ${videoId}, advancing — last error: ${err?.message}`)
         this.next()
-          .catch((nextErr) => { this.log(`mid-playback: next() after retry exhaustion error: ${nextErr.message}`) })
+          .catch((nextErr: any) => { this.log(`mid-playback: next() after retry exhaustion error: ${nextErr?.message}`) })
       })
   }
 
@@ -150,15 +152,15 @@ export class MediaEngine {
 
     for (let attempt = 0; attempt < 5; attempt++) {
       try {
-        if (this._requestCounter !== opRequestId) return
+        if (this._requestCounter !== opRequestId) throw new Error('STALE_OPERATION')
 
         const opts = attempt === 0 ? undefined : { forceRefresh: true }
         const resolved = await resolveFn(videoId, opts)
 
-        if (this._requestCounter !== opRequestId) return
+        if (this._requestCounter !== opRequestId) throw new Error('STALE_OPERATION')
         await this.audio.loadAndPlay(resolved.audioUrl)
 
-        if (this._requestCounter !== opRequestId) return
+        if (this._requestCounter !== opRequestId) throw new Error('STALE_OPERATION')
 
         // Set _currentVideoId BEFORE registering the mid-playback error handler.
         // The callers (playFromQueue, playSearchResult, playCustomId) also set
@@ -172,6 +174,7 @@ export class MediaEngine {
         this.audio.setOnError(this._onMidPlaybackError)
         return
       } catch (err) {
+        if (err instanceof Error && err.message === 'STALE_OPERATION') throw err
         this.audio.setOnError(null) // Keep disabled on failed attempt
         lastError = err instanceof Error ? err : new Error(String(err))
         this.log(`_retryPlayback: attempt ${attempt + 1}/5 failed for ${videoId}`)
@@ -494,15 +497,30 @@ export class MediaEngine {
 
   /** Internal next() implementation — NO mutex, called by next() and by error-recovery recursion. */
   private async _nextImpl(errorSkipCount = 0): Promise<void> {
-    // 🚨 Log caller stack to catch direct calls that bypass next().
-    // The cascade bug shows `next: requesting next track` WITHOUT a
-    // preceding `auto-advance: track ended` or `next: CALLED` — meaning
-    // _nextImpl() was called directly outside the mutex. This diagnostic
-    // captures who that caller is.
     const implStack = new Error().stack?.split('\n').slice(2, 5).join(' → ') ?? 'no stack'
     this.log(`next: requesting next track (caller: ${implStack})`)
-    try {
-      const result = await this.api.queueNext()
+
+    let skipCount = errorSkipCount
+
+    while (true) {
+      // queueNext with its own error handling
+      let result: any = null
+      try {
+        result = await this.api.queueNext()
+      } catch (err: any) {
+        this.log('Failed to get next track from queue: ' + (err instanceof Error ? err.message : String(err)))
+        skipCount++
+        if (skipCount >= (this._state.queueList?.length ?? 0)) {
+          this.log('All queue navigation attempts exhausted')
+          this._state.state = 'idle'
+          this._state.error = 'Unable to navigate queue'
+          this.emit()
+          return
+        }
+        this.log(`Skipping failed queue navigation (${skipCount} skips)`)
+        continue
+      }
+
       if (!result) {
         this.log('next: end of queue')
         this._state.state = 'ended'
@@ -514,74 +532,50 @@ export class MediaEngine {
 
       // Check if preloaded matches — instant swap
       if (videoId === this._preloadedVideoId && this.audio.isNextReady()) {
-        this.log(`next: instant swap (preloaded hit) — videoId=${videoId}, _preloadedVideoId=${this._preloadedVideoId}, result.track="${(result.track?.title || '').substring(0, 40)}"`)
-        // 🔥 Disable old error handler before swap — clearing the old element in
-        // swapToNext fires a stale error event. If still registered, _onMidPlaybackError
-        // reads the stale _currentVideoId and retries the previous track on the
-        // swapped element (root cause of UI/audio desync).
+        this.log(`next: instant swap (preloaded ${videoId})`)
         this.audio.setOnError(null)
-        this._currentVideoId = videoId
-        const swapped = await this.audio.swapToNext()
-        if (swapped) {
-          // 🔥 Guard: user may have navigated to a different track while
-          // swapToNext was executing. If the queue index changed, abort
-          // the auto-advance — the user's explicit navigation takes priority.
-          await this.refreshState()
-          if (this._state.queueIndex !== result.index) {
-            this.log('next: queue changed during swap, aborting auto-advance')
+        try {
+          const swapped = await this.audio.swapToNext()
+          if (swapped) {
+            this._preloadedVideoId = ''
+            this._currentVideoId = videoId
+            this._state.queueIndex = result.index
+            this._state.state = 'playing'
+            this._state.error = null
+            this.emit()
+            this.audio.setOnError(this._onMidPlaybackError)
+            this.preloadNext()
             return
           }
-          // Re-enable error handler for the new track (set in _retryPlayback for normal path)
-          this.audio.setOnError(this._onMidPlaybackError)
-          this._state.currentTrack = result.track
-          // queueIndex was already set by refreshState() — no need to
-          // overwrite since it already matches result.index (guard above).
-          this._state.currentTime = 0
-          this._state.duration = result.track.duration || 0
-          this._state.state = 'playing'
-          this._state.error = null
-          this._preloadedVideoId = ''
-          this.emit()
-          this._truncatedRetries.delete(this._currentVideoId)
-          this._trackStartedAt = performance.now()
-          this.preloadNext()
-          // refreshState() already called above — skip duplicate
-          return
+        } catch (err: any) {
+          this.log(`next: swap failed: ${err?.message}`)
         }
+        this.audio.setOnError(this._onMidPlaybackError)
         this.log('next: swap failed, falling through to resolve')
       }
 
-      // 🔥 Abort guard: the user may have navigated to a different track
-      // while queueNext() was resolving (slow IPC round-trip). If the
-      // queue index changed since the call, the user's explicit navigation
-      // takes priority — abort the auto-advance without overriding their
-      // selection. playFromQueue calls jumpToQueueIndex which would
-      // overwrite the user's chosen index, clear history, and rebuild
-      // shuffle order — all of which we must avoid.
+      // Abort guard 1
       await this.refreshState()
       if (this._state.queueIndex !== result.index) {
-        this.log(`next: queue changed since advance (expected=${result.index}, actual=${this._state.queueIndex}), aborting auto-advance`)
+        this.log(`next: queue changed (now ${this._state.queueIndex}), aborting`)
         return
       }
 
-      // Fallback: resolve and play
-      this.log(`next: normal resolve path — videoId=${videoId}, idx=${result.index}, track="${(result.track?.title || '').substring(0, 40)}"`)
+      // Normal resolve path
       await this.playFromQueue(result.index)
 
-      // Track failed to play — skip ahead to the next one.
-      // This handles yt-dlp extraction failures, geoblocked videos,
-      // and transient proxy errors during auto-advance.
-      //
-      // ⚠️ Circuit breaker: track how many tracks we've skipped.
-      // When repeatMode is 'all' (the default), queueNext() wraps
-      // around forever — without this guard we'd loop infinitely
-      // across the entire queue.
-      // Repeat-one adds the same issue: next() never advances the index,
-      // so skipCount would never reach list.length without this guard.
+      // Abort guard 2
+      await this.refreshState()
+      if (this._state.queueIndex !== result.index) {
+        this.log(`next: queue changed (now ${this._state.queueIndex}) after playFromQueue, aborting`)
+        return
+      }
+
+      // Track failed to play — skip ahead
       if (this._state.state === 'error') {
-        const nextSkipCount = errorSkipCount + 1
-        this.log(`next: track at index ${result.index} failed, skipping ahead (skip ${nextSkipCount}/${this._state.queueList.length})`)
-        if (nextSkipCount >= this._state.queueList.length) {
+        skipCount++
+        this.log(`next: track at index ${result.index} failed, skipping ahead (skip ${skipCount}/${this._state.queueList.length})`)
+        if (skipCount >= this._state.queueList.length) {
           this.log('next: all tracks failed, stopping')
           this._state.state = 'idle'
           this._state.error = 'All tracks failed to play'
@@ -591,11 +585,10 @@ export class MediaEngine {
         this._state.state = 'idle'
         this._state.error = null
         this.emit()
-        // Use _nextImpl to avoid deadlocking on the mutex
-        await this._nextImpl(nextSkipCount)
+        continue
       }
-    } catch (err: any) {
-      this.handleError(err)
+
+      return
     }
   }
 
@@ -655,7 +648,7 @@ export class MediaEngine {
       await this.api.setShuffle()
       await this.refreshState()
     } catch (err: any) {
-      this.handleError(err)
+      this.handleError(err, { playbackError: false })
     }
   }
 
@@ -665,7 +658,7 @@ export class MediaEngine {
       await this.api.setRepeat(nextMode)
       await this.refreshState()
     } catch (err: any) {
-      this.handleError(err)
+      this.handleError(err, { playbackError: false })
     }
   }
 
@@ -712,7 +705,10 @@ export class MediaEngine {
       this.log(`auto-advance: truncated stream (<30s) for ${this._currentVideoId}, advancing`)
       this._pendingAdvance = true
       this.next()
-        .catch((err) => { this.log(`auto-advance error: ${err.message}`) })
+        .catch((err: any) => {
+          this.log('Failed to advance to next track: ' + (err instanceof Error ? err.message : String(err)))
+          this.handleError(err instanceof Error ? err : new Error(String(err)))
+        })
         .finally(() => { this._pendingAdvance = false })
       return
     }
@@ -720,7 +716,10 @@ export class MediaEngine {
     this._pendingAdvance = true
     this.log('auto-advance: track ended')
     this.next()
-      .catch((err) => { this.log(`auto-advance error: ${err.message}`) })
+      .catch((err: any) => {
+        this.log('Failed to advance to next track: ' + (err instanceof Error ? err.message : String(err)))
+        this.handleError(err instanceof Error ? err : new Error(String(err)))
+      })
       .finally(() => { this._pendingAdvance = false })
   }
 
@@ -775,11 +774,13 @@ export class MediaEngine {
     }
   }
 
-  private handleError(err: any): void {
-    const msg = err?.message || String(err)
-    this.log(`error: ${msg}`)
-    this._state.state = 'error'
-    this._state.error = msg
+  private handleError(err: unknown, options?: { playbackError?: boolean }): void {
+    const msg = err instanceof Error ? err.message : String(err)
+    this.log('Error: ' + msg)
+    if (options?.playbackError !== false) {
+      this._state.state = 'error'
+      this._state.error = msg
+    }
     this.emit()
   }
 
