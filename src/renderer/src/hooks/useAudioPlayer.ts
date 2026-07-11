@@ -85,18 +85,28 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
   // ── Create both elements on mount ──
 
   useEffect(() => {
-    const a = new Audio()
-    a.preload = 'auto'
-    a.style.display = 'none'
-    a.volume = INITIAL_VOLUME
-    document.body.appendChild(a)
-    elA.current = a
+    const createAudioElement = (): HTMLAudioElement => {
+      try {
+        const el = new Audio()
+        el.preload = 'auto'
+        el.style.display = 'none'
+        el.volume = INITIAL_VOLUME
+        document.body.appendChild(el)
+        return el
+      } catch (err) {
+        console.warn('[AudioPlayer] Failed to create audio element, retrying...', err)
+        const el = new Audio()
+        el.preload = 'auto'
+        el.style.display = 'none'
+        el.volume = INITIAL_VOLUME
+        document.body.appendChild(el)
+        return el
+      }
+    }
 
-    const b = new Audio()
-    b.preload = 'auto'
-    b.style.display = 'none'
-    b.volume = INITIAL_VOLUME
-    document.body.appendChild(b)
+    const a = createAudioElement()
+    elA.current = a
+    const b = createAudioElement()
     elB.current = b
 
     // Shared state updater
@@ -112,7 +122,15 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       userPausedRef.current = false
       setState((prev) => ({ ...prev, isPlaying: true }))
     }
-    const onPause = () => setState((prev) => ({ ...prev, isPlaying: false }))
+    const onPause = (e: Event) => {
+      // Only respond to pause from the active element — standby element
+      // pauses are internal (e.g., after clearing src in a swap) and
+      // should not update the playback state.
+      const target = e.target as HTMLAudioElement
+      const isActive = activeIsA.current ? target === elA.current : target === elB.current
+      if (!isActive) return
+      setState((prev) => ({ ...prev, isPlaying: false }))
+    }
     const onError = (e: Event) => {
       // 🔥 Use the element that ACTUALLY fired the event (e.target),
       // not the current active element (activeIsA.current). After an
@@ -150,6 +168,17 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
         realError = active?.error ?? null
       }
       if (!realError) {
+        // Error event fired but no MediaError on any element — if the
+        // target had a non-empty src, infer a generic error rather than
+        // silently suppressing (which would leave playback hanging).
+        if (target.src && target.src !== '' && target.src !== window.location.href) {
+          console.warn(`[audio] onError — inferring error from event (no MediaError, src present)`)
+          const msg = 'Audio playback error'
+          errorRef.current = msg
+          setState((prev) => ({ ...prev, error: msg, loading: false, isPlaying: false }))
+          onErrorRef.current?.()
+          return
+        }
         console.warn(`[audio] onError — no error on target or active, suppressing`)
         return
       }
@@ -464,6 +493,29 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     if (!standby) return
 
     setState((prev) => ({ ...prev, nextUrl: url, isNextReady: false }))
+
+    // Guard against preload failure — error listener + 10s timeout
+    let settled = false
+    const onPreloadError = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(preloadTimeout)
+      standby.removeEventListener('error', onPreloadError)
+      standby.removeEventListener('canplay', onPreloadCanPlay)
+      setState((prev) => ({ ...prev, isNextReady: false }))
+    }
+    const onPreloadCanPlay = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(preloadTimeout)
+      standby.removeEventListener('error', onPreloadError)
+      standby.removeEventListener('canplay', onPreloadCanPlay)
+      setState((prev) => ({ ...prev, isNextReady: true }))
+    }
+    const preloadTimeout = setTimeout(onPreloadError, 10000)
+
+    standby.addEventListener('error', onPreloadError)
+    standby.addEventListener('canplay', onPreloadCanPlay)
     standby.src = url
     standby.load()
   }, [])
