@@ -25,6 +25,10 @@ export class MediaEngine {
   private _pendingAdvance = false
   /** Mutex: prevents concurrent next() calls (auto-advance + user clicking ⏭). */
   private _advancing = false
+  /** Flag: set when a user navigation (playFromQueue, next, etc.) is in progress.
+   *  Suppresses _onMidPlaybackError to prevent the error handler from incrementing
+   *  _requestCounter and invalidating the navigation's operation guard. */
+  private _navigating = false
   /** Pending skip count accumulated during an in-progress advance.
    *  When the user rapidly clicks ⏭ N times, we count them here and
    *  fast-forward the queue in one batch instead of processing each
@@ -74,6 +78,15 @@ export class MediaEngine {
   private _onMidPlaybackError = (): void => {
     const videoId = this._currentVideoId
     if (!videoId) return
+
+    // If a user navigation (playFromQueue, next, etc.) is in progress,
+    // suppress this stale error. Without this guard, ++this._requestCounter
+    // below steals the operation ID and causes the navigation to bail out
+    // via its stale-operation guard, leaving the old track's broken stream.
+    if (this._navigating) {
+      console.warn(`[media] _onMidPlaybackError suppressed — navigation in progress`)
+      return
+    }
 
     const errorCount = (this._midPlaybackErrorCount.get(videoId) ?? 0) + 1
     if (errorCount > this.MAX_MID_PLAYBACK_RETRIES) {
@@ -196,11 +209,13 @@ export class MediaEngine {
   async playFromQueue(idx: number): Promise<void> {
     this.t0()
     const opRequestId = ++this._requestCounter
+    this._navigating = true
     this.log(`playFromQueue: idx=${idx}`)
 
     const qList = this._state.queueList
     if (idx < 0 || idx >= qList.length) {
       this.log(`playFromQueue: index ${idx} out of range (queue length ${qList.length})`)
+      this._navigating = false
       return
     }
 
@@ -318,6 +333,7 @@ export class MediaEngine {
       if (this._requestCounter !== opRequestId) return
       this.handleError(err)
     } finally {
+      this._navigating = false
       // If THIS operation is the latest and state is stuck at 'loading'
       // (e.g. because loadAndPlay's play() hung on a bad URL), reset to 'idle'
       // so the UI is responsive and the user can try again.
@@ -331,6 +347,7 @@ export class MediaEngine {
   async playSearchResult(result: SearchResult): Promise<void> {
     this.t0()
     const opRequestId = ++this._requestCounter
+    this._navigating = true
     this.log(`playSearchResult: ${result.title}`)
 
     this.setMediaState('loading')
@@ -385,6 +402,7 @@ export class MediaEngine {
       if (this._requestCounter !== opRequestId) return
       this.handleError(err)
     } finally {
+      this._navigating = false
       if (this._requestCounter === opRequestId && this._state.state === 'loading') {
         this._state.state = 'idle'
         this.emit()
@@ -395,6 +413,7 @@ export class MediaEngine {
   async playCustomId(id: string): Promise<void> {
     this.t0()
     const opRequestId = ++this._requestCounter
+    this._navigating = true
     this.log(`playCustomId: ${id}`)
 
     this.setMediaState('loading')
@@ -432,6 +451,7 @@ export class MediaEngine {
       if (this._requestCounter !== opRequestId) return
       this.handleError(err)
     } finally {
+      this._navigating = false
       if (this._requestCounter === opRequestId && this._state.state === 'loading') {
         this._state.state = 'idle'
         this.emit()
@@ -466,6 +486,7 @@ export class MediaEngine {
     // its stale finally can't clobber the new advance's mutex.
     const advanceGen = ++this._advanceGen
     this._advancing = true
+    this._navigating = true
     // Advance-hang recovery: auto-reset _advancing if _nextImpl takes >10s.
     // Prevents permanent ⏭ lockout if IPC hangs or swapToNext never settles.
     const hangTimer = setTimeout(() => {
@@ -479,6 +500,7 @@ export class MediaEngine {
       // Process ONE advance (full resolve + load)
       await this._nextImpl()
     } finally {
+      this._navigating = false
       clearTimeout(hangTimer)
       // Only reset _advancing if we're still the current generation.
       // A zombie _nextImpl (recovered after hang-timer + new advance)
