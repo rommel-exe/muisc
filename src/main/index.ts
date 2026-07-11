@@ -85,6 +85,17 @@ app.whenReady().then(async () => {
   createWindow()
   console.log('[App] Window created, app running')
 
+  // Prevent crashes from unhandled async errors
+  process.on('uncaughtException', (error) => {
+    console.error('[App] Uncaught exception (non-fatal):', error)
+    // Don't exit — app may still be usable
+  })
+
+  process.on('unhandledRejection', (reason) => {
+    console.error('[App] Unhandled promise rejection (non-fatal):', reason)
+    // Don't exit — app may still be usable
+  })
+
   // Wire the production search function into SearchEngine.
   // This enables TrackIdentityEngine.resolveIdentity() to work end-to-end.
   setSearchFunction(async (query: string) => {
