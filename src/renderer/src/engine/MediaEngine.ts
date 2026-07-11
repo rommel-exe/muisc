@@ -256,6 +256,7 @@ export class MediaEngine {
           this._preloadedVideoId = ''
           this.emit()
           this._truncatedRetries.delete(this._currentVideoId)
+          this._midPlaybackErrorCount.delete(this._currentVideoId)
           this._trackStartedAt = performance.now()
           this.preloadNext()
           await this.refreshState()
@@ -290,6 +291,7 @@ export class MediaEngine {
       this._state.error = null
       this.emit()
       this._truncatedRetries.delete(this._currentVideoId)
+      this._midPlaybackErrorCount.delete(this._currentVideoId)
       this._trackStartedAt = performance.now()
       this.log(`playFromQueue: playing "${initialTitle}"`)
 
@@ -338,6 +340,7 @@ export class MediaEngine {
 
       // Fresh manual play — clear any stale truncated-stream retry counter
       this._truncatedRetries.delete(result.videoId)
+      this._midPlaybackErrorCount.delete(result.videoId)
 
       const track: Track = {
         id: result.videoId,
@@ -402,6 +405,7 @@ export class MediaEngine {
 
       // Fresh manual play — clear any stale truncated-stream retry counter
       this._truncatedRetries.delete(id)
+      this._midPlaybackErrorCount.delete(id)
 
       await this._retryPlayback(id, this.api.resolveTrack.bind(this.api), opRequestId)
       if (this._requestCounter !== opRequestId) return
