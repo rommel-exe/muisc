@@ -566,6 +566,7 @@ export class MediaEngine {
             this._preloadedVideoId = ''
             this._currentVideoId = videoId
             this._state.queueIndex = result.index
+            this._state.currentTrack = result.track
             this._state.state = 'playing'
             this._state.error = null
             this.emit()
