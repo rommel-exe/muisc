@@ -140,6 +140,14 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
       // points to the NEW active element (no error) — suppressing
       // real errors and leaving the UI in a stale 'playing' state.
       const target = e.target as HTMLAudioElement
+      // 🔥 Ignore errors from non-active (standby/preload) elements.
+      // The standby element's preload failures should not trigger
+      // mid-playback recovery for the current track.
+      const isActive = activeIsA.current ? target === elA.current : target === elB.current
+      if (!isActive) {
+        console.warn(`[audio] onError suppressed — standby element error, not active`)
+        return
+      }
       const mediaError = target?.error
       // ⚠️ mediaError can be null even when the 'error' event fires.
       // This happens when a previous load failed, the 'error' event
