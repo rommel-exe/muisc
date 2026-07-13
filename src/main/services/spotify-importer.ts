@@ -16,7 +16,8 @@
 import type { WebContents } from 'electron'
 import { fetchSpotifyPlaylist } from './spotify'
 import { searchYouTube } from './innertube'
-import { TrackIdentityEngine, generateSearchQueries } from '../../application/TrackIdentityEngine'
+import { TrackIdentityEngine } from '../../application/TrackIdentityEngine'
+import { generateSearchQueries } from '../../application/layers/search-strategy'
 import { PlaylistEngine } from '../../application/PlaylistEngine'
 import { IPC_CHANNELS } from '../../shared/constants'
 import type { Track, SpotifyImportProgress, SpotifyImportResult, SpotifyImportSkipped } from '../../shared/types'
@@ -111,8 +112,9 @@ async function preFetchSearchCache(
       duration: track.duration,
       explicit: track.explicit ?? false,
     })
-    if (queries.length > 0) {
-      uniqueQueries.add(queries[0])
+    // Pre-fetch first 4 tier-1 queries so matching phase has more cache hits
+    for (let qi = 0; qi < Math.min(queries.length, 4); qi++) {
+      uniqueQueries.add(queries[qi])
     }
   }
 

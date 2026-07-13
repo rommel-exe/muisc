@@ -8,6 +8,9 @@
 
 import { Innertube } from 'youtubei.js'
 import type Format from 'youtubei.js/dist/src/parser/classes/misc/Format.js'
+import * as fs from 'fs'
+import * as path from 'path'
+import { app } from 'electron'
 
 // ── LRU Search Cache ──
 // Prevents redundant YouTube searches during Spotify playlist import
@@ -22,6 +25,53 @@ const SEARCH_CACHE = new Map<string, CacheEntry>()
 const CACHE_MAX_SIZE = 500
 const CACHE_TTL_MS = 600_000
 
+// ── Persistent cache ──
+// Persist search cache to disk so re-imports are instant
+
+let _cacheFile: string | null = null
+function getCacheFile(): string {
+  if (!_cacheFile) {
+    try {
+      _cacheFile = path.join(app.getPath('userData'), 'search-cache.json')
+    } catch {
+      _cacheFile = path.join(process.cwd(), '.search-cache.json')
+    }
+  }
+  return _cacheFile
+}
+const PERSIST_INTERVAL_MS = 60_000
+
+let _persistTimer: ReturnType<typeof setTimeout> | null = null
+
+function schedulePersist(): void {
+  if (_persistTimer) clearTimeout(_persistTimer)
+  _persistTimer = setTimeout(() => {
+    _persistTimer = null
+    try {
+      const obj: Record<string, CacheEntry> = {}
+      for (const [key, val] of SEARCH_CACHE) {
+        obj[key] = val
+      }
+      fs.mkdirSync(path.dirname(getCacheFile()), { recursive: true })
+      fs.writeFileSync(getCacheFile(), JSON.stringify(obj))
+    } catch {
+      // Persistence failure is benign
+    }
+  }, PERSIST_INTERVAL_MS)
+}
+
+export async function loadSearchCache(): Promise<void> {
+  try {
+    const data = JSON.parse(fs.readFileSync(getCacheFile(), 'utf-8'))
+    for (const [key, val] of Object.entries(data)) {
+      SEARCH_CACHE.set(key, val as CacheEntry)
+    }
+    console.log(`[Innertube] Loaded ${SEARCH_CACHE.size} cached search results`)
+  } catch {
+    // Persistent cache doesn't exist or can't be parsed — that's fine
+  }
+}
+
 /** Clear the search result cache. Useful when the user explicitly requests a fresh search. */
 export function clearSearchCache(): void {
   SEARCH_CACHE.clear()
@@ -29,7 +79,7 @@ export function clearSearchCache(): void {
 
 // ── Multi-Instance Search Pool ──
 // Rate limits are per-session, not per-IP. Multiple sessions multiply throughput.
-const SEARCH_INSTANCE_COUNT = 1
+const SEARCH_INSTANCE_COUNT = 4
 let _searchInstances: Innertube[] = []
 let _searchInitPromise: Promise<void> | null = null
 let _rrIndex = 0
@@ -64,7 +114,7 @@ function getSearchInstance(): Innertube {
 }
 
 let _inflightSearches = 0
-const MAX_CONCURRENT_SEARCHES = 10
+const MAX_CONCURRENT_SEARCHES = 40
 
 async function acquireSearchSlot(signal?: AbortSignal): Promise<void> {
   while (true) {
@@ -219,7 +269,7 @@ export async function searchYouTube(
 
   // ── Primary: Innertube API (with 403 retry) ──
   // Retry delays escalate so rate limits cool down between attempts.
-  const RETRY_DELAYS_MS = [1000, 3000]
+  const RETRY_DELAYS_MS = [3000, 8000, 15000]
 
   // Ensure search instances are ready
   await ensureSearchInstances()
@@ -290,6 +340,7 @@ export async function searchYouTube(
         if (oldest !== undefined) SEARCH_CACHE.delete(oldest)
       }
       SEARCH_CACHE.set(query, { results: finalResults, timestamp: Date.now() })
+      schedulePersist()
 
       return finalResults
     } catch (err: any) {

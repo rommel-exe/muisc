@@ -427,6 +427,9 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
     const el = getActive()
     if (!el) return
 
+    const __t0 = performance.now()
+    console.log(`[audio] loadAndPlay: start +0ms`)
+
     // ⚠️ Clear stale error from previous playback. errorRef is never
     // reset elsewhere — without this, a prior onError sets it to
     // "Unknown audio error" and every subsequent loadAndPlay that
@@ -450,6 +453,7 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
 
     el.src = url
     el.load()
+    console.log(`[audio] loadAndPlay: src+load done +${Math.round(performance.now()-__t0)}ms`)
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     // Track the error listener so we can remove it after successful play.
@@ -472,6 +476,19 @@ export function useAudioPlayer(): [AudioPlayerState, AudioPlayerControls] {
         timeoutId = setTimeout(() => reject(new Error('Playback timeout after 30s')), 30000)
       })
       await Promise.race([el.play(), errorOnLoad])
+      console.log(`[audio] loadAndPlay: play() resolved +${Math.round(performance.now()-__t0)}ms`)
+
+      // ⏱ Register one-shot timeupdate to detect when audio data actually
+      // starts flowing (play() may resolve before audio is audible).
+      let _firstTimeRecorded = false
+      const _onFirstData = () => {
+        if (!_firstTimeRecorded && el.currentTime > 0) {
+          _firstTimeRecorded = true
+          console.log(`[audio] loadAndPlay: first data at ${el.currentTime.toFixed(1)}s +${Math.round(performance.now()-__t0)}ms`)
+          el.removeEventListener('timeupdate', _onFirstData)
+        }
+      }
+      el.addEventListener('timeupdate', _onFirstData)
     } catch (err: any) {
       // ⚠️ Do NOT swallow AbortError here. If el.play() is aborted (e.g.
       // because a stale preloaded URL prevented playback from starting),

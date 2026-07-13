@@ -90,11 +90,14 @@ export function registerHandlers(resolver: MediaResolver): void {
       }
       const results = await searchYouTube(query)
 
-      // Speculative pre-resolution: start daemon for the first result.
-      // By the time the user clicks play, the stream URL is cached.
+      // ⚡ Speculative pre-resolution: warm up ALL visible search results.
+      // First result uses the fast serial daemon (~400ms). Remaining results
+      // use parallel subprocesses (up to 4 concurrent, 100ms staggered).
+      // By the time the user clicks any result, its stream URL is cached.
       if (results.length > 0) {
-        resolver.warmupVideo(results[0].videoId).catch(() => {
-          // Errors are logged inside triggerBackgroundResolve
+        const videoIds = results.map((r) => r.videoId)
+        resolver.preResolveVideoIds(videoIds).catch(() => {
+          // Errors are logged internally
         })
       }
 

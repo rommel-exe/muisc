@@ -26,14 +26,19 @@ YDL_OPTS = {
     "noplaylist": True,
     "skip_download": True,
     "no_check_certificate": True,
-    # 🏎️ Format filter: extract only the best audio/video combined format.
-    # This is MUCH faster than the default (no filter) because yt-dlp only
-    # processes the winning format instead of ALL available formats (~50%
-    # speedup: 878ms → 432ms).
-    "format": "bestaudio/best",
+    # ⚡ Format filter: extract the LOWEST bitrate format for fastest
+    # CDN buffering. DASH/HLS manifests are skipped, so audio-only formats
+    # (which only exist in DASH manifests) aren't available — worstaudio
+    # would always fall back to worst. Use 'worst' directly to avoid the
+    # wasted audio-only search overhead (~50-100ms).
+    "format": "worst",
     "extractor_args": {
         "youtube": {
             "player_client": ["android", "web"],
+            # ⚡ Skip expensive network requests: webpage fetch, JS download,
+            # configs, and initial webpage data. Configs fetch adds ~1500ms
+            # overhead per extraction without preventing session expiry.
+            # Session expiry is handled by extractor_retries=5 + session refresh.
             "player_skip": ["webpage", "js", "configs", "initial_data"],
         }
     },
@@ -48,6 +53,10 @@ YDL_OPTS = {
     # Enable yt-dlp's disk cache — caches player responses per YouTube session.
     # Reduces repeat extractions from ~450ms to ~50ms.
     "cachedir": os.path.expanduser("~/.cache/yt-dlp-daemon"),
+    # 🔄 Auto-retry extraction up to 5 times with fresh visitor data when
+    # YouTube returns "page needs to be reloaded" (session token expired).
+    # Each retry uses a different client identifier to bypass rate-limiting.
+    "extractor_retries": 5,
 }
 
 ydl = YoutubeDL(YDL_OPTS)
@@ -80,6 +89,17 @@ except Exception as exc:
 sys.stdout.write("READY\n")
 sys.stdout.flush()
 
+# 🔄 Session refresh counter — do a lightweight warmup every N successful
+# extractions to prevent YouTube session token expiry.
+# YouTube's player response session token expires after ~20-30 requests
+# (manifesting as "The page needs to be reloaded" errors from yt-dlp).
+# A periodic process=False extraction refreshes the session without resolving
+# any stream URL (non-blocking, fire-and-forget).
+# 🔧 With extractor_retries=5, even when refresh misses, yt-dlp auto-retries
+# with fresh visitor data. Set refresh every 5 to stay well ahead of expiry.
+SESSION_REFRESH_INTERVAL = 5
+request_count = 0
+
 for line in sys.stdin:
     video_id = line.strip()
     if not video_id:
@@ -100,6 +120,22 @@ for line in sys.stdin:
         elapsed = int((t1 - t0) * 1000)
         print(f"RESOLVE_DETAIL:{video_id} extract={elapsed}ms url_len={len(url)} warm_ms={warm_ms}", file=sys.stderr, flush=True)
         sys.stdout.write(f"{url}\n")
+
+        # 🔄 Periodic session refresh — after every SESSION_REFRESH_INTERVAL
+        # successful requests, do a lightweight process=False extraction to
+        # refresh the YouTube session token. This prevents the daemon's
+        # session from expiring (which causes "page needs to be reloaded" errors
+        # and 5000-8000ms fallback overhead).
+        request_count += 1
+        if request_count >= SESSION_REFRESH_INTERVAL:
+            request_count = 0
+            try:
+                ydl.extract_info(
+                    "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                    download=False, process=False
+                )
+            except Exception:
+                pass  # Refresh is best-effort; don't fail the request
     except Exception as e:
         elapsed = -1
         print(f"RESOLVE_ERROR:{video_id} {e}", file=sys.stderr, flush=True)

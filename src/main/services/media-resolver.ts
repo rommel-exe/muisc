@@ -34,8 +34,8 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     proxyPort = PROXY_PORT,
     cacheSize = 100,
     cacheTtlMs = 5 * 60 * 60 * 1000,
-    preloadedWindowSize = 3,
-    maxConcurrentPreloads = 2,
+    preloadedWindowSize = 6,
+    maxConcurrentPreloads = 4,
   } = config
 
   /**
@@ -196,15 +196,11 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
   // ── Sliding window queue preloader ──
 
   /**
-   * Prefetch upcoming queue tracks into the proxy stream cache and
-   * MediaResolver's metadata cache.
-   *
-   * With the instant-return proxy strategy, this pre-fetches metadata
-   * (title, duration, thumbnail) and stream URLs so they're ready when
-   * the user navigates. Not required for the <2s cold-click goal but
-   * improves subsequent-click UX.
-   *
-   * Call this whenever the queue changes or playback advances.
+   * Prefetch upcoming queue tracks into the proxy stream cache.
+   * Uses parallel subprocesses (not the serial daemon) so multiple
+   * tracks resolve concurrently. Stream URLs are cached so the proxy
+   * handler serves them instantly when the user navigates.
+   * Metadata (title/duration) is populated lazily on first resolve().
    */
   async function prefetchQueue(upcomingVideoIds: string[]): Promise<void> {
     if (_stopped) return
@@ -215,23 +211,18 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
         if (cached && Date.now() - cached.cachedAt < cacheTtlMs) return false
         return true
       })
-      .slice(0, maxConcurrentPreloads)
 
-    // Fire-and-forget — proxy.triggerBackgroundResolve deduplicates
-    for (const videoId of targets) {
-      proxy.triggerBackgroundResolve(videoId).then((info) => {
-        const resolved: ResolvedStream = {
-          videoId: info.id,
-          audioUrl: getProxyUrl(videoId),
-          duration: info.duration,
-          title: info.title,
-          thumbnail: info.thumbnail || '',
+    // Use parallel subprocesses (not serial daemon) for preloading.
+    // Batch with concurrency limit to avoid overwhelming the system.
+    for (let i = 0; i < targets.length; i += maxConcurrentPreloads) {
+      const batch = targets.slice(i, i + maxConcurrentPreloads)
+      await Promise.allSettled(batch.map(async (videoId) => {
+        try {
+          await proxy.backgroundResolve(videoId)
+        } catch {
+          // Errors logged inside backgroundResolve
         }
-        resolveCache.set(videoId, { info: resolved, cachedAt: Date.now() })
-        evictIfNeeded()
-      }).catch((err) => {
-        console.warn(`[MediaResolver] Prefetch failed for ${videoId}:`, (err as Error)?.message ?? err)
-      })
+      }))
     }
   }
 
@@ -316,8 +307,8 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
    * are staggered (4 concurrent, 100ms spacing).
    */
   async function resolveQueue(tracks: Track[]): Promise<void> {
-    const CONCURRENCY = 4
-    const MAX_RESOLVE = 50
+    const CONCURRENCY = 6
+    const MAX_RESOLVE = 100
 
     const videoIds = tracks
       .map((t) => t.id || t.sourceId)
@@ -336,6 +327,30 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
     // avoid overwhelming the system with Python process spawns.
     for (let i = 1; i < videoIds.length; i += CONCURRENCY) {
       const batch = videoIds.slice(i, i + CONCURRENCY)
+      batch.forEach((id) => {
+        proxy.backgroundResolve(id).catch(() => {})
+      })
+      await new Promise((r) => setTimeout(r, 100))
+    }
+  }
+
+  /**
+   * Pre-resolve multiple video IDs in parallel using independent subprocesses.
+   * Unlike warmupVideo (serial daemon), this spawns parallel subprocesses.
+   * First few results go through the fast daemon path; remaining use subprocesses.
+   * Fire-and-forget: errors are logged internally.
+   */
+  async function preResolveVideoIds(videoIds: string[]): Promise<void> {
+    const CONCURRENCY = 4
+    if (videoIds.length === 0) return
+
+    // First result gets priority via the fast daemon (serial but ~400ms)
+    proxy.triggerBackgroundResolve(videoIds[0]).catch(() => {})
+
+    // Remaining results use parallel subprocesses (slower start but concurrent)
+    const remaining = videoIds.slice(1, 10) // cap at 10 total
+    for (let i = 0; i < remaining.length; i += CONCURRENCY) {
+      const batch = remaining.slice(i, i + CONCURRENCY)
       batch.forEach((id) => {
         proxy.backgroundResolve(id).catch(() => {})
       })
@@ -374,6 +389,13 @@ export function createMediaResolver(config: MediaResolverConfig = {}) {
      * the user clicks, the handler serves from cache.
      */
     warmupVideo: proxy.triggerBackgroundResolve,
+
+    /**
+     * Pre-resolve multiple video IDs in parallel.
+     * Uses daemon for first result (fastest), parallel subprocesses for rest.
+     * Fire-and-forget.
+     */
+    preResolveVideoIds,
   }
 }
 
